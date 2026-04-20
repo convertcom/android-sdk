@@ -1,0 +1,49 @@
+# Convert Android SDK detekt configuration
+# Based on detekt 1.23.6 default config with zero-tolerance policy.
+# Root build.gradle.kts sets buildUponDefaultConfig = true, so this file
+# only needs to declare overrides — the rest is inherited.
+
+build:
+  # Zero-tolerance policy: any detekt finding fails the build.
+  maxIssues: 0
+  excludeCorrectable: false
+  weights:
+    # complexity: 2
+    # LongParameterList: 1
+    # style: 1
+    # comments: 1
+
+# Baseline is intentionally left unset for the initial scaffold. When the code
+# base grows, a baseline file can be introduced via:
+#   baseline: detekt-baseline.xml
+# until then, every finding must be fixed.
+
+config:
+  validation: true
+  warningsAsErrors: false
+  # Excluded configuration properties are reported as errors. Add to this list
+  # if a plugin introduces properties detekt does not know about.
+  excludes: ''
+
+processors:
+  active: true
+  exclusions:
+    - 'DetektProgressListener'
+
+console-reports:
+  active: true
+  exclusions:
+    - 'ProjectStatisticsReport'
+    - 'ComplexityReport'
+    - 'NotificationReport'
+    - 'FindingsReport'
+    - 'FileBasedFindingsReport'
+
+output-reports:
+  active: true
+
+# Formatting rules (ktlint-style) provided by detekt-formatting plugin.
+formatting:
+  active: true
+  android: true
+  autoCorrect: false
