@@ -36,7 +36,10 @@ import kotlinx.serialization.Serializable
  * @property api endpoint overrides for the config and tracking services.
  * @property bucketing bucketing-engine tuning knobs.
  * @property dataRefreshInterval polling interval (ms) at which the SDK
- *   refetches its configuration; `null` disables polling.
+ *   refetches its configuration. Defaults to
+ *   [ConfigDefaults.DEFAULT_DATA_REFRESH_INTERVAL_MS] (5 min). Non-nullable:
+ *   the SDK always schedules a refresh; disabling polling should be
+ *   expressed by a sufficiently large interval at the call site.
  * @property events event-queue batching knobs.
  * @property rules rule-engine tuning knobs.
  * @property logger logger configuration.

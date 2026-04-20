@@ -49,6 +49,20 @@ internal class VariationTest {
     }
 
     @Test
+    fun `variation with all fields null round-trips`() {
+        // Guards against regressions where Variation.id / Variation.key are
+        // marked non-nullable — the JS SDK's ExperienceVariationConfig
+        // declares them optional, so a partial backend response must
+        // deserialise without throwing.
+        val original = Variation()
+
+        val json = testJson.encodeToString(original)
+        val restored = testJson.decodeFromString<Variation>(json)
+
+        assertEquals(original, restored)
+    }
+
+    @Test
     fun `variation serializes experience_id using snake_case`() {
         val v = Variation(id = "v", key = "k", experienceId = "exp_1")
 

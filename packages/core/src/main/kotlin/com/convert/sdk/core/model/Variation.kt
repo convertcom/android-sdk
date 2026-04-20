@@ -17,8 +17,13 @@ import kotlinx.serialization.json.JsonElement
  * into a single data class. Field JSON names use snake_case except for
  * fields explicitly marked with `@SerialName`.
  *
- * @property id stable variation identifier.
- * @property key merchant-defined variation key.
+ * Every field is nullable because the JS SDK's `ExperienceVariationConfig`
+ * declares `id`, `key`, and `name` as optional — the Convert config API
+ * can legitimately omit them. A non-nullable type here would throw on
+ * deserialisation the first time the backend sent a partial response.
+ *
+ * @property id stable variation identifier; may be absent in partial responses.
+ * @property key merchant-defined variation key; may be absent in partial responses.
  * @property name human-readable variation name.
  * @property experienceId stable identifier of the owning experience.
  * @property experienceKey merchant-defined key of the owning experience.
@@ -29,8 +34,8 @@ import kotlinx.serialization.json.JsonElement
  */
 @Serializable
 public data class Variation(
-    val id: String,
-    val key: String,
+    val id: String? = null,
+    val key: String? = null,
     val name: String? = null,
     @SerialName("experience_id")
     val experienceId: String? = null,
