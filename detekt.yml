@@ -27,12 +27,12 @@ config:
 
 processors:
   active: true
-  exclusions:
+  exclude:
     - 'DetektProgressListener'
 
 console-reports:
   active: true
-  exclusions:
+  exclude:
     - 'ProjectStatisticsReport'
     - 'ComplexityReport'
     - 'NotificationReport'

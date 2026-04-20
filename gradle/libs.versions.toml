@@ -30,6 +30,9 @@ androidx-startup-runtime = { module = "androidx.startup:startup-runtime", versio
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junitJupiter" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
+# Gradle 9+ requires an explicit junit-platform-launcher on the test runtime
+# classpath; the junit-jupiter aggregator no longer pulls it transitively.
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 
 [plugins]
 android-library = { id = "com.android.library", version.ref = "agp" }
