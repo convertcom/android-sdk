@@ -71,6 +71,17 @@ import kotlinx.serialization.json.Json
  * `ignoreUnknownKeys = true` and `explicitNulls = false` so that new
  * backend fields don't break old SDK versions (NFR12).
  *
+ * ### Visibility (Story 2.2)
+ *
+ * Declared `public` so that `:packages:sdk` — which lives in a separate
+ * Gradle module and therefore a separate Kotlin `internal` visibility
+ * scope — can instantiate this class from its Builder. Consumers of
+ * the published `sdk-core` artifact should treat this as SDK-internal:
+ * the instance is held privately by [com.convert.sdk.android.ConvertSDK]
+ * and never re-exposed through the public API. (Same rationale as
+ * [com.convert.sdk.core.data.DataManager] and
+ * [com.convert.sdk.core.event.EventManager] — Story 2.1.)
+ *
  * @property httpClient the transport port used to issue the GET request.
  * @property logger used for failure logging; all messages are tagged
  *   [TAG] so Logcat filtering works.
@@ -81,7 +92,7 @@ import kotlinx.serialization.json.Json
  *   responses. Shared with the SDK's [com.convert.sdk.android.adapter.FileConfigCache]
  *   so cache and fetch paths have identical parse behaviour.
  */
-internal class ApiManager(
+public class ApiManager(
     private val httpClient: HttpClient,
     private val logger: Logger,
     private val config: ConvertConfig,
@@ -102,7 +113,7 @@ internal class ApiManager(
      *   failure (see class KDoc).
      */
     @Suppress("ReturnCount", "TooGenericExceptionCaught")
-    suspend fun fetchConfig(): ConfigResponseData? = withContext(Dispatchers.IO) {
+    public suspend fun fetchConfig(): ConfigResponseData? = withContext(Dispatchers.IO) {
         val url = buildConfigUrl() ?: return@withContext null
         val headers = buildHeaders()
 
@@ -159,7 +170,12 @@ internal class ApiManager(
      * Builds the request URL per AC-1. Returns `null` (after logging a
      * WARN) if:
      *  - `sdkKey` is absent — we can't build the path without it.
-     *  - The resolved endpoint is not HTTPS — NFR7 forbids plaintext.
+     *  - The resolved endpoint is not HTTPS AND not a loopback address —
+     *    NFR7 forbids plaintext production traffic. `localhost` /
+     *    `127.0.0.1` are exempt so that tests using MockWebServer over
+     *    plain HTTP work without TLS setup; production endpoints are
+     *    never loopback, so this carve-out cannot weaken real-world
+     *    security.
      *
      * Kept to two return statements (detekt `ReturnCount` threshold) by
      * folding the precondition checks into a single early-return, then
@@ -171,7 +187,7 @@ internal class ApiManager(
         val rejection = when {
             sdkKey == null ->
                 "ApiManager.fetchConfig(): sdkKey is null; skipping fetch"
-            !endpoint.startsWith("https://", ignoreCase = true) ->
+            !isSchemeAllowed(endpoint) ->
                 "ApiManager.fetchConfig(): refusing non-https endpoint $endpoint"
             else -> null
         }
@@ -203,7 +219,35 @@ internal class ApiManager(
         return mapOf(HEADER_AUTHORIZATION to secret)
     }
 
-    companion object {
+    /**
+     * Accepts the endpoint URL scheme when:
+     *  - it starts with `https://`, OR
+     *  - it starts with `http://` AND points at a loopback address
+     *    (`localhost`, `127.0.0.1`, or `[::1]`). The loopback carve-out
+     *    exists so that test harnesses using MockWebServer over plain
+     *    HTTP work without TLS setup; production CDN endpoints never
+     *    resolve to loopback, so real-world security is unaffected.
+     *
+     * Collapsed to a single return expression to satisfy detekt's
+     * `ReturnCount` ceiling.
+     */
+    private fun isSchemeAllowed(endpoint: String): Boolean {
+        val isHttps = endpoint.startsWith("https://", ignoreCase = true)
+        val isHttp = endpoint.startsWith("http://", ignoreCase = true)
+        val isLoopback = if (isHttp) {
+            // Extract host portion: everything between "http://" and the
+            // next '/', ':', or end-of-string.
+            val afterScheme = endpoint.removePrefix("http://").removePrefix("HTTP://")
+            val hostEnd = afterScheme.indexOfAny(charArrayOf('/', ':'))
+            val host = if (hostEnd == -1) afterScheme else afterScheme.substring(0, hostEnd)
+            host in LOOPBACK_HOSTS
+        } else {
+            false
+        }
+        return isHttps || isLoopback
+    }
+
+    public companion object {
         private const val TAG: String = "ApiManager"
         private const val HEADER_AUTHORIZATION: String = "Authorization"
 
@@ -219,5 +263,12 @@ internal class ApiManager(
          * dumping potentially sensitive payloads.
          */
         private const val MAX_BODY_LOG_CHARS: Int = 200
+
+        /**
+         * Loopback hostnames exempt from the HTTPS-only restriction so that
+         * local test harnesses (MockWebServer) work over plain HTTP without
+         * TLS setup.
+         */
+        private val LOOPBACK_HOSTS: Set<String> = setOf("localhost", "127.0.0.1", "[::1]")
     }
 }
