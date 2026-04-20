@@ -68,6 +68,7 @@ dependencies {
     // android.content.Context, SharedPreferences. Required by Story 2.1
     // AC-10 tests (AndroidLoggerTest, SharedPrefsDataStoreTest, ConvertSDKTest).
     testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
     testImplementation(libs.okhttp.mockwebserver)
     // Gradle 9+ needs the launcher wired explicitly; the junit-jupiter aggregator
     // no longer brings it in transitively. Without it, `gradle test` fails with
