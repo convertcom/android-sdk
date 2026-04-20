@@ -1,0 +1,108 @@
+name: Release
+
+# Two-workflow pattern (CI → workflow_run → Release) — mirrors the PHP SDK
+# release pipeline. This workflow fires ONLY after the `CI` workflow completes
+# on a `push` to `main`, which guarantees:
+#   - Every artifact published to Maven Central passed lint + tests + coverage.
+#   - Pull request events do NOT trigger a release (CI runs on PRs too, but
+#     the `workflow_run.event == 'push'` guard filters those out).
+#   - Fork PRs do NOT trigger a release — fork CI runs on `pull_request`, not
+#     `push`, so the guard protects the signing + Sonatype secrets from ever
+#     being evaluated in a fork-controlled context (see RELEASE.md).
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: [main]
+
+# `contents: write` is required so semantic-release can push the release
+# commit (CHANGELOG + libs.versions.toml) and the `v${version}` tag.
+# `packages: write` covers future use of GitHub Packages if ever added
+# alongside Maven Central; harmless today and cheaper than adding it later.
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    name: Semantic Release
+    runs-on: ubuntu-latest
+    # Double guard — semantic-release costs real CI minutes (Gradle warm-up
+    # + artifact signing + Maven upload). Fire only when CI actually passed
+    # AND the triggering event was a push to main.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    steps:
+      # `fetch-depth: 0` — semantic-release analyses every commit since the
+      # previous tag to decide the next version. A shallow clone hides
+      # history and either skips the release or misreports the bump.
+      #
+      # `persist-credentials: true` + `token: ${{ secrets.GITHUB_TOKEN }}`
+      # leaves the default GITHUB_TOKEN in the git remote config so the
+      # @semantic-release/git plugin can push the release commit and tag
+      # without a separate authentication step.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Defensive — matches the CI workflow. Self-hosted runners
+      # occasionally strip the executable bit on ./gradlew.
+      - name: Ensure gradlew is executable
+        run: chmod +x ./gradlew
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'yarn'
+
+      # `--immutable` is the yarn v4 equivalent of `yarn install --frozen-lockfile`.
+      # It fails the job if yarn.lock would need an update, which guarantees
+      # CI always installs the exact tree the developer committed.
+      - name: Install release tooling
+        run: yarn install --immutable
+
+      # All five Maven Central + GPG secrets are passed through as env vars.
+      # The `ORG_GRADLE_PROJECT_*` prefix turns them into Gradle project
+      # properties at JVM startup — the vanniktech plugin reads the
+      # `signingInMemoryKey*` properties from Gradle properties, not env
+      # vars directly.
+      #
+      # MAVEN_CENTRAL_USERNAME / MAVEN_CENTRAL_PASSWORD — the Central Portal
+      # user-token pair (generated at central.sonatype.com, see RELEASE.md).
+      #
+      # ORG_GRADLE_PROJECT_signingInMemoryKey — full ASCII-armored GPG
+      # private key. Multi-line secrets are preserved verbatim by GitHub's
+      # secret UI so the header/footer lines stay intact.
+      #
+      # ORG_GRADLE_PROJECT_signingInMemoryKeyPassword — passphrase for the
+      # above key. Required; the plugin's signing step fails silently if
+      # the passphrase is wrong, which is why RELEASE.md mandates a local
+      # `publishToMavenLocal` rehearsal before rotating the key in CI.
+      #
+      # ORG_GRADLE_PROJECT_signingInMemoryKeyId — optional short key ID
+      # (last 8 hex chars). The plugin derives it from the key itself if
+      # omitted, but supplying it pins signature metadata to a specific
+      # subkey when the GPG primary has multiple signing subkeys.
+      #
+      # GITHUB_TOKEN — required by semantic-release's GitHub plugin
+      # transitively (via release-notes + git), even though we don't
+      # configure a GitHub release. Always explicit to avoid surprises.
+      - name: Run semantic-release
+        run: yarn release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_PRIVATE_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_KEY_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.GPG_KEY_ID }}

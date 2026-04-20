@@ -1,4 +1,14 @@
 [versions]
+# SDK release version — single source of truth for both published artifacts
+# (`com.convert:sdk-android` and `com.convert:sdk-core`). Bumped automatically
+# by semantic-release during a release build (see `release.config.mjs` and
+# `scripts/bump-version.mjs`). Do NOT edit manually on main; bump via a
+# conventional `feat:` / `fix:` commit and let the release pipeline update it.
+# The `0.0.0` placeholder here is intentional: the first release on main will
+# produce `v1.0.0` via semantic-release's no-prior-tag default, after which
+# this value is always owned by the pipeline.
+sdk-version = "0.0.0"
+
 # Build tools — pinned by Architecture §"Verified Technology Versions (2026-03-23)"
 kotlin = "2.3.20"
 agp = "9.1.0"

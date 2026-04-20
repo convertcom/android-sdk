@@ -7,3 +7,10 @@ local.properties
 .DS_Store
 /captures/
 /out/
+# Node-based release tooling (semantic-release lives at repo root).
+# yarn.lock + .yarnrc.yml ARE committed so CI can run `yarn install --immutable`.
+# Everything else under .yarn/ is local install cache; .pnp.* is unused here
+# (we pin nodeLinker: node-modules), but ignoring the prefix is cheap insurance.
+node_modules/
+.pnp.*
+.yarn/

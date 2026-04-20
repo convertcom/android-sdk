@@ -1,0 +1,18 @@
+{
+  "name": "convertcom-android-sdk-release-tooling",
+  "private": true,
+  "type": "module",
+  "description": "Release automation tooling for the Convert Android SDK (semantic-release + Gradle Maven Central publish).",
+  "scripts": {
+    "release": "semantic-release",
+    "release:dry-run": "semantic-release --dry-run --no-ci --branches=$(git rev-parse --abbrev-ref HEAD)"
+  },
+  "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/exec": "^7.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/release-notes-generator": "^14.0.3",
+    "conventional-changelog-conventionalcommits": "^8.0.0",
+    "semantic-release": "^24.2.0"
+  }
+}
