@@ -60,7 +60,37 @@ public data class ConvertConfig(
     val rules: RulesConfig? = null,
     val logger: LoggerConfig? = null,
     val network: NetworkConfig? = null,
-)
+) {
+    /**
+     * Redacts [sdkKeySecret] from the auto-generated `toString()` output.
+     *
+     * Story 2.1 AC-5 / NFR6: the SDK secret must never appear in logs,
+     * stack traces, or any rendered representation of this config.
+     * Kotlin's data-class-synthesised toString dumps every field verbatim,
+     * so we override it to substitute `[REDACTED]` whenever the secret
+     * is non-null. All other fields remain visible so operational logs
+     * are still useful.
+     */
+    override fun toString(): String = buildString {
+        append("ConvertConfig(")
+        append("sdkKey=").append(sdkKey)
+        if (sdkKeySecret != null) {
+            append(", sdkKeySecret=[REDACTED]")
+        } else {
+            append(", sdkKeySecret=null")
+        }
+        append(", data=").append(data)
+        append(", environment=").append(environment)
+        append(", api=").append(api)
+        append(", bucketing=").append(bucketing)
+        append(", dataRefreshInterval=").append(dataRefreshInterval)
+        append(", events=").append(events)
+        append(", rules=").append(rules)
+        append(", logger=").append(logger)
+        append(", network=").append(network)
+        append(")")
+    }
+}
 
 /**
  * Endpoint overrides for the HTTP-facing SDK services.
