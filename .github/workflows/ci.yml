@@ -147,6 +147,9 @@ jobs:
           ls -la packages/core/build/reports/kover/report.xml packages/sdk/build/reports/kover/report.xml
 
       - name: Upload coverage reports
+        # Upload even on failure — when `koverVerify` trips a threshold, the
+        # reports are exactly what PR reviewers need to diagnose the gap.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-reports
@@ -154,3 +157,6 @@ jobs:
             packages/core/build/reports/kover/report.xml
             packages/sdk/build/reports/kover/report.xml
           retention-days: 30
+          # The XML files may legitimately be absent if an earlier step failed
+          # *before* Kover produced them. Don't fail the upload on missing files.
+          if-no-files-found: warn
