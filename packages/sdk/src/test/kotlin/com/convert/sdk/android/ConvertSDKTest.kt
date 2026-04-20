@@ -105,7 +105,7 @@ internal class ConvertSDKTest {
 
         // The held appContext is the Application, not the Activity.
         assertTrue(
-            "expected Application context, got ${sdk.appContext::class.java.name}",
+            "expected Application context, got ${sdk.appContext?.javaClass?.name}",
             sdk.appContext is Application,
         )
     }
@@ -194,9 +194,18 @@ internal class ConvertSDKTest {
             .data(ConfigResponseData())
             .build()
 
-        sdk.onReady { order.add(1); done.countDown() }
-        sdk.onReady { order.add(2); done.countDown() }
-        sdk.onReady { order.add(3); done.countDown() }
+        sdk.onReady {
+            order.add(1)
+            done.countDown()
+        }
+        sdk.onReady {
+            order.add(2)
+            done.countDown()
+        }
+        sdk.onReady {
+            order.add(3)
+            done.countDown()
+        }
 
         assertTrue("all three onReady should fire", done.await(2, TimeUnit.SECONDS))
         assertEquals(listOf(1, 2, 3), order.toList())
