@@ -6,10 +6,14 @@
 package com.convert.sdk.android
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.convert.sdk.android.adapter.AndroidLogger
 import com.convert.sdk.android.adapter.FileConfigCache
 import com.convert.sdk.android.adapter.OkHttpClientAdapter
 import com.convert.sdk.android.adapter.SharedPrefsDataStore
+import com.convert.sdk.android.lifecycle.SdkLifecycleObserver
 import com.convert.sdk.core.api.ApiManager
 import com.convert.sdk.core.config.ApiConfig
 import com.convert.sdk.core.config.ApiEndpoint
@@ -32,11 +36,15 @@ import com.convert.sdk.core.port.Logger
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Public SDK entry point.
@@ -95,6 +103,7 @@ import java.util.concurrent.ConcurrentHashMap
  * @property scope the SDK-scoped [CoroutineScope]; all internal async
  *   work launches on this scope so the SupervisorJob isolates failures.
  */
+@Suppress("LongParameterList")
 public class ConvertSDK internal constructor(
     internal val config: ConvertConfig,
     internal val appContext: Context? = null,
@@ -103,6 +112,9 @@ public class ConvertSDK internal constructor(
     internal val httpClient: HttpClient? = null,
     internal val eventManager: EventManager = EventManager(logger = Logger.NoOp),
     initialDataManager: DataManager? = null,
+    internal val apiManager: ApiManager? = null,
+    internal val fileConfigCache: FileConfigCache? = null,
+    scope: CoroutineScope? = null,
 ) {
 
     /**
@@ -130,8 +142,14 @@ public class ConvertSDK internal constructor(
      * SDK launches. `SupervisorJob` keeps sibling coroutines alive when
      * one fails; the exception handler routes otherwise-uncaught throws
      * through [logger] instead of letting them crash the JVM.
+     *
+     * Story 2.3 allows a test-supplied [scope] override (typically a
+     * `TestScope` backed by a `TestCoroutineScheduler`) so refresh-loop
+     * tests can drive virtual time via `advanceTimeBy`. Production always
+     * leaves [scope] at `null` and receives the real
+     * `SupervisorJob + Dispatchers.Default` scope.
      */
-    internal val scope: CoroutineScope = CoroutineScope(
+    internal val scope: CoroutineScope = scope ?: CoroutineScope(
         SupervisorJob() +
             Dispatchers.Default +
             CoroutineExceptionHandler { _, throwable ->
@@ -142,6 +160,15 @@ public class ConvertSDK internal constructor(
                 )
             },
     )
+
+    /**
+     * Holds the currently-running refresh coroutine, or `null` when no loop
+     * is active. [AtomicReference.compareAndSet] could be used for a
+     * stronger double-start guard; AC-9 only requires that `isActive`
+     * checks on the held job stop a second start from spinning up a
+     * parallel loop.
+     */
+    private val refreshJob: AtomicReference<Job?> = AtomicReference(null)
 
     /**
      * Off-lookup table: an [EventCallback] registered via [on] is wrapped
@@ -165,6 +192,163 @@ public class ConvertSDK internal constructor(
      * equality — Gotcha 4).
      */
     private data class EventCallbackKey(val event: String, val callback: EventCallback)
+
+    init {
+        // Story 2.3 AC-4: the refresh loop must not poll until the SDK has a
+        // usable config in memory (hasData == true). Two states to cover:
+        //
+        //  1. hasData is already true at construction time — the Builder's
+        //     direct-data path seeds DataManager on [scope] before this init
+        //     block runs under the test/tight-loop race; and on resume the
+        //     persisted data seed also runs synchronously. In that case we
+        //     register the lifecycle observer immediately so a subsequent
+        //     ON_START starts the loop.
+        //  2. hasData is false — subscribe to READY; once it fires,
+        //     register the observer (still on the main thread) so the
+        //     current app foreground state can kick the loop.
+        //
+        // Either way, observer registration happens exactly once. The
+        // observer then routes ON_START / ON_STOP to startRefreshLoop /
+        // stopRefreshLoop, which themselves guard against the "no data
+        // yet" case — belt-and-suspenders so the contract survives an
+        // out-of-order ON_START fired during the initial READY burst.
+        if (appContext != null && apiManager != null) {
+            registerLifecycleObserverWhenReady()
+        }
+    }
+
+    /**
+     * Subscribes to READY (if needed) and posts the lifecycle-observer
+     * registration onto the main thread.
+     *
+     * `ProcessLifecycleOwner.get().lifecycle.addObserver(...)` is
+     * main-thread-only; the SDK is typically constructed off-main
+     * (Builder is safe to call from any thread) so we bridge via
+     * `Handler(Looper.getMainLooper()).post { ... }` (Gotcha 1).
+     *
+     * When READY has already been delivered by the time this runs, we
+     * skip the subscription and register immediately — `DataManager.hasData`
+     * is the monotonic "first config loaded" flag.
+     */
+    private fun registerLifecycleObserverWhenReady() {
+        if (dataManager.hasData()) {
+            postObserverRegistration()
+            return
+        }
+        // One-shot: register once, then self-unsubscribe. Using `val` +
+        // explicit off() lets us keep `lateinit`-free state.
+        val handler = object : (Map<String, Any?>) -> Unit {
+            override fun invoke(p1: Map<String, Any?>) {
+                eventManager.off(SystemEvents.READY, this)
+                postObserverRegistration()
+            }
+        }
+        eventManager.on(SystemEvents.READY, handler)
+    }
+
+    /**
+     * Posts an [SdkLifecycleObserver] install onto the main-thread handler.
+     * The observer routes ON_START / ON_STOP to [startRefreshLoop] and
+     * [stopRefreshLoop] respectively.
+     */
+    private fun postObserverRegistration() {
+        Handler(Looper.getMainLooper()).post {
+            val observer = SdkLifecycleObserver(
+                onStart = { startRefreshLoop() },
+                onStop = { stopRefreshLoop() },
+            )
+            ProcessLifecycleOwner.get().lifecycle.addObserver(observer)
+        }
+    }
+
+    /**
+     * Starts the foreground config-refresh loop if one is not already
+     * running (AC-2, AC-9). Every [ConvertConfig.dataRefreshInterval]
+     * milliseconds the loop:
+     *
+     *  1. Calls [ApiManager.fetchConfig]. On success:
+     *     - Updates [dataManager] via `setData(...)`
+     *     - Fires [SystemEvents.CONFIG_UPDATED] with a `timestamp` payload
+     *     - Spawns a fire-and-forget cache write
+     *  2. On failure (null return), logs no additional WARN here —
+     *     [ApiManager] already logged the transport/parse failure; the
+     *     loop must continue (AC-6) so a transient blip doesn't stop
+     *     refresh forever.
+     *
+     * If [apiManager] is `null` (pure-JVM smoke-test path), the method is
+     * a no-op — there's no fetch machinery to spin.
+     *
+     * The loop body exits cleanly when [refreshJob] is cancelled
+     * (`while (isActive)` becomes false; cancellable `delay` returns
+     * immediately).
+     *
+     * `internal` so tests can drive the state machine directly (also
+     * exposed as [startRefreshLoopForTest] with a more emphatic name
+     * for test readability).
+     */
+    internal fun startRefreshLoop() {
+        val api = apiManager
+        val existing = refreshJob.get()
+        // Three guards folded into one boolean so the function stays within
+        // detekt's ReturnCount ceiling: missing ApiManager (pure-JVM test
+        // path), a loop already active (AC-9 idempotence), or no seeded
+        // config yet (AC-4 pre-READY gate).
+        val canStart = api != null &&
+            existing?.isActive != true &&
+            dataManager.hasData()
+        if (!canStart) return
+
+        // After the canStart check, api is guaranteed non-null (smart-cast
+        // survives the fold); capture it into a local so the type is
+        // visible inside the scope.launch block below.
+        val checkedApi: ApiManager = api
+
+        val job = scope.launch {
+            while (isActive) {
+                delay(config.dataRefreshInterval)
+                val fetched = checkedApi.fetchConfig()
+                if (fetched != null) {
+                    dataManager.setData(fetched)
+                    eventManager.fire(
+                        event = SystemEvents.CONFIG_UPDATED,
+                        data = mapOf("timestamp" to System.currentTimeMillis()),
+                    )
+                    // Fire-and-forget cache refresh. Failures inside write()
+                    // are absorbed by FileConfigCache's own try/catch.
+                    fileConfigCache?.let { cache ->
+                        scope.launch { cache.write(fetched) }
+                    }
+                }
+            }
+        }
+        refreshJob.set(job)
+    }
+
+    /**
+     * Cancels the running refresh loop (if any) and clears the slot
+     * (AC-3). Calling [stopRefreshLoop] without a running loop is a no-op.
+     */
+    internal fun stopRefreshLoop() {
+        refreshJob.getAndSet(null)?.cancel()
+    }
+
+    /**
+     * Test-only alias for [startRefreshLoop]. Exists so the refresh
+     * tests read clearly and so the production-path callers
+     * ([postObserverRegistration]) can keep the shorter name.
+     *
+     * Do NOT call this from production code.
+     */
+    internal fun startRefreshLoopForTest() {
+        startRefreshLoop()
+    }
+
+    /**
+     * Test-only alias for [stopRefreshLoop]. See [startRefreshLoopForTest].
+     */
+    internal fun stopRefreshLoopForTest() {
+        stopRefreshLoop()
+    }
 
     /**
      * Runtime tracking-enabled flag. Seeded from
@@ -590,20 +774,16 @@ public class ConvertSDK internal constructor(
             val resolvedLogLevel = assembled.logger?.logLevel ?: ConfigDefaults.DEFAULT_LOG_LEVEL
             val logger: Logger = AndroidLogger(level = resolvedLogLevel)
 
-            // Validation: warn if ambiguous, but never throw.
-            if (sdkKey != null && data != null) {
-                logger.warn(
-                    message = "Builder: both sdkKey and data set — preferring data. " +
-                        "data() is the stronger override.",
-                    tag = "ConvertSDK.Builder",
-                )
-            } else if (sdkKey == null && data == null) {
-                logger.warn(
-                    message = "Builder: neither sdkKey nor data set — SDK calls will be no-ops " +
-                        "until Story 2.2 wires config fetch or until data() is supplied.",
-                    tag = "ConvertSDK.Builder",
-                )
-            }
+            // Validation: warn if ambiguous, but never throw. Extracted
+            // helper keeps build() under detekt's LongMethod ceiling;
+            // lives at file scope to keep Builder's function count under
+            // detekt's TooManyFunctions threshold (same rationale as
+            // launchInitialDataSeed).
+            warnIfBuilderStateAmbiguous(
+                logger = logger,
+                sdkKey = sdkKey,
+                hasPrefetchedData = data != null,
+            )
 
             // 2. DataStore — wraps the process-private SharedPreferences file.
             val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -662,6 +842,14 @@ public class ConvertSDK internal constructor(
                 httpClient = httpClient,
                 eventManager = eventManager,
                 initialDataManager = dataManager,
+                // Story 2.3: hand the already-constructed ApiManager and
+                // FileConfigCache to the SDK so its init block can wire a
+                // refresh loop on top of the same collaborators the
+                // initial seed uses. Passing them in (rather than
+                // re-instantiating inside ConvertSDK) keeps the dependency
+                // graph assembly in one place — Builder.build().
+                apiManager = apiManager,
+                fileConfigCache = fileConfigCache,
             )
 
             // Direct-data mode (AC-3) or sdk-key mode (AC-5/6/7) — delegate
@@ -856,3 +1044,36 @@ private fun launchInitialDataSeed(
 
 /** Log tag for [launchInitialDataSeed] messages. */
 private const val INIT_SEED_TAG: String = "ConvertSDK"
+
+/**
+ * Emits a WARN through [logger] if the Builder's state is ambiguous:
+ * both `sdkKey` and `hasPrefetchedData` (prefer `data` — it's the
+ * stronger override since it bypasses the network fetch entirely), or
+ * neither set (no-op SDK — downstream calls will return null).
+ *
+ * Extracted out of [ConvertSDK.Builder.build] and kept at file scope
+ * to keep the Builder under detekt's `TooManyFunctions` ceiling
+ * (same rationale as [launchInitialDataSeed]). Never throws.
+ */
+private fun warnIfBuilderStateAmbiguous(
+    logger: Logger,
+    sdkKey: String?,
+    hasPrefetchedData: Boolean,
+) {
+    if (sdkKey != null && hasPrefetchedData) {
+        logger.warn(
+            message = "Builder: both sdkKey and data set — preferring data. " +
+                "data() is the stronger override.",
+            tag = BUILDER_TAG,
+        )
+    } else if (sdkKey == null && !hasPrefetchedData) {
+        logger.warn(
+            message = "Builder: neither sdkKey nor data set — SDK calls will be no-ops " +
+                "until Story 2.2 wires config fetch or until data() is supplied.",
+            tag = BUILDER_TAG,
+        )
+    }
+}
+
+/** Log tag used by file-scope Builder helpers that need a distinct tag. */
+private const val BUILDER_TAG: String = "ConvertSDK.Builder"
