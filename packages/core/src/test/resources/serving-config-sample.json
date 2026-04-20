@@ -1,0 +1,23 @@
+{
+  "account_id": "12345",
+  "project": {
+    "id": "67890",
+    "name": "Test Project",
+    "type": "fullstack",
+    "utc_offset": -480,
+    "domains": [
+      {
+        "tld": "example.com"
+      }
+    ],
+    "global_javascript": "console.log('global');"
+  },
+  "goals": [],
+  "locations": [],
+  "audiences": [],
+  "segments": [],
+  "experiences": [],
+  "archived_experiences": [],
+  "features": [],
+  "is_debug": true
+}
