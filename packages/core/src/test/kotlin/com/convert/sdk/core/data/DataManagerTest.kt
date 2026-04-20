@@ -8,6 +8,9 @@ package com.convert.sdk.core.data
 import com.convert.sdk.core.event.EventManager
 import com.convert.sdk.core.event.SystemEvents
 import com.convert.sdk.core.model.generated.ConfigResponseData
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -16,7 +19,17 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * Tests for [DataManager]. Story 2.1 AC-7 (stub) and AC-9.
+ * Tests for [DataManager]. Story 2.1 AC-7 (stub) / AC-9 — carried
+ * forward through Story 2.4's EventManager rewrite.
+ *
+ * ### Story 2.4 note — scope-dispatched EventManager
+ *
+ * As of Story 2.4, [EventManager.fire] dispatches subscribers on an
+ * injected [CoroutineScope] rather than inline. Tests that assert on
+ * a callback's side effect must drive the scheduler — we pass a
+ * `runTest`-provided [TestScope] into the [EventManager] and
+ * `advanceUntilIdle()` after each fire so the dispatched coroutine
+ * completes before we assert.
  *
  * Verifies:
  * - Fresh manager has no data.
@@ -24,6 +37,7 @@ import org.junit.jupiter.api.Test
  * - hasData flips from false to true after setData.
  * - Re-setData overwrites the previous config and re-fires READY.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 internal class DataManagerTest {
 
     @Test
@@ -47,21 +61,22 @@ internal class DataManagerTest {
     }
 
     @Test
-    fun `setData fires READY event with environment payload`() {
-        val eventManager = EventManager()
+    fun `setData fires READY event with environment payload`() = runTest {
+        val eventManager = EventManager(scope = this)
         val manager = DataManager(eventManager, environment = "prod")
         var received: Map<String, Any?>? = null
         eventManager.on(SystemEvents.READY) { received = it }
 
         manager.setData(ConfigResponseData())
+        advanceUntilIdle()
 
         assertNotNull(received)
         assertEquals("prod", received?.get("environment"))
     }
 
     @Test
-    fun `second setData overwrites and re-fires READY`() {
-        val eventManager = EventManager()
+    fun `second setData overwrites and re-fires READY`() = runTest {
+        val eventManager = EventManager(scope = this)
         val manager = DataManager(eventManager, environment = "staging")
         var readyFires = 0
         eventManager.on(SystemEvents.READY) { readyFires++ }
@@ -70,7 +85,9 @@ internal class DataManagerTest {
         val second = ConfigResponseData()
 
         manager.setData(first)
+        advanceUntilIdle()
         manager.setData(second)
+        advanceUntilIdle()
 
         assertEquals(second, manager.data)
         assertEquals(2, readyFires)
