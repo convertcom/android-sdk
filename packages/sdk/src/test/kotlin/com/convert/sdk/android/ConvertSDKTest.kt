@@ -287,16 +287,16 @@ internal class ConvertSDKTest {
         var fired = 0
         val cb = EventCallback { fired++ }
 
-        val token: SubscriptionToken = sdk.on("custom-event", cb)
+        val token: SubscriptionToken = sdk.on(CUSTOM_EVENT, cb)
         assertNotNull(token)
 
         // Token-based off returns ConvertSDK (fluent); no throw on a
         // never-registered token either.
-        assertSame(sdk, sdk.off("custom-event", token))
+        assertSame(sdk, sdk.off(CUSTOM_EVENT, token))
 
         // Callback-identity off still works and returns the SDK (fluent).
-        sdk.on("custom-event", cb)
-        assertSame(sdk, sdk.off("custom-event", cb))
+        sdk.on(CUSTOM_EVENT, cb)
+        assertSame(sdk, sdk.off(CUSTOM_EVENT, cb))
     }
 
     @Test
