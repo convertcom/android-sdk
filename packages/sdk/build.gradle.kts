@@ -24,12 +24,21 @@ android {
         minSdk = 24
         consumerProguardFiles("consumer-rules.pro")
     }
+
     // No compileOptions / kotlinOptions.jvmTarget here — JDK level is set by the
     // explicit kotlin { jvmToolchain(17) } block below. Per the Kotlin Gradle plugin
     // docs (https://kotlinlang.org/docs/gradle-configure-project.html#gradle-java-toolchains-support),
     // jvmToolchain(17) automatically derives jvmTarget AND sourceCompatibility/
     // targetCompatibility = VERSION_17 for AGP 8+; any duplicate declaration produces
     // a Gradle warning and must be omitted.
+
+    // Robolectric (Story 2.1) reads `testOptions.unitTests.isIncludeAndroidResources`
+    // to hand the shadow android.content.Context a real resources/assets surface.
+    // Without this, ShadowLog works but any test that materialises resources
+    // via getSystemService/getSharedPreferences hits a NotFoundException.
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 // Vendor is pinned to Eclipse Adoptium (Temurin) so Gradle's toolchain resolver does NOT
@@ -53,10 +62,21 @@ dependencies {
     implementation(libs.androidx.startup.runtime)
 
     testImplementation(libs.junit.jupiter)
+    testImplementation(libs.mockk)
+    testImplementation(libs.kotlinx.coroutines.test)
+    // Robolectric 4.16 — provides JVM-side shadows for android.util.Log,
+    // android.content.Context, SharedPreferences. Required by Story 2.1
+    // AC-10 tests (AndroidLoggerTest, SharedPrefsDataStoreTest, ConvertSDKTest).
+    testImplementation(libs.robolectric)
+    testImplementation(libs.okhttp.mockwebserver)
     // Gradle 9+ needs the launcher wired explicitly; the junit-jupiter aggregator
     // no longer brings it in transitively. Without it, `gradle test` fails with
     // "Failed to load JUnit Platform".
     testRuntimeOnly(libs.junit.platform.launcher)
+    // Robolectric itself ships as a JUnit 4 runner. JUnit 5 loads it via
+    // the vintage engine. Without this, @RunWith(RobolectricTestRunner::class)
+    // tests silently don't execute.
+    testRuntimeOnly(libs.junit.vintage.engine)
 }
 
 // Maven Central publishing (Story 1.4). vanniktech 0.36.0 removed the

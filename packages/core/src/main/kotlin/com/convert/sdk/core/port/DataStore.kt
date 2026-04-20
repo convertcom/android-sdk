@@ -10,11 +10,15 @@ package com.convert.sdk.core.port
  *
  * Operations are **synchronous** because the SDK needs to read the visitor
  * ID on cold start without blocking initialization on a coroutine dispatch.
- * On Android the concrete adapter is `SharedPrefsDataStore` (Story 5.1),
+ * On Android the concrete adapter is `SharedPrefsDataStore` (Story 2.1),
  * whose reads are synchronous in practice. Pure-JVM test adapters should
  * back this with a `ConcurrentHashMap`.
+ *
+ * Declared `public` so that `:packages:sdk` adapters — which live in a
+ * separate Gradle module — can implement this interface. Application
+ * code should not implement this port directly (Story 2.1).
  */
-internal interface DataStore {
+public interface DataStore {
 
     /**
      * Reads the value stored under [key].
@@ -22,7 +26,7 @@ internal interface DataStore {
      * @param key the lookup key.
      * @return the stored value, or `null` if the key is absent.
      */
-    fun get(key: String): String?
+    public fun get(key: String): String?
 
     /**
      * Writes [value] under [key], overwriting any previous value.
@@ -30,18 +34,18 @@ internal interface DataStore {
      * @param key the lookup key.
      * @param value the value to persist.
      */
-    fun set(key: String, value: String)
+    public fun set(key: String, value: String)
 
     /**
      * Removes the entry stored under [key]. No-op if the key is absent.
      *
      * @param key the lookup key.
      */
-    fun remove(key: String)
+    public fun remove(key: String)
 
     /**
      * Clears all entries owned by this store. Callers should use this only
      * for reset flows (e.g. privacy opt-out).
      */
-    fun clear()
+    public fun clear()
 }

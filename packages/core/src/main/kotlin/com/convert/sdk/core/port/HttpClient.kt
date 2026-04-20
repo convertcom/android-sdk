@@ -9,14 +9,18 @@ package com.convert.sdk.core.port
  * Transport abstraction used by the core module to issue HTTP requests.
  *
  * The core module does not depend on any specific HTTP stack; a concrete
- * adapter (see `OkHttpClientAdapter` in the SDK module, Story 2.2) wires
+ * adapter (see `OkHttpClientAdapter` in the SDK module, Story 2.1) wires
  * the platform HTTP library into this port.
  *
  * Implementations must be safe to call from any coroutine context. Calls
  * perform real I/O — they should be dispatched on [kotlinx.coroutines.Dispatchers.IO]
  * by the caller's coroutine scope.
+ *
+ * Declared `public` so that `:packages:sdk` adapters — which live in a
+ * separate Gradle module — can implement this interface. Application
+ * code should not implement this port directly (Story 2.1).
  */
-internal interface HttpClient {
+public interface HttpClient {
 
     /**
      * Issues an HTTP GET request against the given URL.
@@ -26,7 +30,7 @@ internal interface HttpClient {
      *   if no additional headers are needed.
      * @return the response wrapped in [HttpResponse].
      */
-    suspend fun get(url: String, headers: Map<String, String> = emptyMap()): HttpResponse
+    public suspend fun get(url: String, headers: Map<String, String> = emptyMap()): HttpResponse
 
     /**
      * Issues an HTTP POST request against the given URL with a string body.
@@ -37,7 +41,7 @@ internal interface HttpClient {
      *   if no additional headers are needed.
      * @return the response wrapped in [HttpResponse].
      */
-    suspend fun post(
+    public suspend fun post(
         url: String,
         body: String,
         headers: Map<String, String> = emptyMap(),
@@ -54,7 +58,7 @@ internal interface HttpClient {
      * @property body response body as a UTF-8 string; empty string if no body.
      * @property headers response headers, lower-cased by convention.
      */
-    data class HttpResponse(
+    public data class HttpResponse(
         val statusCode: Int,
         val body: String,
         val headers: Map<String, String>,
