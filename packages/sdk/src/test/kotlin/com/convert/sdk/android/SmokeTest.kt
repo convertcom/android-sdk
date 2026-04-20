@@ -104,7 +104,14 @@ internal class SmokeTest {
         val callback = EventCallback { /* no-op */ }
 
         assertSame(sdk, sdk.onReady(ready))
-        assertSame(sdk, sdk.on("experienceEvaluated", callback))
+        // Story 2.4 AC-7: on returns a SubscriptionToken (primary
+        // unsubscribe key), not the SDK — the fluent chain applies to
+        // onReady() and off() only.
+        val token = sdk.on("experienceEvaluated", callback)
+        assertNotNull(token)
+        assertSame(sdk, sdk.off("experienceEvaluated", token))
+        // Callback-identity off still fluent.
+        sdk.on("experienceEvaluated", callback)
         assertSame(sdk, sdk.off("experienceEvaluated", callback))
         // Idempotent off — callback already removed, second off is a no-op.
         assertSame(sdk, sdk.off("experienceEvaluated", callback))
