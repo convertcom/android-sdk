@@ -50,6 +50,18 @@ tasks.test {
 
 kover {
     reports {
+        // Exclude auto-generated OpenAPI types (Story 1.5) — they are compiled
+        // sources with no business logic and no tests, so including them in
+        // the coverage denominator would push the percentage below the 85%
+        // threshold without reflecting real project health. The round-trip
+        // serialization test (AC-8) exercises the generated code's runtime
+        // correctness; Kover's line-coverage metric is only meaningful for
+        // hand-written code.
+        filters {
+            excludes {
+                packages("com.convert.sdk.core.model.generated")
+            }
+        }
         verify {
             rule {
                 minBound(85)

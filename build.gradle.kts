@@ -21,6 +21,18 @@ subprojects {
         allRules = false
     }
 
+    // Exclude auto-generated sources (Story 1.5 OpenAPI Kotlin output) from
+    // detekt. Generated files carry the "do not edit" header — style rules
+    // targeting hand-written code (MaxLineLength, naming, etc.) produce
+    // thousands of spurious findings on them. The Android SDK CI lint job
+    // enforces the auto-generated header separately (AC-6).
+    tasks.withType<io.gitlab.arturbosch.detekt.Detekt>().configureEach {
+        exclude("**/generated/**")
+    }
+    tasks.withType<io.gitlab.arturbosch.detekt.DetektCreateBaselineTask>().configureEach {
+        exclude("**/generated/**")
+    }
+
     dependencies {
         add("detektPlugins", "io.gitlab.arturbosch.detekt:detekt-formatting:$detektVersion")
     }

@@ -13,8 +13,8 @@ import com.convert.sdk.core.config.ConvertConfig
 import com.convert.sdk.core.config.EventsConfig
 import com.convert.sdk.core.config.LoggerConfig
 import com.convert.sdk.core.config.NetworkConfig
-import com.convert.sdk.core.model.ConfigResponseData
 import com.convert.sdk.core.model.LogLevel
+import com.convert.sdk.core.model.generated.ConfigResponseData
 import java.util.UUID
 
 /**
