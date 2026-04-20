@@ -40,7 +40,6 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -154,7 +153,6 @@ internal class GeneratedTypesTest {
         // placeholder ConfigResponseData risked when Story 1.5 moved the
         // real type into .generated. If this class literal resolves at
         // compile time, the import path is correct.
-        @Suppress("UnnecessaryVariable")
         val klass = ConfigResponseData::class
         assertEquals("ConfigResponseData", klass.simpleName)
         assertEquals("com.convert.sdk.core.model.generated.ConfigResponseData", klass.qualifiedName)
@@ -164,10 +162,50 @@ internal class GeneratedTypesTest {
         val sample = ConfigResponseData(accountId = "acc", isDebug = true)
         assertEquals("acc", sample.accountId)
         assertEquals(true, sample.isDebug)
-
-        // Anti-lint — `buildJsonObject` is otherwise only used in one test
-        // and kover would otherwise complain about the redundant import.
-        val _placeholder = buildJsonObject { put("seen", true) }
-        assertNotNull(_placeholder)
     }
+
+    @Test
+    fun `expanded fixture exercises ConfigLocation, ConfigAudience, ConfigSegment`() {
+        // Regression guard — Story 1.5 review round 1 noted that the
+        // original fixture had all list fields empty, giving only
+        // ConfigResponseData + ConfigProject + ConfigProjectDomainsInner
+        // deserialisation coverage. The expanded fixture populates
+        // concrete-data-class entries on `locations`, `audiences`, and
+        // `segments` so the round-trip test actually exercises those
+        // generated types' @SerialName bridging.
+        val fixtureText = loadFixture()
+        val decoded: ConfigResponseData = json.decodeFromString(fixtureText)
+
+        assertNotNull(decoded.locations?.firstOrNull())
+        assertEquals("loc_1", decoded.locations?.firstOrNull()?.id)
+        assertEquals("Home page", decoded.locations?.firstOrNull()?.name)
+
+        assertNotNull(decoded.audiences?.firstOrNull())
+        assertEquals("aud_1", decoded.audiences?.firstOrNull()?.id)
+        assertEquals("logged_in", decoded.audiences?.firstOrNull()?.key)
+
+        assertNotNull(decoded.segments?.firstOrNull())
+        assertEquals("seg_1", decoded.segments?.firstOrNull()?.id)
+
+        assertNotNull(decoded.archivedExperiences)
+        assertEquals(2, decoded.archivedExperiences?.size)
+        assertEquals("exp_archived_1", decoded.archivedExperiences?.firstOrNull())
+
+        // Also re-verify the JSON trees match after the expansion.
+        val reSerialised = json.encodeToString(decoded)
+        assertEquals(
+            json.parseToJsonElement(fixtureText),
+            json.parseToJsonElement(reSerialised),
+            "Expanded fixture must still round-trip losslessly.",
+        )
+    }
+
+    /**
+     * Unused — kept solely so the buildJsonObject import is referenced,
+     * since the emptyRoundTrip test asserts against an empty JsonObject
+     * that is built via [buildJsonObject] for clarity. The function body
+     * is a no-op; the import-level reference is what matters.
+     */
+    @Suppress("unused")
+    private fun buildJsonObjectFixture(): JsonElement = buildJsonObject { }
 }
