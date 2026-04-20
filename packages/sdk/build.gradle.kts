@@ -1,3 +1,7 @@
+import com.vanniktech.maven.publish.AndroidSingleVariantLibrary
+import com.vanniktech.maven.publish.JavadocJar
+import com.vanniktech.maven.publish.SourcesJar
+
 plugins {
     alias(libs.plugins.android.library)
     // NOTE: org.jetbrains.kotlin.android is intentionally NOT applied here.
@@ -9,6 +13,7 @@ plugins {
     // accordingly — see architecture.md §Verified-Technology-Versions.
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.kover)
+    alias(libs.plugins.vanniktech.maven.publish)
 }
 
 android {
@@ -52,6 +57,79 @@ dependencies {
     // no longer brings it in transitively. Without it, `gradle test` fails with
     // "Failed to load JUnit Platform".
     testRuntimeOnly(libs.junit.platform.launcher)
+}
+
+// Maven Central publishing (Story 1.4). vanniktech 0.36.0 removed the
+// explicit SonatypeHost parameter — publishToMavenCentral() always targets
+// the new Central Portal (the legacy OSSRH endpoint was retired June 2025).
+mavenPublishing {
+    // Configure the Android library publication: publish only the `release`
+    // variant, build a sources JAR and a stub Javadoc JAR (vanniktech generates
+    // an empty Javadoc JAR since we don't run Dokka — meets the Central
+    // Portal's "sources + javadoc" requirement without needing Dokka wiring).
+    // The (String, Boolean, Boolean) constructor is deprecated in 0.36.0;
+    // the canonical form is (JavadocJar, SourcesJar, variant).
+    configure(
+        AndroidSingleVariantLibrary(
+            javadocJar = JavadocJar.Empty(),
+            sourcesJar = SourcesJar.Sources(),
+            variant = "release",
+        ),
+    )
+
+    coordinates(
+        groupId = "com.convert",
+        artifactId = "sdk-android",
+        version = libs.versions.sdk.version.get(),
+    )
+
+    // Route to the Central Portal. Starts with a validation round-trip; the
+    // actual deployment is finalized manually via the Central Portal UI on
+    // the first publish (until we flip on automaticRelease).
+    publishToMavenCentral()
+
+    // Every artifact uploaded to Maven Central MUST be GPG-signed. The plugin
+    // reads the signing key from ORG_GRADLE_PROJECT_signingInMemoryKey etc.
+    // at CI time (wired in .github/workflows/release.yml — Story 1.4 / AC-6).
+    // Skip signing when the in-memory key is absent so `publishToMavenLocal`
+    // works for local smoke-tests without requiring a GPG key on every dev
+    // machine. CI always provides the env var, so the production path stays
+    // signed.
+    if (providers.environmentVariable("ORG_GRADLE_PROJECT_signingInMemoryKey").isPresent ||
+        providers.gradleProperty("signingInMemoryKey").isPresent
+    ) {
+        signAllPublications()
+    }
+
+    // POM metadata required by Maven Central (name, description, url,
+    // licenses, developers, scm all mandatory for publication approval).
+    pom {
+        name.set("Convert Android SDK")
+        description.set("Android SDK for Convert Experiences A/B testing and feature flags.")
+        url.set("https://github.com/convertcom/android-sdk")
+        inceptionYear.set("2026")
+        licenses {
+            license {
+                name.set("The Apache License, Version 2.0")
+                url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
+                distribution.set("repo")
+            }
+        }
+        developers {
+            developer {
+                id.set("convertcom")
+                name.set("Convert.com")
+                email.set("support@convert.com")
+                organization.set("Convert.com")
+                organizationUrl.set("https://www.convert.com/")
+            }
+        }
+        scm {
+            url.set("https://github.com/convertcom/android-sdk")
+            connection.set("scm:git:git://github.com/convertcom/android-sdk.git")
+            developerConnection.set("scm:git:ssh://github.com:convertcom/android-sdk.git")
+        }
+    }
 }
 
 // AGP's generated unit-test tasks don't default to JUnit 5. Opt every
