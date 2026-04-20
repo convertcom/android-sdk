@@ -163,16 +163,24 @@ public class EventManager(
         callback: (Map<String, Any?>) -> Unit,
     ): SubscriptionToken {
         val token = SubscriptionToken()
-        lock.withLock {
+        // Add the subscription and capture the replay payload under the
+        // same lock so a concurrent `fire` cannot land in the interval
+        // between "subscription added" and "replay payload checked"
+        // — otherwise a race on READY/CONFIG_UPDATED would deliver the
+        // event twice (once from the concurrent fire's snapshot, once
+        // from our post-lock replay read). See Story 2.4 AC-3 replay
+        // semantics: "immediate callback with the last event data" —
+        // not duplicated, and never mixed with a concurrent broadcast
+        // of the SAME payload.
+        val replay: Map<String, Any?>? = lock.withLock {
             subscribers.getOrPut(event) { mutableListOf() }.add(Subscription(token, callback))
+            if (event in replayableEvents) lastEventData[event] else null
         }
-        // Late-subscriber replay — dispatch on the SDK scope so the
-        // callback runs on the same thread discipline as regular fires.
-        if (event in replayableEvents) {
-            val replay = lastEventData[event]
-            if (replay != null) {
-                dispatch(event, callback, replay)
-            }
+        // Dispatch outside the lock on [scope] so the callback runs on
+        // the same thread discipline as regular fires and never inline
+        // with the caller of [on].
+        if (replay != null) {
+            dispatch(event, callback, replay)
         }
         return token
     }
