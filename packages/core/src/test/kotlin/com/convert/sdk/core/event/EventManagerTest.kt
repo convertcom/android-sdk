@@ -91,8 +91,8 @@ internal class EventManagerTest {
         val manager = EventManager()
         var fired = 0
 
-        manager.on("E") { fired++ }       // lambda A
-        manager.off("E") { fired++ }      // lambda B — different identity, no-op
+        manager.on("E") { fired++ } // lambda A
+        manager.off("E") { fired++ } // lambda B — different identity, no-op
 
         manager.fire("E")
         assertEquals(1, fired) // lambda A still subscribed

@@ -61,3 +61,21 @@ complexity:
   TooManyFunctions:
     thresholdInClasses: 20
     thresholdInObjects: 20
+
+# Story 2.1 introduces `EventManager.fire()` — a pub/sub dispatcher that
+# invokes arbitrary consumer-supplied callbacks inside a try/catch. Per
+# architecture §Error Recovery, SDK code must NEVER throw out of public
+# entry points, so broad subscriber-isolation catches are mandatory. The
+# rule below narrows `TooGenericExceptionCaught`'s blocklist to truly
+# problematic types (`Throwable`, `Error`) while permitting `Exception` in
+# subscriber-dispatch contexts. `RuntimeException` is allowed for the same
+# reason (subscribers may throw any of its subclasses).
+exceptions:
+  TooGenericExceptionCaught:
+    exceptionNames:
+      - ArrayIndexOutOfBoundsException
+      - Error
+      - IllegalMonitorStateException
+      - NullPointerException
+      - IndexOutOfBoundsException
+      - Throwable
