@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref so pushing a new commit during CI
+# short-circuits the in-flight run. Saves CI minutes without hiding real
+# failures — the latest commit's result is always the authoritative signal.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint & Import Boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Defensive — actions/checkout@v4 should preserve the exec bit on
+      # ./gradlew, but some self-hosted runners strip it. Cheap insurance.
+      - name: Ensure gradlew is executable
+        run: chmod +x ./gradlew
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Detekt (zero violations required)
+        run: ./gradlew detekt --no-daemon
+
+      - name: Android Lint (Debug variant)
+        run: ./gradlew :packages:sdk:lintDebug --no-daemon
+
+      # Enforce packages/core's pure-Kotlin boundary. The grep runs even if
+      # Gradle configuration fails, and prints every offending file+line so
+      # the PR reviewer can jump straight to the fix. Matches the default
+      # Kotlin `import <qualified>` form anchored to the start of line —
+      # imports indented or concatenated on one line won't match, but our
+      # style config (detekt `NoWildcardImports` + ktlint formatting) forbids
+      # those shapes anyway.
+      - name: Enforce packages/core import boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          violations=$(grep -rn -E "^import (android|androidx)\." packages/core/src/ || true)
+          if [ -n "$violations" ]; then
+            echo "ERROR: packages/core is a pure Kotlin module — Android imports are forbidden."
+            echo "Move the code to packages/sdk or introduce a port interface."
+            echo ""
+            echo "$violations"
+            exit 1
+          fi
+          echo "OK: packages/core has no Android imports."
+
+  test-core:
+    name: Test Core (JVM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure gradlew is executable
+        run: chmod +x ./gradlew
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Run core unit tests with coverage
+        run: ./gradlew :packages:core:test :packages:core:koverXmlReport --no-daemon
+
+      # `if: always()` ensures the test report is uploaded even when the task
+      # fails — that's when it's most useful for PR reviewers.
+      - name: Upload core test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-core-report
+          path: packages/core/build/reports/tests/test/
+          retention-days: 7
+
+  test-sdk:
+    name: Test SDK (Robolectric-ready JVM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure gradlew is executable
+        run: chmod +x ./gradlew
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # AGP emits per-variant test tasks; `testDebugUnitTest` is the canonical
+      # Debug-variant JVM test task. Release-variant tests would duplicate the
+      # source set at double the cost with no material coverage delta.
+      - name: Run SDK unit tests with coverage
+        run: ./gradlew :packages:sdk:testDebugUnitTest :packages:sdk:koverXmlReport --no-daemon
+
+      - name: Upload SDK test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-sdk-report
+          path: packages/sdk/build/reports/tests/testDebugUnitTest/
+          retention-days: 7
+
+  coverage:
+    name: Coverage Verification
+    runs-on: ubuntu-latest
+    needs: [test-core, test-sdk]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure gradlew is executable
+        run: chmod +x ./gradlew
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # `koverVerify` triggers the upstream test + XML-report tasks, so this
+      # single invocation produces both report files and enforces the
+      # module-specific minBound rules (85% core / 70% sdk).
+      - name: Enforce coverage thresholds
+        run: ./gradlew koverVerify :packages:core:koverXmlReport :packages:sdk:koverXmlReport --no-daemon
+
+      # Surface path drift immediately — if a later Kover upgrade moves the
+      # report location, this `ls` fails and points us at the breakage
+      # before the upload-artifact step silently uploads an empty artifact.
+      - name: Verify coverage report paths
+        run: |
+          ls -la packages/core/build/reports/kover/report.xml
+          ls -la packages/sdk/build/reports/kover/report.xml
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            packages/core/build/reports/kover/report.xml
+            packages/sdk/build/reports/kover/report.xml
+          retention-days: 30

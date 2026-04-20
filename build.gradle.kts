@@ -8,6 +8,11 @@ plugins {
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.android.library) apply false
     alias(libs.plugins.vanniktech.maven.publish) apply false
+    // Kover is applied per-module (packages/core and packages/sdk) so the
+    // coverage thresholds can differ (85% core / 70% sdk). Declaring it here
+    // with `apply false` registers the plugin version with Gradle without
+    // activating it at the root.
+    alias(libs.plugins.kover) apply false
 }
 
 subprojects {

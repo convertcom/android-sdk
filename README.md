@@ -1,5 +1,7 @@
 # Convert Android SDK
 
+[![CI](https://github.com/convertcom/android-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/convertcom/android-sdk/actions/workflows/ci.yml)
+
 Native Android SDK for the Convert Experiences A/B testing platform.
 
 ## Prerequisites

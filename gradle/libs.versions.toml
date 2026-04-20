@@ -24,6 +24,12 @@ murmurhash = "0.4.1"
 junitJupiter = "5.11.4"
 mockk = "1.13.13"
 
+# Coverage — JetBrains-maintained Kotlin-native coverage tool. Pinned to the
+# latest 0.9.x stable at the time of Story 1.3; upgrade only after verifying
+# the DSL still accepts `reports { verify { rule { minBound(...) } } }`.
+# 0.9.8 is the latest 0.9.x stable on the Kover GitHub releases page.
+kover = "0.9.8"
+
 [libraries]
 # Kotlin
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
@@ -59,3 +65,4 @@ kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
 vanniktech-maven-publish = { id = "com.vanniktech.maven.publish", version.ref = "vanniktechMavenPublish" }
+kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
