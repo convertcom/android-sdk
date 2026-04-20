@@ -13,6 +13,7 @@ import com.convert.sdk.core.port.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Fetches project configuration from the Convert CDN.
@@ -126,6 +127,59 @@ public class ApiManager(
     private val config: ConvertConfig,
     private val json: Json,
 ) {
+
+    /**
+     * Mutable tracking-enabled flag pre-wired for Story 5.4's event-enqueue
+     * bypass (AC-5). Initialised from `config.network?.tracking` with a
+     * [ConfigDefaults.DEFAULT_TRACKING_ENABLED] fallback so callers always
+     * see a non-null value.
+     *
+     * `AtomicBoolean` (over `Volatile var`) is chosen for two reasons:
+     *  1. Story 5.4 will read this flag on every enqueue attempt from
+     *     multiple coroutine dispatchers — atomic reads are cheaper than
+     *     a `synchronized` guard and don't require a [Mutex].
+     *  2. The JS SDK sets tracking directly on its ApiManager; mirroring
+     *     that single-field semantic here keeps the cross-SDK parity story
+     *     simple. A lock-guarded backing field would be heavier for zero
+     *     additional safety on a scalar boolean.
+     *
+     * Note: this flag does NOT gate [fetchConfig] — config fetch is always
+     * enabled because bucketing depends on loaded config (AC-5). Only the
+     * outbound tracking-event path (Story 5.4) inspects this flag.
+     */
+    private val trackingEnabled: AtomicBoolean = AtomicBoolean(
+        config.network?.tracking ?: ConfigDefaults.DEFAULT_TRACKING_ENABLED,
+    )
+
+    /**
+     * Returns the current state of the tracking toggle.
+     *
+     * Declared `public` so :packages:sdk (separate Kotlin `internal` scope)
+     * can query it from the ConvertSDK wiring path; consumers of the
+     * published `sdk-core` artifact should treat this as SDK-internal.
+     *
+     * @return `true` when outbound tracking events should be enqueued,
+     *   `false` when they should be suppressed (bucketing still runs).
+     */
+    public fun isTrackingEnabled(): Boolean = trackingEnabled.get()
+
+    /**
+     * Toggles outbound tracking on or off at runtime.
+     *
+     * Invoked by Story 5.4's `ConvertContext.setTracking(...)` (and,
+     * eventually, a top-level SDK consent API). Atomic — a concurrent
+     * [isTrackingEnabled] call will see either the old or the new value,
+     * never a torn read.
+     *
+     * Declared `public` so :packages:sdk can call it; see
+     * [isTrackingEnabled] for the cross-module visibility rationale.
+     *
+     * @param enabled `true` to resume enqueuing tracking events, `false`
+     *   to suppress them while preserving bucketing determinism.
+     */
+    public fun setTrackingEnabled(enabled: Boolean) {
+        trackingEnabled.set(enabled)
+    }
 
     /**
      * Fetches the project's configuration from the CDN and returns it on
