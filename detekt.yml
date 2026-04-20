@@ -1,0 +1,26 @@
+# Convert Android SDK — detekt configuration
+#
+# Strategy: build on detekt 1.23.6 defaults (buildUponDefaultConfig=true in root
+# build.gradle.kts) and override only the keys below. See
+# https://detekt.dev/docs/introduction/configurations for the default config.
+
+build:
+  maxIssues: 0
+  excludeCorrectable: false
+  # baseline: detekt-baseline.xml  # enabled once the codebase has tests/implementation
+
+config:
+  validation: true
+  warningsAsErrors: false
+
+formatting:
+  active: true
+  android: true
+  autoCorrect: false
+
+# Placeholder suppressions below exist only while the scaffold has zero source
+# files. Re-evaluate these as real code lands in Story 1.2.
+style:
+  MagicNumber:
+    active: true
+    ignoreNumbers: ['-1', '0', '1', '2']

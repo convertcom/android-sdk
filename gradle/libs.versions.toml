@@ -1,0 +1,58 @@
+[versions]
+# Build tools — pinned by Architecture §"Verified Technology Versions (2026-03-23)"
+kotlin = "2.3.20"
+agp = "9.1.0"
+detekt = "1.23.6"
+vanniktechMavenPublish = "0.36.0"
+
+# Kotlin libraries
+kotlinxCoroutines = "1.10.2"
+kotlinxSerialization = "1.10.0"
+
+# Networking
+okhttp = "5.3.0"
+
+# AndroidX
+lifecycleProcess = "2.10.0"
+workRuntime = "2.11.1"
+startupRuntime = "1.2.0"
+
+# Hashing
+murmurhash = "0.4.1"
+
+# Test
+junitJupiter = "5.11.4"
+mockk = "1.13.13"
+
+[libraries]
+# Kotlin
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+
+# Networking
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+
+# AndroidX
+androidx-lifecycle-process = { module = "androidx.lifecycle:lifecycle-process", version.ref = "lifecycleProcess" }
+androidx-work-runtime = { module = "androidx.work:work-runtime", version.ref = "workRuntime" }
+androidx-startup = { module = "androidx.startup:startup-runtime", version.ref = "startupRuntime" }
+
+# Hashing
+murmurhash = { module = "com.goncalossilva:murmurhash", version.ref = "murmurhash" }
+
+# Test
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junitJupiter" }
+mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
+
+# Detekt formatting ruleset — referenced by the root detekt subprojects config
+detekt-formatting = { module = "io.gitlab.arturbosch.detekt:detekt-formatting", version.ref = "detekt" }
+
+[plugins]
+android-library = { id = "com.android.library", version.ref = "agp" }
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
+vanniktech-maven-publish = { id = "com.vanniktech.maven.publish", version.ref = "vanniktechMavenPublish" }
