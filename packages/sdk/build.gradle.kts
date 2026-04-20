@@ -57,6 +57,12 @@ kotlin {
 dependencies {
     api(project(":packages:core"))
     implementation(libs.okhttp)
+    // Story 2.2: FileConfigCache serialises/deserialises ConfigResponseData
+    // directly in this module (not through the core ApiManager). The core
+    // module declares kotlinx.serialization-json as `implementation`, so it
+    // does not leak transitively — the sdk module needs its own dep.
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.kotlinx.coroutines.core)
     implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.work.runtime)
     implementation(libs.androidx.startup.runtime)
