@@ -12,6 +12,7 @@ kotlinxCoroutines = "1.10.2"
 kotlinxSerialization = "1.10.0"
 okhttp = "5.3.0"
 lifecycleProcess = "2.10.0"
+lifecycleRuntimeTesting = "2.10.0"
 workRuntime = "2.11.1"
 startupRuntime = "1.2.0"
 murmurhash = "0.4.1"
@@ -32,6 +33,11 @@ murmurhash = { module = "com.goncalossilva:murmurhash", version.ref = "murmurhas
 # SDK module runtime dependencies (Android-only)
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 androidx-lifecycle-process = { module = "androidx.lifecycle:lifecycle-process", version.ref = "lifecycleProcess" }
+# Story 2.3 AC-10 test dependency: TestLifecycleOwner drives observer
+# callbacks (ON_START / ON_STOP) from unit tests without needing a real
+# Android process. Pinned to the same version as lifecycle-process to avoid
+# an ABI mismatch across the androidx.lifecycle artifact family.
+androidx-lifecycle-runtime-testing = { module = "androidx.lifecycle:lifecycle-runtime-testing", version.ref = "lifecycleRuntimeTesting" }
 androidx-work-runtime = { module = "androidx.work:work-runtime", version.ref = "workRuntime" }
 androidx-startup-runtime = { module = "androidx.startup:startup-runtime", version.ref = "startupRuntime" }
 
