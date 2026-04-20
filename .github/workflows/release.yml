@@ -20,6 +20,17 @@ permissions:
   contents: write
   packages: write
 
+# Serialize releases. If two pushes land on main in quick succession, the
+# second workflow_run waits for the first to finish before starting — we
+# must not have two concurrent `./gradlew publish…` invocations racing to
+# upload artifacts of the same version, or two `@semantic-release/git`
+# instances racing to push a tag. `cancel-in-progress: false` because
+# cancelling a mid-publish workflow can leave a half-uploaded staged
+# deployment in the Central Portal that needs manual cleanup.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Semantic Release → Maven Central

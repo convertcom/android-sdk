@@ -118,13 +118,26 @@ Releases are fully automatic. The process:
 5. If there's a release-worthy commit:
    1. `scripts/bump-version.mjs` updates `gradle/libs.versions.toml`.
    2. `CHANGELOG.md` is regenerated with the new notes.
-   3. `./gradlew publishAllPublicationsToMavenCentralRepository` publishes
-      both `com.convert:sdk-android:X.Y.Z` and `com.convert:sdk-core:X.Y.Z`.
+   3. `./gradlew publishAllPublicationsToMavenCentralRepository` uploads
+      both `com.convert:sdk-android:X.Y.Z` and `com.convert:sdk-core:X.Y.Z`
+      to the Central Portal as a **staged deployment** (validated, but
+      NOT yet released to the public mirror — see step 6).
    4. `@semantic-release/git` commits the version bump + CHANGELOG and
       pushes the `vX.Y.Z` tag to `main` (commit message carries
       `[skip ci]` to prevent a feedback loop).
-6. Maven Central's sync to the public mirror takes 10–30 minutes after the
-   upload finishes. Verify with:
+6. **Manual step (repo admin):** Sign in to
+   <https://central.sonatype.com> → **Deployments**, find the new
+   deployment, confirm the artifacts look correct (version, POM, both
+   modules present), and click **Publish**. This releases the staged
+   deployment to the public Maven Central mirror. We deliberately chose
+   `publishAllPublicationsToMavenCentralRepository` (staged) over
+   `publishAndReleaseToMavenCentral` (auto-release) as a safety gate —
+   lets a human eyeball the contents before pushing a new version to
+   consumers. Once we're confident in the pipeline (several releases
+   in), we can switch to auto-release by changing the Gradle task in
+   `release.config.mjs` plugin 5's `publishCmd`.
+7. Maven Central's sync to the public mirror takes 10–30 minutes after
+   you click **Publish** in step 6. Verify with:
    ```bash
    curl -I https://repo1.maven.org/maven2/com/convert/sdk-android/X.Y.Z/sdk-android-X.Y.Z.aar
    # → HTTP/2 200 when the artifact is live.
