@@ -190,18 +190,28 @@ internal class ConvertSDKTest {
     }
 
     @Test
-    fun `sdk-key mode without cached config does not fire onReady (fetch is Story 2 2)`() {
+    fun `sdk-key mode with unreachable endpoint and no cache does not fire onReady`() {
+        // Story 2.2: sdk-key mode now wires a fetch + cache-fallback. Point
+        // the endpoint at a known-unreachable URL so the fetch fails fast
+        // and the cache-read path finds nothing — deterministic, no network.
+        // The broader integration test (ConvertSDKConfigFetchTest) uses
+        // MockWebServer; this test intentionally stays in the "everything
+        // fails" branch without pulling in MockWebServer setup.
         val latch = CountDownLatch(1)
         val sdk = ConvertSDK.builder(appContext)
             .sdkKey("sk-1")
+            .configEndpoint("https://127.0.0.1:1/unreachable/")
             .build()
 
         sdk.onReady { latch.countDown() }
 
-        // Wait a short period — onReady should NOT fire because there is no
-        // fetch (Story 2.2) and no cached data (Story 2.2).
-        val fired = latch.await(500, TimeUnit.MILLISECONDS)
-        assertFalse("onReady must NOT fire in sdk-key mode in Story 2.1", fired)
+        // Wait enough for the fetch to fail (connect-refused is immediate) and
+        // the cache-read to miss; onReady must NOT fire.
+        val fired = latch.await(3, TimeUnit.SECONDS)
+        assertFalse(
+            "onReady must NOT fire when both fetch and cache fail",
+            fired,
+        )
     }
 
     @Test
