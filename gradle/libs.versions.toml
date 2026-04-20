@@ -43,6 +43,9 @@ murmurhash = { module = "com.goncalossilva:murmurhash", version.ref = "murmurhas
 
 # Test
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junitJupiter" }
+# Gradle 9 requires the JUnit Platform launcher to be on the test runtime classpath; the
+# junit-jupiter aggregator no longer pulls it in transitively.
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 
 # Detekt formatting ruleset — referenced by the root detekt subprojects config
