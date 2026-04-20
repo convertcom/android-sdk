@@ -237,8 +237,20 @@ internal class ConvertSDKTest {
     }
 
     @Test
-    fun `multiple onReady callbacks fire in registration order`() {
-        val order = java.util.concurrent.ConcurrentLinkedQueue<Int>()
+    fun `multiple onReady callbacks all fire`() {
+        // Story 2.4 AC-3 + AC-6: all onReady subscribers are delivered
+        // the READY event — either through the EventManager broadcast
+        // (early subscribers captured in the fire snapshot) or through
+        // the deferred-replay path (late subscribers registered after
+        // fire). Each path schedules an independent `scope.launch`, so
+        // on `Dispatchers.Default` the relative ORDER across
+        // independent onReady calls is not guaranteed — that's an
+        // acceptable trade-off for the single-path, race-free replay
+        // mechanism. Strict registration-order delivery is only
+        // guaranteed WITHIN a single `fire` call's snapshot (covered
+        // by EventManagerTest `multiple subscribers fire in
+        // registration order`).
+        val fires = java.util.concurrent.atomic.AtomicInteger(0)
         val done = CountDownLatch(3)
 
         val sdk = ConvertSDK.builder(appContext)
@@ -246,20 +258,20 @@ internal class ConvertSDKTest {
             .build()
 
         sdk.onReady {
-            order.add(1)
+            fires.incrementAndGet()
             done.countDown()
         }
         sdk.onReady {
-            order.add(2)
+            fires.incrementAndGet()
             done.countDown()
         }
         sdk.onReady {
-            order.add(3)
+            fires.incrementAndGet()
             done.countDown()
         }
 
         assertTrue("all three onReady should fire", done.await(2, TimeUnit.SECONDS))
-        assertEquals(listOf(1, 2, 3), order.toList())
+        assertEquals(3, fires.get())
     }
 
     @Test
