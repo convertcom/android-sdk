@@ -415,112 +415,98 @@ public class ConvertSDK internal constructor(
      *
      * Declared to take a [Runnable] so Java lambdas map cleanly.
      *
-     * ### Late-subscriber semantics (Story 2.1 / 2.4 interplay)
+     * ### Story 2.4 — replay handled by EventManager
      *
-     * Story 2.1 combines Gotcha 8 options (a) and (b) to guarantee that
-     * every registered callback fires exactly once:
-     *
-     *  - The Builder's direct-data path launches `dataManager.setData(...)`
-     *    on [scope] (option b): consumers calling [onReady] synchronously
-     *    after `build()` returns beat the coroutine dispatch and are
-     *    reached by the single broadcast [SystemEvents.READY] fire.
-     *  - This method additionally checks [DataManager.hasData] — if READY
-     *    has already been delivered (late subscriber, or the scope.launch
-     *    won the race), the callback is dispatched onto [scope]
-     *    **without broadcasting** a second READY. Existing subscribers
-     *    therefore do not see a duplicate, and the new subscriber still
-     *    receives the event. Proper event replay for any event is a
-     *    Story 2.4 feature; this is the minimum needed to satisfy AC-4.
+     * [EventManager] now stores the most recent [SystemEvents.READY]
+     * payload; a subscriber registered AFTER READY has already fired
+     * is dispatched the stored payload on its next scope tick. The
+     * Story 2.1 ad-hoc `hasData()` branch is gone — both early and
+     * late subscribers go through the same [EventManager.on] call,
+     * which handles replay internally. This also removes the
+     * Story 2.1 quirk where the late-subscriber callback ran on a
+     * privately-launched coroutine while the broadcast path ran on
+     * whichever thread fired `setData`; both paths now dispatch on
+     * the shared `sdk.scope`.
      *
      * ### Dispatch thread
      *
-     * - Late-subscriber path (hasData == true at registration): dispatched
-     *   on [scope] (`Dispatchers.Default`) via `scope.launch`.
-     * - Broadcast path (hasData == false at registration): dispatched on
-     *   whatever thread calls [DataManager.setData] and therefore
-     *   [EventManager.fire]. In Story 2.1/2.2 every setData call happens
-     *   inside `sdk.scope.launch { ... }` — direct-data mode via the
-     *   Builder, sdk-key mode via Story 2.2's `ApiManager` — so the
-     *   broadcast path also runs on [scope]'s `Dispatchers.Default`
-     *   thread pool. Consumers should nonetheless not assume a specific
-     *   thread; the architecture's contract is "never inline on the
-     *   call site of `onReady`", which both paths honour.
-     *
-     * Story 2.2 will launch the sdk-key-mode config fetch on [scope]
-     * which, on success, calls [DataManager.setData] and triggers the
-     * same broadcast. Until then, sdk-key mode never fires READY.
+     * Every subscriber — early or late — is dispatched on `sdk.scope`
+     * (`Dispatchers.Default` in production; the Builder injects the
+     * same scope into [EventManager] so replay and broadcast share
+     * one dispatcher).
      *
      * @param callback invoked when the SDK becomes ready.
      * @return this SDK instance, enabling fluent chaining.
      */
     public fun onReady(callback: Runnable): ConvertSDK {
-        // READY is a once-per-SDK-lifetime event in Story 2.1 / 2.2:
-        // [DataManager.setData] fires it exactly once when the config is
-        // first seeded (either by direct-data mode or by Story 2.2's
-        // fetch). Story 2.3's refresh loop fires CONFIG_UPDATED, not
-        // READY. So the late-subscriber path needs to cover "READY
-        // already fired" but never "READY fires again after replay".
-        //
-        // Branch on [DataManager.hasData] to decide which path this
-        // callback takes:
-        //  - `false` → subscribe to the EventManager broadcast; when
-        //    `setData` fires READY later, the subscriber is delivered
-        //    in registration order along with every other subscriber
-        //    that also missed the fire window.
-        //  - `true` → the broadcast already happened (direct-data mode
-        //    won the scope.launch race, or Story 2.2's fetch resolved).
-        //    Do NOT subscribe — the broadcast won't fire again and the
-        //    extra subscription would leak. Instead dispatch a private
-        //    invocation on [scope] so the consumer sees READY exactly
-        //    once on a background thread.
-        if (dataManager.hasData()) {
-            scope.launch { callback.run() }
-        } else {
-            eventManager.on(SystemEvents.READY) { _ -> callback.run() }
-        }
+        eventManager.on(SystemEvents.READY) { _ -> callback.run() }
         return this
     }
 
     /**
-     * Subscribes [callback] to the named [event].
+     * Subscribes [callback] to the named [event] and returns a
+     * [SubscriptionToken] identifying the registration.
+     *
+     * Story 2.4 AC-7 makes the token the primary unsubscribe key — pass
+     * it to [off] `(event, token)` to remove exactly this subscription.
+     * A callback-identity-based [off] overload is also available for
+     * Kotlin consumers that still hold the [EventCallback] reference.
      *
      * The [EventCallback] is wrapped in a lambda that forwards the event
-     * payload to [EventCallback.onEvent]; the wrapping lambda is stashed
-     * in [callbackLambdas] so [off] can remove the identical reference
-     * from the [eventManager].
+     * payload to [EventCallback.onEvent]. The wrapping lambda is stashed
+     * in [callbackLambdas] so [off] `(event, callback)` can locate it for
+     * identity-based removal; the token-based [off] path ignores this
+     * stash entirely.
      *
-     * Re-registering the same `(event, callback)` pair replaces the
-     * previously-stashed wrapper lambda AND removes the previous wrapper
-     * from the [eventManager] to avoid leaking orphaned subscriptions:
-     * without this, a double-`on` followed by a single `off` would leave
-     * the first wrapper subscribed forever because `off` only knows about
-     * the stashed (most recent) reference.
+     * Re-registering the same `(event, callback)` pair issues a fresh
+     * subscription with a fresh token — the previously-stashed wrapper
+     * is also unsubscribed from [eventManager] so that a later
+     * callback-based [off] can cleanly tear down the registration without
+     * orphaning the old wrapper in the subscriber list.
      *
      * @param event well-known event name.
      * @param callback listener invoked when [event] is emitted.
-     * @return this SDK instance, enabling fluent chaining.
+     * @return an opaque [SubscriptionToken] for unsubscribe.
      */
-    public fun on(event: String, callback: EventCallback): ConvertSDK {
+    public fun on(event: String, callback: EventCallback): SubscriptionToken {
         val lambda: (Map<String, Any?>) -> Unit = { data -> callback.onEvent(data) }
         val key = EventCallbackKey(event, callback)
         // Replace any prior wrapper for this (event, callback) — and
-        // unsubscribe it from the EventManager — so a subsequent off()
-        // can cleanly tear down the registration without orphaning the
-        // old wrapper in the subscriber list.
+        // unsubscribe it from the EventManager — so a subsequent
+        // callback-based off() can cleanly tear down the registration
+        // without orphaning the old wrapper in the subscriber list.
         val previous = callbackLambdas.put(key, lambda)
         if (previous != null) {
             eventManager.off(event, previous)
         }
-        eventManager.on(event, lambda)
+        return eventManager.on(event, lambda)
+    }
+
+    /**
+     * Removes the subscription identified by [token]. A [token] that
+     * was never registered (or has already been removed) is a no-op
+     * per architecture's "never throw from public API" rule.
+     *
+     * @param event the event the token was registered against.
+     * @param token the [SubscriptionToken] returned by [on].
+     * @return this SDK instance, enabling fluent chaining.
+     */
+    public fun off(event: String, token: SubscriptionToken): ConvertSDK {
+        eventManager.off(event, token)
         return this
     }
 
     /**
-     * Removes a previously-registered [callback] for [event].
+     * Removes a previously-registered [callback] for [event] by
+     * identity — convenience overload for Kotlin consumers that still
+     * hold the [EventCallback] reference they passed to [on].
      *
      * Looks up the wrapping lambda by `(event, callback)` identity. A
      * callback that was never registered is silently ignored per
      * architecture's "never throw from public API" rule.
+     *
+     * Prefer [off] `(event, token)` when writing new code — the token
+     * path does not retain a hashmap entry per subscription.
      *
      * @param event the event name the callback was registered against.
      * @param callback the listener to unregister.
@@ -793,10 +779,19 @@ public class ConvertSDK internal constructor(
             val okHttp = OkHttpClientAdapter.defaultOkHttpClient()
             val httpClient: HttpClient = OkHttpClientAdapter(okHttp, logger)
 
-            // 4. EventManager — shared bus.
-            val eventManager = EventManager(logger = logger)
+            // 4. Shared SDK CoroutineScope — Story 2.4: the same scope is
+            //    injected into both the EventManager (so replay and
+            //    broadcast share one dispatcher) and the ConvertSDK (so its
+            //    `scope` property matches the EventManager's). Constructed
+            //    via the file-scope helper to keep `build()` under detekt's
+            //    `LongMethod` ceiling.
+            val sdkScope: CoroutineScope = buildSdkScope(logger)
 
-            // 5. DataManager — holds the loaded config, fires READY on setData.
+            // 5. EventManager — shared bus, dispatching callbacks on the
+            //    shared SDK scope.
+            val eventManager = EventManager(logger = logger, scope = sdkScope)
+
+            // 6. DataManager — holds the loaded config, fires READY on setData.
             val dataManager = DataManager(
                 eventManager = eventManager,
                 environment = assembled.environment,
@@ -850,6 +845,11 @@ public class ConvertSDK internal constructor(
                 // graph assembly in one place — Builder.build().
                 apiManager = apiManager,
                 fileConfigCache = fileConfigCache,
+                // Story 2.4: share the same scope with EventManager so
+                // all dispatch — ConvertSDK's own launches + EventManager
+                // subscriber broadcasts + deferred replay — flows through
+                // one SupervisorJob and one dispatcher.
+                scope = sdkScope,
             )
 
             // Direct-data mode (AC-3) or sdk-key mode (AC-5/6/7) — delegate
@@ -1077,3 +1077,29 @@ private fun warnIfBuilderStateAmbiguous(
 
 /** Log tag used by file-scope Builder helpers that need a distinct tag. */
 private const val BUILDER_TAG: String = "ConvertSDK.Builder"
+
+/**
+ * Builds the SDK-wide [CoroutineScope] used by both [EventManager] and
+ * [ConvertSDK] for all dispatch.
+ *
+ * `SupervisorJob` isolates child-coroutine failures so one failing
+ * dispatch does not cancel its siblings; `Dispatchers.Default` gives
+ * general-purpose background parallelism; the
+ * [CoroutineExceptionHandler] routes otherwise-uncaught exceptions
+ * through [logger] rather than letting them crash the JVM.
+ *
+ * Extracted from [ConvertSDK.Builder.build] so the Builder method stays
+ * under detekt's `LongMethod` ceiling.
+ */
+private fun buildSdkScope(logger: Logger): CoroutineScope =
+    CoroutineScope(
+        SupervisorJob() +
+            Dispatchers.Default +
+            CoroutineExceptionHandler { _, throwable ->
+                logger.error(
+                    message = "SDK scope caught exception",
+                    throwable = throwable,
+                    tag = "ConvertSDK",
+                )
+            },
+    )
