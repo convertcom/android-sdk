@@ -244,10 +244,19 @@ public class ConvertSDK internal constructor(
      *    receives the event. Proper event replay for any event is a
      *    Story 2.4 feature; this is the minimum needed to satisfy AC-4.
      *
-     * Dispatch always happens on [scope] (`Dispatchers.Default`) —
-     * callbacks never run inline on the caller's thread, which honours
-     * the architecture's rule that `onReady` must not imply caller-thread
-     * execution.
+     * ### Dispatch thread
+     *
+     * - Late-subscriber path (hasData == true at registration): dispatched
+     *   on [scope] (`Dispatchers.Default`) via `scope.launch`.
+     * - Broadcast path (hasData == false at registration): dispatched on
+     *   whatever thread calls [DataManager.setData] and therefore
+     *   [EventManager.fire]. In Story 2.1/2.2 every setData call happens
+     *   inside `sdk.scope.launch { ... }` — direct-data mode via the
+     *   Builder, sdk-key mode via Story 2.2's `ApiManager` — so the
+     *   broadcast path also runs on [scope]'s `Dispatchers.Default`
+     *   thread pool. Consumers should nonetheless not assume a specific
+     *   thread; the architecture's contract is "never inline on the
+     *   call site of `onReady`", which both paths honour.
      *
      * Story 2.2 will launch the sdk-key-mode config fetch on [scope]
      * which, on success, calls [DataManager.setData] and triggers the
@@ -290,10 +299,14 @@ public class ConvertSDK internal constructor(
      * The [EventCallback] is wrapped in a lambda that forwards the event
      * payload to [EventCallback.onEvent]; the wrapping lambda is stashed
      * in [callbackLambdas] so [off] can remove the identical reference
-     * from the [eventManager]. Registering the same `(event, callback)`
-     * pair twice overwrites the stashed lambda but both wrappers remain
-     * subscribed — [off] then removes the most recent one, matching the
-     * JS SDK's "last registration wins" semantics on unsubscribe.
+     * from the [eventManager].
+     *
+     * Re-registering the same `(event, callback)` pair replaces the
+     * previously-stashed wrapper lambda AND removes the previous wrapper
+     * from the [eventManager] to avoid leaking orphaned subscriptions:
+     * without this, a double-`on` followed by a single `off` would leave
+     * the first wrapper subscribed forever because `off` only knows about
+     * the stashed (most recent) reference.
      *
      * @param event well-known event name.
      * @param callback listener invoked when [event] is emitted.
@@ -301,7 +314,15 @@ public class ConvertSDK internal constructor(
      */
     public fun on(event: String, callback: EventCallback): ConvertSDK {
         val lambda: (Map<String, Any?>) -> Unit = { data -> callback.onEvent(data) }
-        callbackLambdas[EventCallbackKey(event, callback)] = lambda
+        val key = EventCallbackKey(event, callback)
+        // Replace any prior wrapper for this (event, callback) — and
+        // unsubscribe it from the EventManager — so a subsequent off()
+        // can cleanly tear down the registration without orphaning the
+        // old wrapper in the subscriber list.
+        val previous = callbackLambdas.put(key, lambda)
+        if (previous != null) {
+            eventManager.off(event, previous)
+        }
         eventManager.on(event, lambda)
         return this
     }
