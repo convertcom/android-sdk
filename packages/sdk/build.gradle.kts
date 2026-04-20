@@ -163,16 +163,18 @@ kover {
     reports {
         verify {
             rule {
-                // NFR19 targets 70% for packages/sdk. Until the Robolectric-
-                // backed test suites land with the HTTP/adapter wiring
-                // (Story 2.2+), the only testable code is the pure-JVM
-                // surface of ConvertSDK/ConvertContext — ConvertSDK.Builder
-                // cannot be driven from a pure-JVM test because every setter
-                // that matters lives behind `ConvertSDK.builder(Context)`.
-                // Keep the bound at an achievable floor for now and ratchet
-                // it back up to 70 once Robolectric tests arrive. Tracked
-                // for restore in Story 2.2.
-                minBound(50)
+                // NFR19 target: 70% for packages/sdk. Story 2.1 lands the
+                // Robolectric-backed tests (ConvertSDKTest, AndroidLoggerTest,
+                // SharedPrefsDataStoreTest, OkHttpClientAdapterTest) that
+                // exercise the full Builder path, the coroutine scope, and
+                // every adapter. Measured line coverage after Story 2.1:
+                // 244/(244+12) = 95.3% — comfortably above the NFR floor.
+                // The bound is ratcheted to 70 (not 95) to leave headroom
+                // for Story 2.2+ code that may land alongside incomplete
+                // test coverage during the RED phase of each subsequent
+                // story; 70 matches the NFR target, and any regression
+                // below 70 fails the build.
+                minBound(70)
             }
         }
     }

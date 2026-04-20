@@ -13,8 +13,17 @@ package com.convert.sdk.core.event
  * used in Story 2.1; the rest are declared now so callers (DataManager,
  * ApiManager, BucketingManager, EventQueue — introduced in later stories)
  * don't have to stringly-type them.
+ *
+ * ### Visibility (Story 2.1)
+ *
+ * Declared `public` so that `:packages:sdk` — which lives in a separate
+ * Gradle module and therefore a separate Kotlin `internal` visibility
+ * scope — can reference these constants when routing `ConvertSDK.onReady`
+ * through the [com.convert.sdk.core.event.EventManager]. The public names
+ * also appear in the event payloads consumers observe via `ConvertSDK.on`,
+ * so consumers can compare against them directly.
  */
-internal object SystemEvents {
+public object SystemEvents {
 
     /**
      * Fired once when the SDK has a usable configuration in memory —
