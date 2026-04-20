@@ -820,15 +820,20 @@ private fun launchInitialDataSeed(
         } else {
             val cached = fileConfigCache.read()
             if (cached != null) {
+                // AC-6 — mirror the story's literal log phrasing so
+                // operators grep consistently across SDK versions.
                 logger.info(
-                    message = "ApiManager: using cached config (fetch failed)",
+                    message = "ApiManager: network fetch failed, loaded config from cache",
                     tag = INIT_SEED_TAG,
                 )
                 dataManager.setData(cached)
             } else {
+                // AC-7 — again, matching the story's literal phrasing so
+                // this canonical warning is easy to find in aggregated
+                // logs.
                 logger.warn(
-                    message = "ApiManager: no cached config; SDK returns null until " +
-                        "next successful fetch",
+                    message = "ApiManager: no cached config available, SDK will return null " +
+                        "from public methods until network fetch succeeds",
                     tag = INIT_SEED_TAG,
                 )
             }
