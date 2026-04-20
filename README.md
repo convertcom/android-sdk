@@ -4,7 +4,7 @@ Server-side A/B testing, feature flags, and personalizations for Android applica
 
 ## Prerequisites
 
-- **JDK 17** or later (required to run Gradle 9.3.0 and as the compile target)
+- **JDK 17** or later (required to run Gradle and as the compile target)
 - **Android SDK** with API level 35 installed (`compileSdk = 35`)
 
 ## Build
