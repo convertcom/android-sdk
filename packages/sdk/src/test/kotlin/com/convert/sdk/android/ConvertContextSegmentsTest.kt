@@ -7,11 +7,11 @@ package com.convert.sdk.android
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.convert.sdk.core.model.generated.ClicksElementGoalSettings
 import com.convert.sdk.core.model.generated.ConfigExperience
 import com.convert.sdk.core.model.generated.ConfigGoal
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
-import com.convert.sdk.core.model.generated.ClicksElementGoalSettings
 import com.convert.sdk.core.model.generated.RuleObject
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
@@ -142,7 +142,10 @@ internal class ConvertContextSegmentsTest {
             "plan_tier" to JsonPrimitive("gold"),
             "ltv" to JsonPrimitive(1234.56),
             "beta_tester" to JsonPrimitive(true),
-            "tags" to buildJsonArray { add(JsonPrimitive("a")); add(JsonPrimitive("b")) },
+            "tags" to buildJsonArray {
+                add(JsonPrimitive("a"))
+                add(JsonPrimitive("b"))
+            },
             "profile" to buildJsonObject { put("age", 30) },
         )
 
