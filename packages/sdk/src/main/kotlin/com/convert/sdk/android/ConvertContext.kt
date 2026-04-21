@@ -15,6 +15,7 @@ import com.convert.sdk.core.model.generated.ConfigLocation
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
 import com.convert.sdk.core.model.generated.VariationStatuses
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
@@ -554,20 +555,168 @@ public class ConvertContext internal constructor(
     }
 
     /**
-     * Records a conversion against a goal.
+     * Records a conversion against a goal — Story 4.2 AC-1 / AC-2 / AC-3 /
+     * AC-4 / AC-5.
+     *
+     * ### Algorithm
+     *
+     *  1. **Config-ready gate (AC-1 step 1).** An unset [sdk] reference
+     *     (pure-JVM test construction path) or
+     *     [com.convert.sdk.core.data.DataManager.hasData] being `false`
+     *     → log DEBUG, return Unit. Matches the config-not-ready
+     *     semantics of [runExperience] / [runFeature].
+     *  2. **Goal lookup (AC-1 step 2).** Find the [com.convert.sdk.core.model.generated.ConfigGoal]
+     *     by [goalKey] in `data.goals`. Missing key → WARN, return. No
+     *     enqueue, no internal event fire — unknown goals are caller bugs
+     *     worth surfacing, and the JS SDK's `data-manager.ts` also skips
+     *     the fire path on a missing goal.
+     *  3. **Fire-and-forget dispatch (AC-2).** All enqueue + fire work is
+     *     dispatched to `sdk.scope.launch { }` — the method itself returns
+     *     `Unit` immediately so the caller's critical path is never blocked.
+     *     The enclosing try/catch (AC-4) lives inside the launch so that
+     *     any exception thrown during enqueue/fire is caught and logged
+     *     without propagating to the coroutine's parent (which would trip
+     *     the SDK scope's `CoroutineExceptionHandler`).
+     *  4. **Enqueue the bare goal hit (AC-1 step 3).** Always fire one
+     *     [com.convert.sdk.core.api.ApiManager.enqueueConversionEvent]
+     *     call with `goalData = null` — the JS SDK's `sendConversion()`
+     *     path emits `{goalId}` unconditionally whenever the goal is
+     *     valid.
+     *  5. **Enqueue the transaction payload (AC-1 step 4).** When
+     *     [goalData] is non-empty, fire a SECOND `enqueueConversionEvent`
+     *     call carrying the goalData list — mirrors the JS SDK's
+     *     `sendTransaction()` path. "Non-empty" intentionally captures
+     *     ANY of the transaction keys (amount / productsCount /
+     *     transactionId / customDimensionN) — presence of the list is
+     *     what distinguishes a transaction conversion from a bare hit,
+     *     not the specific keys it contains. Story 5.1 folds the two
+     *     calls into a single `enqueue(VisitorTrackingEvents)` once the
+     *     outbound queue lands.
+     *  6. **Internal event fire (AC-1 step 5).** Fire
+     *     [SystemEvents.CONVERSION] with `{visitorId, goalKey}` payload
+     *     AFTER the enqueue calls — matches JS SDK `context.ts:418-426`.
+     *     This is the only observable the application-level observer
+     *     API surfaces, so consumers can latch onto it for
+     *     in-process analytics without parsing the tracking payload.
+     *  7. **Dedup deferred to Story 4.3 (AC-1 step 6).** This story
+     *     enqueues unconditionally every time the method is called.
+     *     Story 4.3 adds the `goals[goalId] == true` check before
+     *     enqueue + fire.
+     *
+     * ### Never throws (AC-4)
+     *
+     * The outer try/catch inside the launch catches every [Throwable]
+     * (yes, including `Exception` — the architecture's
+     * "never leak exceptions to the caller" rule applies to the SDK's
+     * public API even though `sdk.scope` has a
+     * [kotlinx.coroutines.CoroutineExceptionHandler]).
      *
      * @param goalKey merchant-defined key of the goal to track.
      * @param goalData optional goal-data payload (amounts, transaction
      *   ids, custom dimensions). `null` omits the payload entirely.
      */
     @JvmOverloads
+    @Suppress("ReturnCount")
     public fun trackConversion(
         goalKey: String,
         goalData: List<GoalData>? = null,
     ) {
-        // TODO(Story 4.2): wire to EventManager / EventQueue
         lastConversionGoalKey = goalKey
         lastConversionGoalData = goalData
+
+        val sdk = this.sdk ?: return
+
+        // Step 1 — config-ready gate. Checked on the caller thread (cheap
+        // volatile read); dispatching to the scope just to bail out would
+        // waste a coroutine launch.
+        if (!sdk.dataManager.hasData()) {
+            sdk.logger.debug(
+                message = "ConvertContext.trackConversion: config not loaded, skipping",
+                tag = TAG,
+            )
+            return
+        }
+
+        // Step 2 — goal lookup. Also on the caller thread: the lookup is
+        // deterministic, cheap, and its "unknown goal → WARN" branch
+        // should return promptly so consumer tests don't need to await
+        // the no-op. The enqueue + fire branch (steps 3-6) happens inside
+        // the launch below.
+        val goal = sdk.dataManager.data?.goals?.firstOrNull { it.key == goalKey }
+        if (goal == null) {
+            sdk.logger.warn(
+                message = "ConvertContext.trackConversion: goal not found for key '$goalKey'",
+                tag = TAG,
+            )
+            return
+        }
+        val goalId = goal.id
+        if (goalId == null) {
+            sdk.logger.warn(
+                message = "ConvertContext.trackConversion: goal '$goalKey' has null id; skipping",
+                tag = TAG,
+            )
+            return
+        }
+
+        dispatchConversion(sdk, goalKey, goalId, goalData)
+    }
+
+    /**
+     * Launches the scope coroutine that runs the AC-1 steps 3-6 work
+     * (bare enqueue, optional transaction enqueue, internal CONVERSION
+     * fire). Extracted from [trackConversion] so the outer method stays
+     * under detekt's `LongMethod` ceiling and the launch body holds the
+     * full AC-4 try/catch in one place.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun dispatchConversion(
+        sdk: ConvertSDK,
+        goalKey: String,
+        goalId: String,
+        goalData: List<GoalData>?,
+    ) {
+        sdk.scope.launch {
+            try {
+                // Step 4 — bare goal hit. Always fires.
+                sdk.apiManager?.enqueueConversionEvent(
+                    visitorId = visitorId,
+                    goalId = goalId,
+                    goalData = null,
+                )
+                // Step 5 — transaction payload (only when goalData non-empty).
+                if (!goalData.isNullOrEmpty()) {
+                    sdk.apiManager?.enqueueConversionEvent(
+                        visitorId = visitorId,
+                        goalId = goalId,
+                        goalData = goalData,
+                    )
+                }
+                // Step 6 — internal event fire. JS SDK parity:
+                // `{visitorId, goalKey}` — not goalId. Downstream consumers
+                // that need the id re-resolve via the config.
+                sdk.eventManager.fire(
+                    event = SystemEvents.CONVERSION,
+                    data = mapOf(
+                        "visitorId" to visitorId,
+                        "goalKey" to goalKey,
+                    ),
+                )
+            } catch (t: Throwable) {
+                // AC-4: catch, log, swallow. Never propagate to the host
+                // application. TooGenericExceptionCaught suppressed
+                // intentionally — the whole point of the guard is to
+                // contain any unexpected failure (serialization,
+                // OOM-adjacent, config race, …) from crashing the
+                // host; narrowing the catch would defeat the guarantee.
+                sdk.logger.error(
+                    message = "ConvertContext.trackConversion: enqueue/fire failed " +
+                        "for goalKey='$goalKey' goalId='$goalId'",
+                    throwable = t,
+                    tag = TAG,
+                )
+            }
+        }
     }
 
     /**
