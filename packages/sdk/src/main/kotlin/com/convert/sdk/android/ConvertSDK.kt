@@ -364,6 +364,17 @@ public class ConvertSDK internal constructor(
     private var trackingEnabled: Boolean = config.network?.tracking ?: true
 
     /**
+     * Lock used to serialise the auto-UUID read-generate-persist
+     * sequence in [createContext]. Without it, two concurrent cold-start
+     * calls could both read a null `visitor_id`, both generate distinct
+     * UUIDs, both write — the second write wins and the first caller's
+     * returned context holds an orphan id that is not the persisted one.
+     * The critical section is tiny (one prefs read, maybe one prefs
+     * write) so a single-monitor approach is fine.
+     */
+    private val visitorIdLock: Any = Any()
+
+    /**
      * Creates a [ConvertContext] for the **persisted auto-visitor-id**.
      *
      * Story 3.1 AC-1: on the first call, generates a fresh UUID v4 via
@@ -374,15 +385,23 @@ public class ConvertSDK internal constructor(
      * returned. The id is lost only on app uninstall or explicit storage
      * clear.
      *
+     * Thread safety: the read-generate-persist sequence is guarded by
+     * [visitorIdLock] so two concurrent cold-start calls from different
+     * threads cannot both observe a null key, both generate distinct
+     * UUIDs, and both persist — only one UUID is ever persisted, and
+     * every caller receives it.
+     *
      * No PII (NFR8): UUID v4 is a 122-bit random identifier with no
      * correlation to the user's real identity.
      *
      * @return a context scoped to the persisted auto-visitor-id.
      */
     public fun createContext(): ConvertContext {
-        val existing = dataStore.get(VISITOR_ID_KEY)
-        val id = existing ?: UUID.randomUUID().toString().also {
-            dataStore.set(VISITOR_ID_KEY, it)
+        val id = synchronized(visitorIdLock) {
+            val existing = dataStore.get(VISITOR_ID_KEY)
+            existing ?: UUID.randomUUID().toString().also {
+                dataStore.set(VISITOR_ID_KEY, it)
+            }
         }
         return ConvertContext(visitorId = id)
     }
@@ -585,8 +604,12 @@ public class ConvertSDK internal constructor(
          * Only touched by the no-arg [createContext] overload — the
          * explicit-ID and explicit-ID-with-attributes overloads bypass
          * this key entirely (AC-2).
+         *
+         * `internal` so tests in the same module can verify persistence
+         * without exposing the key name as part of the public API — the
+         * SDK controls its own SharedPreferences schema.
          */
-        public const val VISITOR_ID_KEY: String = "visitor_id"
+        internal const val VISITOR_ID_KEY: String = "visitor_id"
 
         /**
          * Creates a new [Builder].
