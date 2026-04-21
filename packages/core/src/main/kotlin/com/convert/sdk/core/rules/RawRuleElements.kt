@@ -113,8 +113,14 @@ internal data class RawRuleElementNoUrl(val raw: JsonObject) : RuleElementNoUrl 
  * encounters a polymorphic field of one of the interfaces and the wire
  * payload carries no class discriminator — which is always the case for
  * Convert backend config payloads.
+ *
+ * Marked `public` so the `sdk` module's shared-JSON builder and tests in
+ * both `core` and `sdk` scopes can wire it in. Consumers of the published
+ * `sdk-core` artifact should still treat this as an SDK-internal
+ * extension point — the only expected caller is the SDK's own shared
+ * codec assembly.
  */
-internal val rawRuleSerializersModule: SerializersModule = SerializersModule {
+public val rawRuleSerializersModule: SerializersModule = SerializersModule {
     polymorphic(RuleElementAudience::class) {
         defaultDeserializer { RawRuleElementAudienceSerializer }
     }
