@@ -187,15 +187,28 @@ public class DataManager(
      * visitor's bucketing map and persists the result. Every other
      * [StoreData] field is preserved.
      *
-     * Story 3.2 will add additional bucketing side-effects (tracking
-     * events); this method's contract is currently only "persist the
-     * decision".
+     * ### Atomicity (Story 3.2 SDK-3)
+     *
+     * The read (`getStoreData`) and write (`setStoreData`) halves are
+     * held under a single [visitorLock] critical section so concurrent
+     * writers on the same visitor never see a stale snapshot and drop
+     * each other's updates. The intrinsic monitor is re-entrant, so
+     * the nested `synchronized(visitorLock)` blocks inside
+     * [getStoreData] / [setStoreData] compose without self-deadlock.
+     *
+     * Story 3.1 deferred this hardening explicitly — the "two-block
+     * race" flagged in that story's deferrals is what this method
+     * closes.
+     *
+     * Bucketing side-effects (tracking event enqueue, SystemEvents.BUCKETING
+     * fire) live in `ConvertContext.runExperience` — this method's
+     * contract remains strictly "persist the decision".
      */
     public fun updateBucketing(
         visitorId: String,
         experienceKey: String,
         variationId: String,
-    ) {
+    ): Unit = synchronized(visitorLock) {
         val current = getStoreData(visitorId)
         val merged = (current.bucketing ?: emptyMap()) + (experienceKey to variationId)
         setStoreData(visitorId, current.copy(bucketing = merged))
@@ -205,12 +218,18 @@ public class DataManager(
      * Sets the goal-dedup flag for the given [goalKey] on the visitor's
      * goals map and persists the result. Used by Story 4.3 to prevent
      * duplicate goal reports per visitor/goal pair.
+     *
+     * ### Atomicity (Story 3.2 SDK-3)
+     *
+     * Same read-modify-write critical section as [updateBucketing] so
+     * the cross-API race between a bucketing update and a goal update
+     * on the same visitor cannot drop updates from either side.
      */
     public fun updateGoal(
         visitorId: String,
         goalKey: String,
         tracked: Boolean,
-    ) {
+    ): Unit = synchronized(visitorLock) {
         val current = getStoreData(visitorId)
         val merged = (current.goals ?: emptyMap()) + (goalKey to tracked)
         setStoreData(visitorId, current.copy(goals = merged))
