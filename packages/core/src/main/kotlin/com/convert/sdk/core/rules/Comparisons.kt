@@ -302,14 +302,19 @@ internal object Comparisons {
     private fun JsonElement.asComparableString(): String = asRawString().lowercase()
 
     /**
-     * Unquoted string rendering. [JsonPrimitive] content pass-through;
-     * non-primitive renders via [JsonElement.toString] (for [JsonArray] /
-     * [JsonObject], the literal JSON text — only used as a last-ditch
-     * render for array-operator comparisons). [JsonNull] becomes `"null"`.
+     * Unquoted string rendering. [JsonPrimitive.content] strips JSON
+     * quotes whether the primitive is a string or a number, so we can
+     * return it directly. [JsonNull] becomes `"null"` (matches JS SDK
+     * `String(null) === "null"`), though [apply] short-circuits
+     * [JsonNull] on the `value` side before dispatch so this branch
+     * only triggers when the `testAgainst` side is null — which is
+     * itself degenerate input. Non-primitive, non-null elements
+     * render via [JsonElement.toString] as a last-ditch for
+     * array-operator comparisons.
      */
     private fun JsonElement.asRawString(): String = when (this) {
-        is JsonPrimitive -> if (isString) content else content
         is JsonNull -> "null"
+        is JsonPrimitive -> content
         else -> toString()
     }
 

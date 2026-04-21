@@ -12,9 +12,9 @@ import com.convert.sdk.core.port.Logger
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Evaluates audience / location rule trees against a visitor's attribute
@@ -194,7 +194,7 @@ public class RuleManager(
         if (raw == null) return false
 
         val matching = raw["matching"] as? JsonObject
-        val matchType = matching?.get("match_type")?.jsonPrimitive?.contentOrNull
+        val matchType = (matching?.get("match_type") as? JsonPrimitive)?.contentOrNull
         if (matchType == null) {
             logger.warn(
                 message = "RuleManager.evaluate(): rule element missing matching.match_type — " +
@@ -212,9 +212,9 @@ public class RuleManager(
             return false
         }
 
-        val negation = matching["negated"]?.jsonPrimitive?.booleanOrNull == true
+        val negation = (matching["negated"] as? JsonPrimitive)?.booleanOrNull == true
 
-        val ruleKey = raw["key"]?.jsonPrimitive?.contentOrNull
+        val ruleKey = (raw["key"] as? JsonPrimitive)?.contentOrNull
         val ruleValue = raw["value"] ?: JsonNull
 
         val attrValue = lookupAttribute(attributes, ruleKey)
