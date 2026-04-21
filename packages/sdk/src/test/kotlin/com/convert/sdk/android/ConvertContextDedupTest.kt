@@ -23,9 +23,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -33,7 +31,6 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.shadows.ShadowLog
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 
 /**
  * Robolectric-backed tests for Story 4.3:
@@ -45,21 +42,17 @@ import java.util.concurrent.TimeUnit
  * `conversionSetting: Map<String, Any?>? = null` parameter carrying the
  * `forceMultipleTransactions` flag.
  *
- * ### JS SDK parity anchor
+ * ### Corrected single-call shape (F-007 / F-015 / F-008 remediation)
  *
- * The dedup semantics mirror
- * `javascript-sdk/packages/data/src/data-manager.ts:1019-1048`:
+ * The dedup semantics use a SINGLE `enqueueConversionEvent` call per tracked
+ * conversion, carrying `goalData` verbatim. There is no separate `"tr"` event
+ * type (`types.gen.ts:2742-2757` defines only `"bucketing"` and
+ * `"conversion"`); revenue lives inside `goalData` on the same ConversionEvent.
  *
- *  - `goalTriggered && !forceMultipleTransactions` → early return
- *    (`convert()` returns `undefined`); `context.ts:417` guard skips the
- *    CONVERSION fire. Result: no bare enqueue, no transaction enqueue,
- *    no CONVERSION event.
- *  - `goalTriggered && forceMultipleTransactions` → SKIP bare conversion
- *    enqueue (`if (!goalTriggered) sendConversion()` on line 1044), SEND
- *    transaction enqueue when goalData non-empty (line 1047 condition),
- *    FIRE CONVERSION (convert() reaches line 1087 return true).
- *  - `!goalTriggered` (first call, either mode) → mark tracked, send bare
- *    enqueue, send transaction enqueue if goalData non-empty, fire
+ *  - `goalTriggered && !forceMultipleTransactions` → DEBUG log, early return —
+ *    no enqueue, no CONVERSION fire.
+ *  - `!goalTriggered || forceMultipleTransactions` → single
+ *    `enqueueConversionEvent` call with goalData (null when omitted), FIRE
  *    CONVERSION.
  *
  * ### Test structure
@@ -180,7 +173,7 @@ internal class ConvertContextDedupTest {
         )
     }
 
-    // --- AC-3: forceMultipleTransactions bypasses dedup for transaction path
+    // --- AC-3: forceMultipleTransactions bypasses dedup for conversion ------
 
     @Test
     fun `forceMultipleTransactions goal allows repeat tracking`() {
@@ -195,43 +188,37 @@ internal class ConvertContextDedupTest {
         )
         val forceSetting = mapOf("forceMultipleTransactions" to true)
 
-        // First call with force+goalData — sends bare + transaction = 2 enqueues.
+        // First call with force+goalData — single ConversionEvent with goalData.
+        // F-007/F-015 remediation: no separate "bare" + "transaction" enqueues;
+        // revenue lives in goalData on the single ConversionEvent.
         ctx.trackConversion("purchase", goalData = goalData, conversionSetting = forceSetting)
-        awaitCondition { recordingApi.enqueueConversionCalls.size == 2 }
+        awaitCondition { recordingApi.enqueueConversionCalls.size == 1 }
 
-        // Second call with force+goalData — dedup would normally skip, but
-        // forceMultipleTransactions=true keeps the transaction flowing while
-        // the bare conversion is STILL skipped (JS parity: the line 1044
-        // `if (!goalTriggered) sendConversion()` guard is unconditional
-        // on the "already tracked" branch, so only the transaction path
-        // is re-fired). Net: one new enqueue (the transaction).
+        // Second call with force+goalData — forceMultipleTransactions=true
+        // bypasses dedup entirely; another single ConversionEvent with goalData2.
         val goalData2 = listOf(
             GoalData(key = GoalDataKey.AMOUNT, value = JsonPrimitive(29.99)),
             GoalData(key = GoalDataKey.TRANSACTION_ID, value = JsonPrimitive("TX-2")),
         )
         ctx.trackConversion("purchase", goalData = goalData2, conversionSetting = forceSetting)
-        awaitCondition { recordingApi.enqueueConversionCalls.size == 3 }
+        awaitCondition { recordingApi.enqueueConversionCalls.size == 2 }
 
-        assertEquals(3, recordingApi.enqueueConversionCalls.size)
-        val (firstBare, firstTxn, secondTxn) = Triple(
-            recordingApi.enqueueConversionCalls[0],
-            recordingApi.enqueueConversionCalls[1],
-            recordingApi.enqueueConversionCalls[2],
-        )
-        assertNull("call 1 is bare hit", firstBare.goalData)
-        assertNotNull("call 2 is transaction", firstTxn.goalData)
-        assertNotNull("call 3 (repeat) is transaction only — bare skipped by dedup", secondTxn.goalData)
+        assertEquals(2, recordingApi.enqueueConversionCalls.size)
+        val firstCall = recordingApi.enqueueConversionCalls[0]
+        val secondCall = recordingApi.enqueueConversionCalls[1]
+        assertNotNull("first call carries goalData", firstCall.goalData)
+        assertNotNull("second call (force repeat) carries goalData2", secondCall.goalData)
         assertEquals(
             "TX-2",
-            secondTxn.goalData?.firstOrNull { it.key == GoalDataKey.TRANSACTION_ID }
+            secondCall.goalData?.firstOrNull { it.key == GoalDataKey.TRANSACTION_ID }
                 ?.value?.toString()?.trim('"'),
         )
     }
 
-    // --- AC-3: force=true FIRST call still sends both bare + transaction --
+    // --- AC-3: force=true FIRST call sends single ConversionEvent with goalData
 
     @Test
-    fun `forceMultipleTransactions first call sends bare plus transaction`() {
+    fun `forceMultipleTransactions first call sends single conversion with goalData`() {
         val sdk = buildSdk(testConfig())
         val recordingApi = RecordingConversionApiManager()
         sdk.attachTestApiManager(recordingApi)
@@ -242,12 +229,13 @@ internal class ConvertContextDedupTest {
             goalData = listOf(GoalData(GoalDataKey.AMOUNT, JsonPrimitive(10.0))),
             conversionSetting = mapOf("forceMultipleTransactions" to true),
         )
-        awaitCondition { recordingApi.enqueueConversionCalls.size == 2 }
+        awaitCondition { recordingApi.enqueueConversionCalls.size == 1 }
 
-        // Fresh visitor, force=true → both bare (line 1044) and transaction
-        // (line 1047) fire on the first call.
-        assertNull("first call bare", recordingApi.enqueueConversionCalls[0].goalData)
-        assertNotNull("first call transaction", recordingApi.enqueueConversionCalls[1].goalData)
+        // Fresh visitor, force=true → single ConversionEvent carrying goalData
+        // (F-007/F-015: no separate bare + transaction calls; revenue in goalData).
+        val call = recordingApi.enqueueConversionCalls[0]
+        assertNotNull("first call carries goalData", call.goalData)
+        assertEquals(1, recordingApi.enqueueConversionCalls.size)
     }
 
     // --- AC-4: dedup is per-visitor ---------------------------------------
@@ -348,13 +336,14 @@ internal class ConvertContextDedupTest {
         )
     }
 
-    // --- AC-5 edge case: dedup without goalData skips everything ----------
+    // --- AC-5 edge case: dedup with goalData suppresses the ConversionEvent --
 
     @Test
-    fun `regular goal second call with goalData also dedups both enqueues`() {
+    fun `regular goal second call with goalData dedups the conversion enqueue`() {
         // Without forceMultipleTransactions, AC-5 rationale: "if the
-        // conversion is skipped, so is the revenue". Both the bare and
-        // transaction enqueues must suppress on the second call.
+        // conversion is skipped, so is the revenue". The single ConversionEvent
+        // (carrying goalData) must be suppressed on the second call.
+        // F-007/F-015: no separate bare/transaction; one ConversionEvent total.
         val sdk = buildSdk(testConfig())
         val recordingApi = RecordingConversionApiManager()
         sdk.attachTestApiManager(recordingApi)
@@ -363,17 +352,16 @@ internal class ConvertContextDedupTest {
         val goalData = listOf(GoalData(GoalDataKey.AMOUNT, JsonPrimitive(50.0)))
 
         ctx.trackConversion("purchase", goalData = goalData)
-        awaitCondition { recordingApi.enqueueConversionCalls.size == 2 }
+        awaitCondition { recordingApi.enqueueConversionCalls.size == 1 }
 
         ctx.trackConversion("purchase", goalData = goalData)
         Thread.sleep(SETTLE_MS)
 
-        // Both calls from the second invocation (bare + transaction) must
-        // have been suppressed — still only 2 enqueues total.
+        // Second call is suppressed by dedup — still only 1 enqueue total.
         assertEquals(
-            "second call must suppress both bare and transaction enqueue; got " +
+            "second call must suppress the conversion enqueue; got " +
                 recordingApi.enqueueConversionCalls,
-            2,
+            1,
             recordingApi.enqueueConversionCalls.size,
         )
     }
