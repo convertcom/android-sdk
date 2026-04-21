@@ -8,16 +8,10 @@ package com.convert.sdk.android
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.convert.sdk.core.event.SystemEvents
+import com.convert.sdk.core.internal.sharedSerializersModule
 import com.convert.sdk.core.model.FeatureStatus
-import com.convert.sdk.core.model.generated.ConfigExperience
-import com.convert.sdk.core.model.generated.ConfigFeature
 import com.convert.sdk.core.model.generated.ConfigResponseData
-import com.convert.sdk.core.model.generated.ExperienceChangeFullStackFeatureBaseAllOfData
-import com.convert.sdk.core.model.generated.ExperienceChangeFullStackFeatureServing
-import com.convert.sdk.core.model.generated.ExperienceChangeServing
-import com.convert.sdk.core.model.generated.ExperienceVariationConfig
-import com.convert.sdk.core.model.generated.FeatureVariableItemData
-import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
@@ -31,7 +25,6 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import java.math.BigDecimal
 
 /**
  * Robolectric-backed tests for Story 4.1 — [FeatureManager.evaluate] and
@@ -41,23 +34,45 @@ import java.math.BigDecimal
  * Robolectric-backed Android context — the same pattern used by
  * [ConvertContextRunExperienceTest].
  *
- * ### Fixture shape (`featureConfig`)
+ * ### Why decode configs from JSON strings
  *
- * One experience `welcome` with two 50/50 variations; the control variation
- * (`var-a`) carries a `fullStackFeature` change referencing feature `100`
- * with a `variables_data` payload carrying one of each primitive type.
- * `visitor_abc` hashes into `var-a`, so the bucketed feature for that
- * visitor is ENABLED. `visitor_xyz` hashes into `var-b`, which exposes no
- * feature change — so the feature resolves as DISABLED for that visitor.
+ * `ConfigResponseData` contains `List<ExperienceChangeServing>` on each
+ * variation. `ExperienceChangeServing` is an interface the OpenAPI
+ * generator emits; the concrete `ExperienceChangeFullStackFeatureServing`
+ * data class does NOT declare `: ExperienceChangeServing` (generator
+ * quirk). That rules out constructing typed fixtures directly — the
+ * Kotlin compiler rejects the cast. Instead, we build the config as a
+ * JSON string and decode it through the sdk's shared JSON, which uses
+ * [com.convert.sdk.core.internal.RawExperienceChangeServingSerializer] to
+ * materialise the `changes` entries as raw-JSON-backed holders
+ * implementing the interface. Bonus: this exercises the real decode
+ * path the SDK uses in production.
  *
- * Feature `200` is declared but never referenced by any variation's
- * changes, so it is always DISABLED. This covers AC-8 (declared but not
- * bucketed).
+ * ### Fixture shapes
+ *
+ * `featureConfigJson()` — one experience (`welcome`) with two 50/50
+ * variations; the control variation (`var-a`) carries a
+ * `fullStackFeature` change referencing feature `100` with a typed
+ * variable payload. `visitor_abc` hashes into `var-a`, so the feature
+ * is ENABLED. `visitor_xyz` hashes into `var-b` (no feature change) —
+ * so the same feature is DISABLED for that visitor. Feature `200`
+ * (`orphan-feature`) is declared but never surfaced by any variation,
+ * so it always reports DISABLED.
+ *
+ * `twoExperienceFeatureConfigJson()` — both experiences expose feature
+ * `100`. Used to assert declaration-order winner semantics.
  */
 @RunWith(RobolectricTestRunner::class)
 internal class FeatureManagerTest {
 
     private lateinit var appContext: Context
+
+    /** Shared JSON with the sdk's full serializer module wired in. */
+    private val json: Json = Json {
+        ignoreUnknownKeys = true
+        explicitNulls = false
+        serializersModule = sharedSerializersModule
+    }
 
     @Before
     fun setUp() {
@@ -69,130 +84,128 @@ internal class FeatureManagerTest {
             .apply()
     }
 
-    // --- fixture builders ------------------------------------------------
+    // --- fixtures --------------------------------------------------------
 
-    private fun variablesDataJson(): JsonObject = JsonObject(
-        mapOf(
-            "color" to JsonPrimitive("blue"),
-            "count" to JsonPrimitive(3),
-            "flag" to JsonPrimitive(true),
-            "ratio" to JsonPrimitive(0.5),
-        ),
-    )
+    private fun featureConfigJson(): String = """
+    {
+      "experiences": [
+        {
+          "id": "exp-1",
+          "key": "welcome",
+          "variations": [
+            {
+              "id": "var-a",
+              "key": "control",
+              "traffic_allocation": 50.0,
+              "changes": [
+                {
+                  "id": 1,
+                  "type": "fullStackFeature",
+                  "data": {
+                    "feature_id": 100,
+                    "variables_data": {
+                      "color": "blue",
+                      "count": 3,
+                      "flag": true,
+                      "ratio": 0.5
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "id": "var-b",
+              "key": "treatment",
+              "traffic_allocation": 50.0,
+              "changes": []
+            }
+          ]
+        }
+      ],
+      "features": [
+        {
+          "id": "100",
+          "key": "dark-mode",
+          "name": "Dark Mode",
+          "variables": [
+            {"key": "color", "type": "string"},
+            {"key": "count", "type": "integer"},
+            {"key": "flag", "type": "boolean"},
+            {"key": "ratio", "type": "float"}
+          ]
+        },
+        {
+          "id": "200",
+          "key": "orphan-feature",
+          "name": "Orphan",
+          "variables": []
+        }
+      ]
+    }
+    """.trimIndent()
 
-    private fun featureConfig(): ConfigResponseData = ConfigResponseData(
-        experiences = listOf(
-            ConfigExperience(
-                id = "exp-1",
-                key = "welcome",
-                variations = listOf(
-                    ExperienceVariationConfig(
-                        id = "var-a",
-                        key = "control",
-                        trafficAllocation = BigDecimal.valueOf(50.0),
-                        changes = listOf(
-                            ExperienceChangeFullStackFeatureServing(
-                                id = 1,
-                                type = "fullStackFeature",
-                                data = ExperienceChangeFullStackFeatureBaseAllOfData(
-                                    featureId = 100,
-                                    variablesData = variablesDataJson(),
-                                ),
-                            ) as ExperienceChangeServing,
-                        ),
-                    ),
-                    ExperienceVariationConfig(
-                        id = "var-b",
-                        key = "treatment",
-                        trafficAllocation = BigDecimal.valueOf(50.0),
-                        changes = emptyList(),
-                    ),
-                ),
-            ),
-        ),
-        features = listOf(
-            ConfigFeature(
-                id = "100",
-                key = "dark-mode",
-                name = "Dark Mode",
-                variables = listOf(
-                    FeatureVariableItemData(key = "color", type = "string"),
-                    FeatureVariableItemData(key = "count", type = "integer"),
-                    FeatureVariableItemData(key = "flag", type = "boolean"),
-                    FeatureVariableItemData(key = "ratio", type = "float"),
-                ),
-            ),
-            ConfigFeature(
-                id = "200",
-                key = "orphan-feature",
-                name = "Orphan",
-                variables = emptyList(),
-            ),
-        ),
-    )
+    private fun twoExperienceFeatureConfigJson(): String = """
+    {
+      "experiences": [
+        {
+          "id": "exp-first",
+          "key": "first-exp",
+          "variations": [
+            {
+              "id": "v1-a",
+              "key": "control",
+              "traffic_allocation": 100.0,
+              "changes": [
+                {
+                  "id": 1,
+                  "type": "fullStackFeature",
+                  "data": {
+                    "feature_id": 100,
+                    "variables_data": {"from": "first"}
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "exp-second",
+          "key": "second-exp",
+          "variations": [
+            {
+              "id": "v2-a",
+              "key": "control",
+              "traffic_allocation": 100.0,
+              "changes": [
+                {
+                  "id": 2,
+                  "type": "fullStackFeature",
+                  "data": {
+                    "feature_id": 100,
+                    "variables_data": {"from": "second"}
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "features": [
+        {
+          "id": "100",
+          "key": "dark-mode",
+          "name": "Dark Mode",
+          "variables": []
+        }
+      ]
+    }
+    """.trimIndent()
 
-    /**
-     * Config with TWO experiences both exposing the same feature id `100`.
-     * `visitor_abc` is bucketed into the first experience's `var-a`
-     * (exposes feature) AND into the second experience's variation — we
-     * assert that the returned Feature references the FIRST experience
-     * (declaration order — readiness Q3).
-     */
-    private fun twoExperienceFeatureConfig(): ConfigResponseData = ConfigResponseData(
-        experiences = listOf(
-            ConfigExperience(
-                id = "exp-first",
-                key = "first-exp",
-                variations = listOf(
-                    ExperienceVariationConfig(
-                        id = "v1-a",
-                        key = "control",
-                        trafficAllocation = BigDecimal.valueOf(100.0),
-                        changes = listOf(
-                            ExperienceChangeFullStackFeatureServing(
-                                id = 1,
-                                type = "fullStackFeature",
-                                data = ExperienceChangeFullStackFeatureBaseAllOfData(
-                                    featureId = 100,
-                                    variablesData = JsonObject(
-                                        mapOf("from" to JsonPrimitive("first")),
-                                    ),
-                                ),
-                            ) as ExperienceChangeServing,
-                        ),
-                    ),
-                ),
-            ),
-            ConfigExperience(
-                id = "exp-second",
-                key = "second-exp",
-                variations = listOf(
-                    ExperienceVariationConfig(
-                        id = "v2-a",
-                        key = "control",
-                        trafficAllocation = BigDecimal.valueOf(100.0),
-                        changes = listOf(
-                            ExperienceChangeFullStackFeatureServing(
-                                id = 2,
-                                type = "fullStackFeature",
-                                data = ExperienceChangeFullStackFeatureBaseAllOfData(
-                                    featureId = 100,
-                                    variablesData = JsonObject(
-                                        mapOf("from" to JsonPrimitive("second")),
-                                    ),
-                                ),
-                            ) as ExperienceChangeServing,
-                        ),
-                    ),
-                ),
-            ),
-        ),
-        features = listOf(
-            ConfigFeature(id = "100", key = "dark-mode", name = "Dark Mode", variables = emptyList()),
-        ),
-    )
+    private fun decodeConfig(payload: String): ConfigResponseData =
+        json.decodeFromString(payload)
 
-    private fun buildSdk(config: ConfigResponseData): ConvertSDK {
+    private fun buildSdk(configJson: String): ConvertSDK {
+        val config = decodeConfig(configJson)
         val sdk = ConvertSDK.builder(appContext).data(config).build()
         awaitCondition(timeoutMs = 2_000L) { sdk.dataManager.hasData() }
         return sdk
@@ -202,7 +215,7 @@ internal class FeatureManagerTest {
 
     @Test
     fun `evaluate returns null for unknown feature key`() {
-        val sdk = buildSdk(featureConfig())
+        val sdk = buildSdk(featureConfigJson())
         val ctx = sdk.createContext("visitor_abc")
 
         val result = sdk.featureManager.evaluate(ctx, "does-not-exist")
@@ -214,7 +227,7 @@ internal class FeatureManagerTest {
 
     @Test
     fun `evaluate returns ENABLED Feature with variables when visitor bucketed into variation exposing feature`() {
-        val sdk = buildSdk(featureConfig())
+        val sdk = buildSdk(featureConfigJson())
         val ctx = sdk.createContext("visitor_abc")
 
         val result = sdk.featureManager.evaluate(ctx, "dark-mode")
@@ -227,7 +240,6 @@ internal class FeatureManagerTest {
         assertEquals("Dark Mode", result?.name)
         assertEquals("exp-1", result?.experienceId)
         assertEquals("welcome", result?.experienceKey)
-        // Typed variables round-trip (AC-4).
         val vars = result?.variables
         assertNotNull(vars)
         assertEquals("blue", (vars?.get("color") as? JsonPrimitive)?.contentOrNull)
@@ -236,11 +248,11 @@ internal class FeatureManagerTest {
         assertEquals(0.5, (vars?.get("ratio") as? JsonPrimitive)?.doubleOrNull ?: 0.0, 0.0001)
     }
 
-    // --- AC-8: declared but not bucketed -> DISABLED ---------------------
+    // --- AC-8: declared but not surfaced -> DISABLED ---------------------
 
     @Test
     fun `evaluate returns DISABLED Feature when declared but no variation exposes it`() {
-        val sdk = buildSdk(featureConfig())
+        val sdk = buildSdk(featureConfigJson())
         val ctx = sdk.createContext("visitor_abc")
 
         val result = sdk.featureManager.evaluate(ctx, "orphan-feature")
@@ -255,12 +267,12 @@ internal class FeatureManagerTest {
 
     @Test
     fun `evaluate returns DISABLED Feature when visitor bucketed into variation without the feature change`() {
-        // visitor_xyz hashes to 6834 -> above the 5000 boundary -> var-b (no feature change)
-        val sdk = buildSdk(featureConfig())
+        // visitor_xyz hashes into var-b which has no feature change.
+        val sdk = buildSdk(featureConfigJson())
         val ctx = sdk.createContext("visitor_xyz")
 
-        // Pre-bucket to confirm assignment.
         val bucketed = ctx.runExperience("welcome")
+        // Sanity: visitor_xyz goes to var-b.
         assertEquals("var-b", bucketed?.id)
 
         val result = sdk.featureManager.evaluate(ctx, "dark-mode")
@@ -274,7 +286,7 @@ internal class FeatureManagerTest {
 
     @Test
     fun `evaluate respects sticky bucketing on second call`() {
-        val sdk = buildSdk(featureConfig())
+        val sdk = buildSdk(featureConfigJson())
         val ctx = sdk.createContext("visitor_abc")
 
         val first = sdk.featureManager.evaluate(ctx, "dark-mode")
@@ -292,7 +304,7 @@ internal class FeatureManagerTest {
 
     @Test
     fun `evaluate enqueues at most one bucketing event for the same experience across calls`() {
-        val sdk = buildSdk(featureConfig())
+        val sdk = buildSdk(featureConfigJson())
         val recordingApi = ConvertContextRunExperienceTest.RecordingApiManager()
         sdk.attachTestApiManager(recordingApi)
         val ctx = sdk.createContext("visitor_abc")
@@ -311,7 +323,7 @@ internal class FeatureManagerTest {
 
     @Test
     fun `evaluate returns first-declaration-order match when multiple experiences expose the feature`() {
-        val sdk = buildSdk(twoExperienceFeatureConfig())
+        val sdk = buildSdk(twoExperienceFeatureConfigJson())
         val ctx = sdk.createContext("visitor_abc")
 
         val result = sdk.featureManager.evaluate(ctx, "dark-mode")
@@ -329,7 +341,7 @@ internal class FeatureManagerTest {
 
     @Test
     fun `evaluateAll returns entries for all declared features with mixed statuses`() {
-        val sdk = buildSdk(featureConfig())
+        val sdk = buildSdk(featureConfigJson())
         val ctx = sdk.createContext("visitor_abc")
 
         val results = sdk.featureManager.evaluateAll(ctx)
@@ -346,7 +358,7 @@ internal class FeatureManagerTest {
 
     @Test
     fun `evaluate fires SystemEvents BUCKETING exactly once (not a separate feature event)`() {
-        val sdk = buildSdk(featureConfig())
+        val sdk = buildSdk(featureConfigJson())
         val received = mutableListOf<Map<String, Any?>>()
         val callback = ConvertContextRunExperienceTest.RecordingEventCallback(received)
         sdk.on(SystemEvents.BUCKETING, callback)
@@ -355,8 +367,6 @@ internal class FeatureManagerTest {
         sdk.featureManager.evaluate(ctx, "dark-mode")
 
         awaitCondition { received.isNotEmpty() }
-        // One BUCKETING event fires (the experience resolution); there is
-        // NO separate "feature_evaluated" event (AC-6).
         assertTrue(
             "Expected at least one BUCKETING event, got ${received.size}",
             received.isNotEmpty(),
