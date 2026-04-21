@@ -13,7 +13,6 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNotSame
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
-import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
@@ -63,14 +62,20 @@ internal class SmokeTest {
     }
 
     @Test
-    fun `createContext without args mints a fresh visitor id each call`() {
+    fun `createContext without args returns same persisted visitor id`() {
+        // Story 3.1 AC-1: the no-arg createContext now persists the first
+        // auto-UUID and returns it on every subsequent call (same process
+        // or across restarts). The Story 1.2 "fresh UUID each call"
+        // contract was explicitly retired.
         val sdk = sdkWithDefaults()
         val first = sdk.createContext()
         val second = sdk.createContext()
         assertNotNull(first.visitorId)
         assertNotNull(second.visitorId)
+        // Still distinct context wrappers — each call constructs a new
+        // ConvertContext; only the visitorId is shared.
         assertNotSame(first, second)
-        assertTrue(first.visitorId != second.visitorId)
+        assertEquals(first.visitorId, second.visitorId, "AC-1 persistence")
     }
 
     @Test
@@ -90,11 +95,15 @@ internal class SmokeTest {
     }
 
     @Test
-    fun `createContext with null attributes leaves attribute map empty`() {
+    fun `createContext with null attributes sets attributes to empty map`() {
+        // Story 3.1 AC-3: null attributes is normalised to an empty map
+        // (the story's literal code: `setAttributes(attributes ?: emptyMap())`).
+        // Consumers see consistent observable state regardless of whether
+        // they passed null or an explicit empty map.
         val sdk = sdkWithDefaults()
         val context = sdk.createContext("visitor-42", null)
         assertEquals("visitor-42", context.visitorId)
-        assertNull(context.debugSnapshot()["attributes"])
+        assertEquals(emptyMap<String, Any?>(), context.debugSnapshot()["attributes"])
     }
 
     @Test
