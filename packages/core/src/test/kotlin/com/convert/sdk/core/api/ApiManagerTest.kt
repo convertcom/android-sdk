@@ -440,6 +440,103 @@ internal class ApiManagerTest {
         assertTrue(debugs.first().contains("goalDataSize=2"), debugs.first())
     }
 
+    // --- Story 4.4 — segments parameter on enqueue stubs --------------------
+
+    @Test
+    fun `enqueueBucketingEvent stub accepts segments map and logs segmentsSize`() {
+        // Story 4.4 AC-3: the bucketing enqueue stub now takes a merged
+        // segments map so Story 5.1 can thread it into the outbound Visitor
+        // payload. The stub itself is still a no-op; all we verify here is
+        // (a) the signature compiles with a non-empty segments argument and
+        // (b) the DEBUG trace reports segmentsSize so operators can confirm
+        // the call site supplied segments.
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val logger = CapturingLogger()
+        val api = ApiManager(http, logger, convertConfig(sdkKey = "sk-1"), json)
+
+        val segments: Map<String, kotlinx.serialization.json.JsonElement> = mapOf(
+            "country" to kotlinx.serialization.json.JsonPrimitive("US"),
+            "device" to kotlinx.serialization.json.JsonPrimitive("mobile"),
+        )
+
+        api.enqueueBucketingEvent(
+            visitorId = "v-1",
+            experienceId = "e-1",
+            variationId = "var-a",
+            segments = segments,
+        )
+
+        assertEquals(0, http.calls.size)
+        val debugs = logger.allMessages().filter { it.contains("enqueueBucketingEvent") }
+        assertEquals(1, debugs.size, "expected one DEBUG trace; got $debugs")
+        assertTrue(debugs.first().contains("segmentsSize=2"), debugs.first())
+    }
+
+    @Test
+    fun `enqueueBucketingEvent stub defaults to empty segments when omitted`() {
+        // Story 4.4: existing call sites that predate the segments parameter
+        // must keep compiling. The default value is empty map; the DEBUG
+        // trace reports segmentsSize=0 for the unset case.
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val logger = CapturingLogger()
+        val api = ApiManager(http, logger, convertConfig(sdkKey = "sk-1"), json)
+
+        api.enqueueBucketingEvent(
+            visitorId = "v-1",
+            experienceId = "e-1",
+            variationId = "var-a",
+        )
+
+        val debugs = logger.allMessages().filter { it.contains("enqueueBucketingEvent") }
+        assertEquals(1, debugs.size)
+        assertTrue(debugs.first().contains("segmentsSize=0"), debugs.first())
+    }
+
+    @Test
+    fun `enqueueConversionEvent stub accepts segments map and logs segmentsSize`() {
+        // Story 4.4 AC-3 — conversion enqueue mirror of the bucketing test.
+        // Same rationale: signature compiles, DEBUG trace reports size so
+        // the call site's segment map is observable.
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val logger = CapturingLogger()
+        val api = ApiManager(http, logger, convertConfig(sdkKey = "sk-1"), json)
+
+        val segments: Map<String, kotlinx.serialization.json.JsonElement> = mapOf(
+            "plan" to kotlinx.serialization.json.JsonPrimitive("gold"),
+        )
+
+        api.enqueueConversionEvent(
+            visitorId = "v-1",
+            goalId = "g-42",
+            goalData = null,
+            segments = segments,
+        )
+
+        assertEquals(0, http.calls.size)
+        val debugs = logger.allMessages().filter { it.contains("enqueueConversionEvent") }
+        assertEquals(1, debugs.size)
+        assertTrue(debugs.first().contains("segmentsSize=1"), debugs.first())
+    }
+
+    @Test
+    fun `enqueueConversionEvent stub defaults to empty segments when omitted`() {
+        // Story 4.4: legacy callers passing no segments get emptyMap and a
+        // segmentsSize=0 DEBUG trace.
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val logger = CapturingLogger()
+        val api = ApiManager(http, logger, convertConfig(sdkKey = "sk-1"), json)
+
+        api.enqueueConversionEvent(
+            visitorId = "v-1",
+            goalId = "g-42",
+            goalData = null,
+        )
+
+        val debugs = logger.allMessages().filter { it.contains("enqueueConversionEvent") }
+        assertEquals(1, debugs.size)
+        assertTrue(debugs.first().contains("segmentsSize=0"), debugs.first())
+    }
+
     // --- Test helpers -------------------------------------------------------
 
     /**
