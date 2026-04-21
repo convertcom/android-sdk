@@ -328,6 +328,152 @@ internal class DataManagerTest {
         assertSame(first, second)
     }
 
+    // --- Story 3.2 SDK-3: atomic read-modify-write under concurrent writers.
+    //
+    // The pre-SDK-3 implementation released the visitor lock between the
+    // getStoreData read and the setStoreData write, so two threads could
+    // both read the same snapshot, both build a merged map, both write —
+    // last write wins and the first thread's update is lost. These tests
+    // spawn many parallel writers against a single visitor and assert
+    // zero lost updates.
+
+    @Test
+    fun `updateBucketing is atomic under concurrent writers — no lost updates`() {
+        val dataStore = RecordingDataStore()
+        val manager = DataManager(
+            eventManager = EventManager(),
+            environment = "staging",
+            dataStore = dataStore,
+        )
+        // Seed the visitor with an empty StoreData to prime the cache.
+        manager.setStoreData("v", StoreData())
+
+        val writerCount = 64
+        val startGate = java.util.concurrent.CountDownLatch(1)
+        val doneGate = java.util.concurrent.CountDownLatch(writerCount)
+
+        for (i in 0 until writerCount) {
+            Thread {
+                try {
+                    // Start all threads in the narrow window around the
+                    // read-modify-write so the race has maximum chance
+                    // to manifest.
+                    startGate.await()
+                    manager.updateBucketing(
+                        visitorId = "v",
+                        experienceKey = "exp-$i",
+                        variationId = "var-$i",
+                    )
+                } finally {
+                    doneGate.countDown()
+                }
+            }.start()
+        }
+
+        startGate.countDown()
+        assertTrue(
+            doneGate.await(10, java.util.concurrent.TimeUnit.SECONDS),
+            "Writers did not complete within the timeout",
+        )
+
+        val finalBucketing = manager.getStoreData("v").bucketing ?: emptyMap()
+        assertEquals(writerCount, finalBucketing.size, "Lost updates detected: $finalBucketing")
+        for (i in 0 until writerCount) {
+            assertEquals(
+                "var-$i",
+                finalBucketing["exp-$i"],
+                "Missing or incorrect value for exp-$i",
+            )
+        }
+    }
+
+    @Test
+    fun `updateGoal is atomic under concurrent writers — no lost updates`() {
+        val dataStore = RecordingDataStore()
+        val manager = DataManager(
+            eventManager = EventManager(),
+            environment = "staging",
+            dataStore = dataStore,
+        )
+        manager.setStoreData("v", StoreData())
+
+        val writerCount = 64
+        val startGate = java.util.concurrent.CountDownLatch(1)
+        val doneGate = java.util.concurrent.CountDownLatch(writerCount)
+
+        for (i in 0 until writerCount) {
+            Thread {
+                try {
+                    startGate.await()
+                    manager.updateGoal(
+                        visitorId = "v",
+                        goalKey = "goal-$i",
+                        tracked = true,
+                    )
+                } finally {
+                    doneGate.countDown()
+                }
+            }.start()
+        }
+
+        startGate.countDown()
+        assertTrue(
+            doneGate.await(10, java.util.concurrent.TimeUnit.SECONDS),
+            "Writers did not complete within the timeout",
+        )
+
+        val finalGoals = manager.getStoreData("v").goals ?: emptyMap()
+        assertEquals(writerCount, finalGoals.size, "Lost updates detected: $finalGoals")
+        for (i in 0 until writerCount) {
+            assertEquals(true, finalGoals["goal-$i"], "Missing flag for goal-$i")
+        }
+    }
+
+    @Test
+    fun `updateBucketing interleaved with updateGoal on same visitor preserves both maps`() {
+        // Cross-API race — updateBucketing + updateGoal both touch the same
+        // visitor StoreData. If either fails to hold the lock across read +
+        // write, updates from the other API will be lost. This test asserts
+        // both maps end up complete.
+        val dataStore = RecordingDataStore()
+        val manager = DataManager(
+            eventManager = EventManager(),
+            environment = "staging",
+            dataStore = dataStore,
+        )
+        manager.setStoreData("v", StoreData())
+
+        val perApiCount = 32
+        val startGate = java.util.concurrent.CountDownLatch(1)
+        val doneGate = java.util.concurrent.CountDownLatch(perApiCount * 2)
+
+        for (i in 0 until perApiCount) {
+            Thread {
+                try {
+                    startGate.await()
+                    manager.updateBucketing("v", "exp-$i", "var-$i")
+                } finally {
+                    doneGate.countDown()
+                }
+            }.start()
+            Thread {
+                try {
+                    startGate.await()
+                    manager.updateGoal("v", "goal-$i", tracked = true)
+                } finally {
+                    doneGate.countDown()
+                }
+            }.start()
+        }
+
+        startGate.countDown()
+        assertTrue(doneGate.await(10, java.util.concurrent.TimeUnit.SECONDS))
+
+        val final = manager.getStoreData("v")
+        assertEquals(perApiCount, final.bucketing?.size)
+        assertEquals(perApiCount, final.goals?.size)
+    }
+
     // --- helpers ---------------------------------------------------------
 
     /**
