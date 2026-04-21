@@ -10,9 +10,6 @@ import com.convert.sdk.core.event.SystemEvents
 import com.convert.sdk.core.model.StoreData
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.port.DataStore
-import io.mockk.every
-import io.mockk.mockk
-import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -40,6 +37,17 @@ import org.junit.jupiter.api.Test
  * `runTest`-provided [TestScope] into the [EventManager] and
  * `advanceUntilIdle()` after each fire so the dispatched coroutine
  * completes before we assert.
+ *
+ * ### Why no MockK in this module
+ *
+ * `:packages:core` is a pure-Kotlin/JVM module. MockK on JVM 23 needs
+ * ByteBuddy's external-process self-attach, which the SDKMAN!-backed
+ * Temurin toolchain the repo targets does not support at test time
+ * without extra JVM args. The rest of the core test suite (and the
+ * SmokeTest in `:packages:sdk`) already follows a handwritten-fakes
+ * convention; Story 3.1's [DataManagerTest] extends that convention
+ * with [RecordingDataStore] — a tiny fake that tracks every
+ * get/set/remove call without needing a mocking framework.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 internal class DataManagerTest {
@@ -112,7 +120,7 @@ internal class DataManagerTest {
 
     @Test
     fun `getStoreData returns empty StoreData for new visitor`() {
-        val dataStore = inMemoryDataStore()
+        val dataStore = RecordingDataStore()
         val manager = DataManager(
             eventManager = EventManager(),
             environment = "staging",
@@ -130,9 +138,11 @@ internal class DataManagerTest {
 
     @Test
     fun `setStoreData persists to DataStore under sanitized visitor key`() {
-        val dataStore = mockk<DataStore>(relaxed = true)
-        every { dataStore.get(any()) } returns null
-        val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
+        val dataStore = RecordingDataStore()
+        val json = Json {
+            ignoreUnknownKeys = true
+            explicitNulls = false
+        }
         val manager = DataManager(
             eventManager = EventManager(),
             environment = "staging",
@@ -143,35 +153,43 @@ internal class DataManagerTest {
 
         manager.setStoreData("visitor-1", data)
 
-        verify { dataStore.set("visitor.visitor-1", json.encodeToString(StoreData.serializer(), data)) }
+        val expected = json.encodeToString(StoreData.serializer(), data)
+        assertEquals(expected, dataStore.map["visitor.visitor-1"])
+        assertEquals(listOf("set:visitor.visitor-1"), dataStore.log.filter { it.startsWith("set:") })
     }
 
     @Test
     fun `getStoreData loads from DataStore for previously-seen visitor`() {
-        val dataStore = mockk<DataStore>(relaxed = true)
+        val json = Json {
+            ignoreUnknownKeys = true
+            explicitNulls = false
+        }
         val seeded = StoreData(bucketing = mapOf("exp-1" to "var-a"))
-        val encoded = Json.encodeToString(StoreData.serializer(), seeded)
-        every { dataStore.get("visitor.visitor-1") } returns encoded
+        val encoded = json.encodeToString(StoreData.serializer(), seeded)
+        val dataStore = RecordingDataStore()
+        dataStore.map["visitor.visitor-1"] = encoded
         val manager = DataManager(
             eventManager = EventManager(),
             environment = "staging",
             dataStore = dataStore,
+            json = json,
         )
 
         // First call pulls from disk.
         val first = manager.getStoreData("visitor-1")
-        // Second call should hit the in-memory cache — only ONE dataStore.get invocation.
+        // Second call should hit the in-memory cache — only ONE dataStore.get invocation total.
         val second = manager.getStoreData("visitor-1")
 
         assertEquals(seeded, first)
         assertEquals(seeded, second)
-        verify(exactly = 1) { dataStore.get("visitor.visitor-1") }
+        val gets = dataStore.log.filter { it == "get:visitor.visitor-1" }
+        assertEquals(1, gets.size)
     }
 
     @Test
     fun `corrupted visitor state is deleted and replaced with empty`() {
-        val dataStore = mockk<DataStore>(relaxed = true)
-        every { dataStore.get("visitor.corrupt") } returns "this is not valid json {{{"
+        val dataStore = RecordingDataStore()
+        dataStore.map["visitor.corrupt"] = "this is not valid json {{{"
         val manager = DataManager(
             eventManager = EventManager(),
             environment = "staging",
@@ -181,15 +199,15 @@ internal class DataManagerTest {
         val result = manager.getStoreData("corrupt")
 
         assertEquals(StoreData(), result)
-        verify { dataStore.remove("visitor.corrupt") }
+        assertTrue(dataStore.log.contains("remove:visitor.corrupt"))
+        assertNull(dataStore.map["visitor.corrupt"])
     }
 
     @Test
     fun `LRU cache evicts oldest visitor beyond 1000 entries`() {
         // Insert 1001 distinct visitors; visitor-0 should be evicted from the cache
         // (so the next get for visitor-0 must hit dataStore.get() again).
-        val dataStore = mockk<DataStore>(relaxed = true)
-        every { dataStore.get(any()) } returns null
+        val dataStore = RecordingDataStore()
         val manager = DataManager(
             eventManager = EventManager(),
             environment = "staging",
@@ -198,20 +216,21 @@ internal class DataManagerTest {
         for (i in 0 until 1001) {
             manager.setStoreData("visitor-$i", StoreData())
         }
-        // Clear mockk invocation history on the get() calls so we can assert on
-        // the FOLLOWING get.
-        io.mockk.clearMocks(dataStore, answers = false, recordedCalls = true)
+        dataStore.log.clear()
 
         manager.getStoreData("visitor-0")
 
         // visitor-0 was evicted from the in-memory cache by visitor-1000's insertion,
         // so this get() must pull from disk again.
-        verify(exactly = 1) { dataStore.get("visitor.visitor-0") }
+        assertTrue(
+            dataStore.log.contains("get:visitor.visitor-0"),
+            "expected cache miss to trigger dataStore.get(\"visitor.visitor-0\"); log was ${dataStore.log}",
+        )
     }
 
     @Test
     fun `updateBucketing merges new entry and persists`() {
-        val dataStore = inMemoryDataStore()
+        val dataStore = RecordingDataStore()
         val manager = DataManager(
             eventManager = EventManager(),
             environment = "staging",
@@ -227,7 +246,7 @@ internal class DataManagerTest {
 
     @Test
     fun `updateBucketing preserves other StoreData fields`() {
-        val dataStore = inMemoryDataStore()
+        val dataStore = RecordingDataStore()
         val manager = DataManager(
             eventManager = EventManager(),
             environment = "staging",
@@ -249,7 +268,7 @@ internal class DataManagerTest {
 
     @Test
     fun `updateGoal sets goal dedup flag and persists`() {
-        val dataStore = inMemoryDataStore()
+        val dataStore = RecordingDataStore()
         val manager = DataManager(
             eventManager = EventManager(),
             environment = "staging",
@@ -264,8 +283,7 @@ internal class DataManagerTest {
 
     @Test
     fun `visitor ID with non-alphanumeric chars is sanitized before keying`() {
-        val dataStore = mockk<DataStore>(relaxed = true)
-        every { dataStore.get(any()) } returns null
+        val dataStore = RecordingDataStore()
         val manager = DataManager(
             eventManager = EventManager(),
             environment = "staging",
@@ -274,13 +292,12 @@ internal class DataManagerTest {
 
         manager.setStoreData("foo bar/baz", StoreData())
 
-        verify { dataStore.set(eq("visitor.foo_bar_baz"), any()) }
+        assertNotNull(dataStore.map["visitor.foo_bar_baz"])
     }
 
     @Test
     fun `UUID-formatted visitor IDs pass through sanitize unchanged`() {
-        val dataStore = mockk<DataStore>(relaxed = true)
-        every { dataStore.get(any()) } returns null
+        val dataStore = RecordingDataStore()
         val manager = DataManager(
             eventManager = EventManager(),
             environment = "staging",
@@ -291,12 +308,12 @@ internal class DataManagerTest {
         manager.setStoreData(uuid, StoreData())
 
         // Hex + dashes are preserved; no mutation.
-        verify { dataStore.set(eq("visitor.$uuid"), any()) }
+        assertNotNull(dataStore.map["visitor.$uuid"])
     }
 
     @Test
     fun `getStoreData returns same cached instance across repeated calls`() {
-        val dataStore = inMemoryDataStore()
+        val dataStore = RecordingDataStore()
         val manager = DataManager(
             eventManager = EventManager(),
             environment = "staging",
@@ -313,11 +330,34 @@ internal class DataManagerTest {
 
     // --- helpers ---------------------------------------------------------
 
-    private fun inMemoryDataStore(): DataStore = object : DataStore {
-        private val map = mutableMapOf<String, String>()
-        override fun get(key: String): String? = map[key]
-        override fun set(key: String, value: String) { map[key] = value }
-        override fun remove(key: String) { map.remove(key) }
-        override fun clear() { map.clear() }
+    /**
+     * Hand-written recording fake for [DataStore]. Tracks every
+     * operation in [log] (prefixed with `get:` / `set:` / `remove:`)
+     * while also providing a real-map backing store so the test can
+     * assert on both the call sequence and the final state.
+     */
+    private class RecordingDataStore : DataStore {
+        val map: MutableMap<String, String> = mutableMapOf()
+        val log: MutableList<String> = mutableListOf()
+
+        override fun get(key: String): String? {
+            log.add("get:$key")
+            return map[key]
+        }
+
+        override fun set(key: String, value: String) {
+            log.add("set:$key")
+            map[key] = value
+        }
+
+        override fun remove(key: String) {
+            log.add("remove:$key")
+            map.remove(key)
+        }
+
+        override fun clear() {
+            log.add("clear")
+            map.clear()
+        }
     }
 }
