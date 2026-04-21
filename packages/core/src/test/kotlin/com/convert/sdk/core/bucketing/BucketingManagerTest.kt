@@ -273,8 +273,10 @@ internal class BucketingManagerTest {
     @Test
     fun `getBucketForVisitor honors redistribute parameter`() {
         val manager = BucketingManager(ConvertConfig(), logger)
-        // Same setup as the null-test — two 4% buckets → boundaries 400 + 400 = 800.
-        // value 833 would miss… but redistribute=100 per bucket → boundaries 500+500 → 833 > 1000? no, 833 < 1000 → hits var_b.
+        // Same setup as the null-test — two 4% buckets → boundaries 400+400 = 800.
+        // value 833 would miss… but redistribute=100 per bucket → boundaries
+        // 500+500 = 1000, and 833 < 1000 → hits var_b after passing var_a
+        // (first prev=500, 833 >= 500, advance; second prev=1000, 833 < 1000, select).
         val buckets: Map<String, Double> = linkedMapOf(
             "var_a" to 4.0,
             "var_b" to 4.0,
