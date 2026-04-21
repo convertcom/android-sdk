@@ -236,6 +236,59 @@ public class DataManager(
     }
 
     /**
+     * Atomic check-and-set for goal deduplication — Story 4.3 AC-6.
+     *
+     * Under a single [visitorLock] critical section: reads the visitor's
+     * current [StoreData.goals] map, and
+     *
+     *  - returns `false` when `goals[goalId] == true` (goal is already
+     *    tracked — caller should NOT enqueue a new conversion event);
+     *  - otherwise sets `goals[goalId] = true`, persists the merged
+     *    [StoreData] via [setStoreData], and returns `true` (this call
+     *    is the first mark — caller should enqueue).
+     *
+     * ### Why a separate method from [updateGoal]
+     *
+     * [updateGoal] is a fire-and-forget setter — no return value and no
+     * "did I win the race?" signal. A naive `if (goals[key] == true) skip
+     * else updateGoal(...)` implementation in `ConvertContext.trackConversion`
+     * would reintroduce the two-block race: thread A reads `false`, thread B
+     * reads `false`, both call `updateGoal`, both enqueue. The return value
+     * of [markGoalTracked] is what lets the caller know whether this
+     * particular call was the one that transitioned the flag. Concurrent
+     * callers serialise on [visitorLock] and exactly one wins.
+     *
+     * The intrinsic monitor is re-entrant, so calls nested inside
+     * [getStoreData] / [setStoreData] compose without deadlock — same
+     * pattern [updateBucketing] uses.
+     *
+     * ### Dedup key is `goalId`, not `goalKey`
+     *
+     * JS SDK parity: `data-manager.ts:1025-1040` keys the dedup map by
+     * `goalId.toString()`. A merchant who renames the human-facing goal
+     * key in the dashboard keeps the same goal id, so dedup state
+     * survives the rename. Callers (see
+     * [com.convert.sdk.android.ConvertContext.trackConversion]) resolve
+     * the goal id from the config before invoking.
+     *
+     * @param visitorId any string — sanitized internally before keying.
+     * @param goalId the stable goal identifier (from the loaded config).
+     * @return `true` on the first mark for this (visitor, goalId) pair,
+     *   `false` on every subsequent call.
+     */
+    public fun markGoalTracked(
+        visitorId: String,
+        goalId: String,
+    ): Boolean = synchronized(visitorLock) {
+        val current = getStoreData(visitorId)
+        val alreadyTracked = current.goals?.get(goalId) == true
+        if (alreadyTracked) return@synchronized false
+        val merged = (current.goals ?: emptyMap()) + (goalId to true)
+        setStoreData(visitorId, current.copy(goals = merged))
+        true
+    }
+
+    /**
      * Decodes [raw] into [StoreData]; on any
      * [SerializationException] / [IllegalArgumentException] — both of
      * which the `kotlinx.serialization` Json parser can throw on
