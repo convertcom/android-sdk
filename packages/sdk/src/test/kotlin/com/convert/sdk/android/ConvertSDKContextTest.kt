@@ -19,6 +19,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * Robolectric-backed tests for Story 3.1 createContext persistence
@@ -221,6 +224,47 @@ internal class ConvertSDKContextTest {
             Context.MODE_PRIVATE,
         )
         assertNull(prefs.getString("visitor_id", null))
+    }
+
+    // --- concurrency: cold-start race guard -----------------------------
+
+    @Test
+    fun `concurrent no-arg createContext calls converge on single persisted UUID`() {
+        // Regression guard: before the review-round fix, two threads
+        // could both see a null `visitor_id`, both generate distinct
+        // UUIDs, and both write — the second write wins but the first
+        // caller returns an orphan id. After the fix, the
+        // read-generate-persist sequence is atomic.
+        val sdk = buildSdk()
+        val threadCount = 50
+        val pool = Executors.newFixedThreadPool(threadCount)
+        val ready = CountDownLatch(threadCount)
+        val go = CountDownLatch(1)
+        val results = java.util.concurrent.ConcurrentLinkedQueue<String>()
+
+        repeat(threadCount) {
+            pool.submit {
+                ready.countDown()
+                go.await()
+                results.add(sdk.createContext().visitorId)
+            }
+        }
+        ready.await(5, TimeUnit.SECONDS)
+        go.countDown()
+        pool.shutdown()
+        pool.awaitTermination(5, TimeUnit.SECONDS)
+
+        val distinct = results.toSet()
+        assertEquals(
+            "every concurrent createContext() should see the same persisted UUID; got $distinct",
+            1,
+            distinct.size,
+        )
+        val prefs = appContext.getSharedPreferences(
+            "com.convert.sdk.visitor",
+            Context.MODE_PRIVATE,
+        )
+        assertEquals(distinct.first(), prefs.getString("visitor_id", null))
     }
 
     // --- sanity: context ref isn't null ----------------------------------
