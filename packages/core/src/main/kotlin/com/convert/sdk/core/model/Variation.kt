@@ -28,7 +28,11 @@ import kotlinx.serialization.json.JsonElement
  * @property experienceId stable identifier of the owning experience.
  * @property experienceKey merchant-defined key of the owning experience.
  * @property experienceName human-readable name of the owning experience.
- * @property bucketingAllocation fraction of traffic allocated to this variation, range `0.0..1.0`.
+ * @property bucketingAllocation hash-pipeline value that placed this
+ *   visitor in this variation, range `0..maxTraffic` (default `10000`).
+ *   Matches JS SDK's `BucketedVariation.bucketingAllocation`: the raw
+ *   output of `BucketingManager.getValueVisitorBased`. `null` when the
+ *   variation was resolved via the sticky fast-path (no fresh hash).
  * @property changes opaque list of variation changes; shape is loose because
  *   the Convert API allows DOM/JS/style/custom change payloads interchangeably.
  */
