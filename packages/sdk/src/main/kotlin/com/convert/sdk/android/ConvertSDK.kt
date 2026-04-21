@@ -28,13 +28,13 @@ import com.convert.sdk.core.config.RulesConfig
 import com.convert.sdk.core.data.DataManager
 import com.convert.sdk.core.event.EventManager
 import com.convert.sdk.core.event.SystemEvents
+import com.convert.sdk.core.internal.sharedSerializersModule
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.port.DataStore
 import com.convert.sdk.core.port.HttpClient
 import com.convert.sdk.core.port.Logger
 import com.convert.sdk.core.rules.RuleManager
-import com.convert.sdk.core.rules.rawRuleSerializersModule
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -185,6 +185,23 @@ public class ConvertSDK internal constructor(
      */
     internal val ruleManager: RuleManager = initialRuleManager
         ?: RuleManager(config = config, logger = logger)
+
+    /**
+     * Shared [FeatureManager] — Story 4.1. Exposed `internal` so
+     * [ConvertContext.runFeature] / [ConvertContext.runFeatures] can
+     * delegate to it. The manager holds a back-reference to this
+     * [ConvertSDK] instance so it can reach the loaded config and
+     * route per-experience bucketing through the caller's
+     * [ConvertContext.runExperience] — that keeps sticky / audience /
+     * location / event semantics consistent between experience and
+     * feature resolution.
+     *
+     * Tests that construct a bare [ConvertSDK] via the single-arg
+     * secondary constructor get a default instance wired to the same
+     * [logger] — they never need to inject their own manager, matching
+     * the pattern used for [bucketingManager] and [ruleManager].
+     */
+    internal val featureManager: FeatureManager = FeatureManager(sdk = this, logger = logger)
 
     /**
      * SDK-scoped [CoroutineScope] owning every background coroutine the
@@ -1241,7 +1258,13 @@ private fun buildSharedJson(): Json = Json {
     // walks by JSON keys. Without this, any config response carrying
     // audience/location rules fails to parse and the SDK stays
     // unready forever.
-    serializersModule = rawRuleSerializersModule
+    //
+    // Story 4.1: combined module also registers AnyAsJsonElementSerializer
+    // as the contextual serializer for Any, so generated @Contextual Any?
+    // fields (notably ExperienceChangeFullStackFeatureBaseAllOfData.
+    // variablesData) deserialize to JsonElement. FeatureManager depends
+    // on that for typed variable extraction.
+    serializersModule = sharedSerializersModule
 }
 
 private fun buildSdkScope(logger: Logger): CoroutineScope =

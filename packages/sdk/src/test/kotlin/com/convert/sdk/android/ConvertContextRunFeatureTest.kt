@@ -7,17 +7,10 @@ package com.convert.sdk.android
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.convert.sdk.core.internal.sharedSerializersModule
 import com.convert.sdk.core.model.FeatureStatus
-import com.convert.sdk.core.model.generated.ConfigExperience
-import com.convert.sdk.core.model.generated.ConfigFeature
 import com.convert.sdk.core.model.generated.ConfigResponseData
-import com.convert.sdk.core.model.generated.ExperienceChangeFullStackFeatureBaseAllOfData
-import com.convert.sdk.core.model.generated.ExperienceChangeFullStackFeatureServing
-import com.convert.sdk.core.model.generated.ExperienceChangeServing
-import com.convert.sdk.core.model.generated.ExperienceVariationConfig
-import com.convert.sdk.core.model.generated.FeatureVariableItemData
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -26,20 +19,24 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import java.math.BigDecimal
 
 /**
  * Robolectric-backed tests for Story 4.1 AC-2 / AC-3 — the
  * [ConvertContext.runFeature] / [ConvertContext.runFeatures] thin
- * wrappers over [FeatureManager]. `FeatureManagerTest` covers the
- * resolution algorithm directly; these tests verify the public context
- * surface + wiring correctness (runFeature returns the same thing
- * FeatureManager.evaluate does, runFeatures iterates all features).
+ * wrappers over [FeatureManager]. Config fixtures are decoded from JSON
+ * strings so the real deserialisation path (including the raw-change
+ * polymorphic serialiser) is exercised.
  */
 @RunWith(RobolectricTestRunner::class)
 internal class ConvertContextRunFeatureTest {
 
     private lateinit var appContext: Context
+
+    private val json: Json = Json {
+        ignoreUnknownKeys = true
+        explicitNulls = false
+        serializersModule = sharedSerializersModule
+    }
 
     @Before
     fun setUp() {
@@ -51,49 +48,50 @@ internal class ConvertContextRunFeatureTest {
             .apply()
     }
 
-    private fun basicFeatureConfig(): ConfigResponseData = ConfigResponseData(
-        experiences = listOf(
-            ConfigExperience(
-                id = "exp-1",
-                key = "welcome",
-                variations = listOf(
-                    ExperienceVariationConfig(
-                        id = "var-a",
-                        key = "control",
-                        trafficAllocation = BigDecimal.valueOf(100.0),
-                        changes = listOf(
-                            ExperienceChangeFullStackFeatureServing(
-                                id = 1,
-                                type = "fullStackFeature",
-                                data = ExperienceChangeFullStackFeatureBaseAllOfData(
-                                    featureId = 100,
-                                    variablesData = JsonObject(
-                                        mapOf("color" to JsonPrimitive("blue")),
-                                    ),
-                                ),
-                            ) as ExperienceChangeServing,
-                        ),
-                    ),
-                ),
-            ),
-        ),
-        features = listOf(
-            ConfigFeature(
-                id = "100",
-                key = "dark-mode",
-                name = "Dark Mode",
-                variables = listOf(FeatureVariableItemData(key = "color", type = "string")),
-            ),
-            ConfigFeature(
-                id = "200",
-                key = "orphan-feature",
-                name = "Orphan",
-                variables = emptyList(),
-            ),
-        ),
-    )
+    private fun basicFeatureConfigJson(): String = """
+    {
+      "experiences": [
+        {
+          "id": "exp-1",
+          "key": "welcome",
+          "variations": [
+            {
+              "id": "var-a",
+              "key": "control",
+              "traffic_allocation": 100.0,
+              "changes": [
+                {
+                  "id": 1,
+                  "type": "fullStackFeature",
+                  "data": {
+                    "feature_id": 100,
+                    "variables_data": {"color": "blue"}
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "features": [
+        {
+          "id": "100",
+          "key": "dark-mode",
+          "name": "Dark Mode",
+          "variables": [{"key": "color", "type": "string"}]
+        },
+        {
+          "id": "200",
+          "key": "orphan-feature",
+          "name": "Orphan",
+          "variables": []
+        }
+      ]
+    }
+    """.trimIndent()
 
-    private fun buildSdk(config: ConfigResponseData): ConvertSDK {
+    private fun buildSdk(configJson: String): ConvertSDK {
+        val config: ConfigResponseData = json.decodeFromString(configJson)
         val sdk = ConvertSDK.builder(appContext).data(config).build()
         awaitCondition(timeoutMs = 2_000L) { sdk.dataManager.hasData() }
         return sdk
@@ -103,7 +101,7 @@ internal class ConvertContextRunFeatureTest {
 
     @Test
     fun `runFeature returns null for unknown feature`() {
-        val sdk = buildSdk(basicFeatureConfig())
+        val sdk = buildSdk(basicFeatureConfigJson())
         val ctx = sdk.createContext("visitor_abc")
 
         val result = ctx.runFeature("does-not-exist")
@@ -113,7 +111,7 @@ internal class ConvertContextRunFeatureTest {
 
     @Test
     fun `runFeature returns ENABLED Feature when visitor bucketed into variation exposing feature`() {
-        val sdk = buildSdk(basicFeatureConfig())
+        val sdk = buildSdk(basicFeatureConfigJson())
         val ctx = sdk.createContext("visitor_abc")
 
         val result = ctx.runFeature("dark-mode")
@@ -127,7 +125,7 @@ internal class ConvertContextRunFeatureTest {
 
     @Test
     fun `runFeature returns DISABLED Feature when declared but orphan`() {
-        val sdk = buildSdk(basicFeatureConfig())
+        val sdk = buildSdk(basicFeatureConfigJson())
         val ctx = sdk.createContext("visitor_abc")
 
         val result = ctx.runFeature("orphan-feature")
@@ -150,7 +148,7 @@ internal class ConvertContextRunFeatureTest {
 
     @Test
     fun `runFeatures returns entries for every declared feature`() {
-        val sdk = buildSdk(basicFeatureConfig())
+        val sdk = buildSdk(basicFeatureConfigJson())
         val ctx = sdk.createContext("visitor_abc")
 
         val results = ctx.runFeatures()
@@ -167,11 +165,11 @@ internal class ConvertContextRunFeatureTest {
         assertEquals(emptyList<Any>(), ctx.runFeatures())
     }
 
-    // --- AC-6: only one bucketing event per experience even across runFeature + runExperience ---
+    // --- AC-6: no double-enqueue for runFeature following runExperience --
 
     @Test
     fun `runFeature after runExperience does not re-enqueue bucketing event (sticky)`() {
-        val sdk = buildSdk(basicFeatureConfig())
+        val sdk = buildSdk(basicFeatureConfigJson())
         val recordingApi = ConvertContextRunExperienceTest.RecordingApiManager()
         sdk.attachTestApiManager(recordingApi)
         val ctx = sdk.createContext("visitor_abc")
