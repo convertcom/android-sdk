@@ -491,6 +491,7 @@ internal class ConvertContextRunExperienceTest {
         val visitorId: String,
         val experienceId: String,
         val variationId: String,
+        val segments: Map<String, kotlinx.serialization.json.JsonElement> = emptyMap(),
     )
 
     /**
@@ -540,9 +541,10 @@ internal class ConvertContextRunExperienceTest {
             visitorId: String,
             experienceId: String,
             variationId: String,
+            segments: Map<String, kotlinx.serialization.json.JsonElement>,
         ) {
             enqueueBucketingCalls.add(
-                EnqueueBucketingCall(visitorId, experienceId, variationId),
+                EnqueueBucketingCall(visitorId, experienceId, variationId, segments),
             )
         }
     }
