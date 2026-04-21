@@ -197,10 +197,12 @@ public class ConvertSDK internal constructor(
      * location / event semantics consistent between experience and
      * feature resolution.
      *
-     * Tests that construct a bare [ConvertSDK] via the single-arg
-     * secondary constructor get a default instance wired to the same
-     * [logger] — they never need to inject their own manager, matching
-     * the pattern used for [bucketingManager] and [ruleManager].
+     * Unlike [bucketingManager] / [ruleManager], there is no
+     * `initialFeatureManager` constructor override — the manager is
+     * pure glue over [dataManager] / [ConvertContext] and has no state
+     * that benefits from test substitution. Feature tests exercise
+     * [FeatureManager] via the Builder-constructed SDK using a real
+     * config; no fake injection is required.
      */
     internal val featureManager: FeatureManager = FeatureManager(sdk = this, logger = logger)
 
