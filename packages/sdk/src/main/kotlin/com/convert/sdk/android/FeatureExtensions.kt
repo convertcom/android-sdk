@@ -98,7 +98,11 @@ public fun Feature.getDouble(key: String): Double? {
  * SDK's strict `Boolean(value)` behaviour against boolean-typed
  * variables).
  */
+@Suppress("ReturnCount")
 public fun Feature.getBoolean(key: String): Boolean? {
+    // Three exits: missing/wrong shape (null), strict primitive
+    // (booleanOrNull wins), string fallback (lowercase match). A
+    // single-expression form obscures the strict-then-loose policy.
     val primitive = variables?.get(key) as? JsonPrimitive ?: return null
     primitive.booleanOrNull?.let { return it }
     return when (primitive.contentOrNull?.lowercase()) {

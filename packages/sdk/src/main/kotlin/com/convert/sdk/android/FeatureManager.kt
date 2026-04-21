@@ -99,11 +99,25 @@ internal class FeatureManager(
      *   is not bucketed into any variation exposing the feature, returns
      *   a [Feature] with [FeatureStatus.DISABLED].
      */
+    @Suppress("ReturnCount", "LoopWithTooManyJumpStatements")
     fun evaluate(
         context: ConvertContext,
         featureKey: String,
         enableTracking: Boolean = true,
     ): Feature? {
+        // ReturnCount — the algorithm has four natural exits (config-
+        // missing, unknown feature, matched-variation, declared-but-
+        // not-surfaced). Collapsing them into a single return point
+        // via a nullable local would hurt readability without any
+        // semantic win.
+        //
+        // LoopWithTooManyJumpStatements — the per-experience loop has
+        // three `continue`s that short-circuit known skip cases (no key,
+        // experience doesn't expose feature, visitor not bucketed). Each
+        // is an independent guard; flattening them into a nested `if`
+        // chain would add depth without clarifying intent. Suppression
+        // mirrors the `@Suppress("ReturnCount", "TooGenericExceptionCaught")`
+        // pattern used by `ConvertContext.runExperiences`.
         val data = sdk.dataManager.data ?: run {
             logger.debug(
                 message = "FeatureManager.evaluate: config not loaded, returning null",
@@ -165,10 +179,13 @@ internal class FeatureManager(
      * Returns `true` when any variation on [experience] exposes a
      * `fullStackFeature` change referencing [featureId].
      */
+    @Suppress("ReturnCount")
     private fun experienceExposesFeature(
         experience: ConfigExperience,
         featureId: String?,
     ): Boolean {
+        // Three early returns for defensive guards (null feature id → no
+        // match; null variations → no match; then the actual search).
         if (featureId == null) return false
         val variations = experience.variations ?: return false
         return variations.any { variation ->
@@ -181,11 +198,16 @@ internal class FeatureManager(
      * referencing [featureId]. Returns `null` when the variation has no
      * such change.
      */
+    @Suppress("ReturnCount")
     private fun findFeatureChange(
         experience: ConfigExperience,
         variationId: String?,
         featureId: String?,
     ): ExperienceChangeServing? {
+        // Defensive guards mirror experienceExposesFeature — caller-side
+        // nullability lines up with wire shape. Collapsing these guards
+        // into chained safe calls would obscure the three independent
+        // "nothing to find" cases.
         if (featureId == null || variationId == null) return null
         val variation = experience.variations?.firstOrNull { it.id == variationId } ?: return null
         return variation.changes?.firstOrNull { change ->
@@ -200,10 +222,14 @@ internal class FeatureManager(
      * declared feature's `id` is a string — both carry the same numeric
      * value, so we normalise via `toString`.
      */
+    @Suppress("ReturnCount")
     private fun isFullStackFeatureMatch(
         change: ExperienceChangeServing,
         featureId: String,
     ): Boolean {
+        // Three independent "not a match" outcomes (wrong type, null
+        // data, id mismatch) read more clearly as early returns than
+        // as a chained boolean expression.
         if (change.type != FULLSTACK_FEATURE_TYPE) return false
         val data = change.data ?: return false
         return data.featureId?.toString() == featureId
@@ -252,7 +278,12 @@ internal class FeatureManager(
      * (`JsonArray`, primitives, `null`) are logged + treated as empty to
      * keep the public surface non-throwing.
      */
+    @Suppress("ReturnCount")
     private fun decodeVariables(raw: Any?): Map<String, JsonElement>? {
+        // Three exits reflect three wire-shape outcomes: absent (null →
+        // disabled), present but wrong shape (warn + empty), well-formed
+        // (map). Treating each as a distinct return keeps the intent
+        // visible.
         if (raw == null) return null
         val obj = raw as? JsonObject
         if (obj == null) {
