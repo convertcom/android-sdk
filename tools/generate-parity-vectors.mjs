@@ -82,175 +82,175 @@ const BUCKETS = { varA: 50.0, varB: 50.0 };
  * the expected* fields by calling the JS SDK.
  */
 function buildInputs() {
-    const inputs = [];
+  const inputs = [];
 
-    // ─── Category 1: 10 ASCII visitor IDs × 5 experience IDs ──────────
-    const asciiVisitors = [
-        'visitor_001',
-        'visitor_abc',
-        'user-42',
-        'alice.smith@example.com',
-        'u_01HXZY8K3Q7JN5R2V4W6YAM8BC',
-        'anon',
-        'v',
-        'session_token_xyz123',
-        'A1B2C3D4E5F6',
-        'convert-user-0000000001',
-    ];
-    const asciiExperiences = [
-        'exp_1',
-        'experiment-hero-cta',
-        'E2',
-        'exp_with_long_name_2026_q2_pricing_test',
-        'x',
-    ];
-    for (const eid of asciiExperiences) {
-        for (const vid of asciiVisitors) {
-            inputs.push({
-                description: `ASCII experience=${eid} visitor=${vid}`,
-                visitorId: vid,
-                experienceId: eid,
-                seed: DEFAULT_SEED,
-            });
-        }
+  // ─── Category 1: 10 ASCII visitor IDs × 5 experience IDs ──────────
+  const asciiVisitors = [
+    'visitor_001',
+    'visitor_abc',
+    'user-42',
+    'alice.smith@example.com',
+    'u_01HXZY8K3Q7JN5R2V4W6YAM8BC',
+    'anon',
+    'v',
+    'session_token_xyz123',
+    'A1B2C3D4E5F6',
+    'convert-user-0000000001',
+  ];
+  const asciiExperiences = [
+    'exp_1',
+    'experiment-hero-cta',
+    'E2',
+    'exp_with_long_name_2026_q2_pricing_test',
+    'x',
+  ];
+  for (const eid of asciiExperiences) {
+    for (const vid of asciiVisitors) {
+      inputs.push({
+        description: `ASCII experience=${eid} visitor=${vid}`,
+        visitorId: vid,
+        experienceId: eid,
+        seed: DEFAULT_SEED,
+      });
     }
+  }
 
-    // ─── Category 2: 5 Unicode visitor IDs ────────────────────────────
-    inputs.push({
-        description: 'Unicode: waving-hand emoji with medium-skin-tone modifier',
-        visitorId: '👋🏼',
-        experienceId: 'exp_unicode',
-        seed: DEFAULT_SEED,
-    });
-    inputs.push({
-        description: 'Unicode: CJK (Japanese) — 日本語',
-        visitorId: '日本語',
-        experienceId: 'exp_unicode',
-        seed: DEFAULT_SEED,
-    });
-    inputs.push({
-        description: 'Unicode: combining-char precomposed é (U+00E9)',
-        visitorId: 'café',
-        experienceId: 'exp_unicode',
-        seed: DEFAULT_SEED,
-    });
-    inputs.push({
-        description: 'Unicode: mixed BMP + supplementary planes 𝕔𝕠𝕟𝕧𝕖𝕣𝕥',
-        visitorId: '𝕔𝕠𝕟𝕧𝕖𝕣𝕥',
-        experienceId: 'exp_unicode',
-        seed: DEFAULT_SEED,
-    });
-    inputs.push({
-        description: 'Unicode: RTL Arabic script محمد',
-        visitorId: 'محمد',
-        experienceId: 'exp_unicode',
-        seed: DEFAULT_SEED,
-    });
+  // ─── Category 2: 5 Unicode visitor IDs ────────────────────────────
+  inputs.push({
+    description: 'Unicode: waving-hand emoji with medium-skin-tone modifier',
+    visitorId: '👋🏼',
+    experienceId: 'exp_unicode',
+    seed: DEFAULT_SEED,
+  });
+  inputs.push({
+    description: 'Unicode: CJK (Japanese) — 日本語',
+    visitorId: '日本語',
+    experienceId: 'exp_unicode',
+    seed: DEFAULT_SEED,
+  });
+  inputs.push({
+    description: 'Unicode: combining-char precomposed é (U+00E9)',
+    visitorId: 'café',
+    experienceId: 'exp_unicode',
+    seed: DEFAULT_SEED,
+  });
+  inputs.push({
+    description: 'Unicode: mixed BMP + supplementary planes 𝕔𝕠𝕟𝕧𝕖𝕣𝕥',
+    visitorId: '𝕔𝕠𝕟𝕧𝕖𝕣𝕥',
+    experienceId: 'exp_unicode',
+    seed: DEFAULT_SEED,
+  });
+  inputs.push({
+    description: 'Unicode: RTL Arabic script محمد',
+    visitorId: 'محمد',
+    experienceId: 'exp_unicode',
+    seed: DEFAULT_SEED,
+  });
 
-    // ─── Category 3: empty visitorId + empty experienceId ─────────────
-    inputs.push({
-        description: 'Empty: both visitor and experience ids are empty',
-        visitorId: '',
-        experienceId: '',
-        seed: DEFAULT_SEED,
-    });
+  // ─── Category 3: empty visitorId + empty experienceId ─────────────
+  inputs.push({
+    description: 'Empty: both visitor and experience ids are empty',
+    visitorId: '',
+    experienceId: '',
+    seed: DEFAULT_SEED,
+  });
 
-    // ─── Category 4: 3 numeric-string IDs ─────────────────────────────
-    inputs.push({
-        description: 'Numeric string: "0"',
-        visitorId: '0',
-        experienceId: 'exp_num',
-        seed: DEFAULT_SEED,
-    });
-    inputs.push({
-        description: 'Numeric string: "12345"',
-        visitorId: '12345',
-        experienceId: 'exp_num',
-        seed: DEFAULT_SEED,
-    });
-    inputs.push({
-        description: 'Numeric string: "99999999999999999999" (beyond JS safe int)',
-        visitorId: '99999999999999999999',
-        experienceId: 'exp_num',
-        seed: DEFAULT_SEED,
-    });
+  // ─── Category 4: 3 numeric-string IDs ─────────────────────────────
+  inputs.push({
+    description: 'Numeric string: "0"',
+    visitorId: '0',
+    experienceId: 'exp_num',
+    seed: DEFAULT_SEED,
+  });
+  inputs.push({
+    description: 'Numeric string: "12345"',
+    visitorId: '12345',
+    experienceId: 'exp_num',
+    seed: DEFAULT_SEED,
+  });
+  inputs.push({
+    description: 'Numeric string: "99999999999999999999" (beyond JS safe int)',
+    visitorId: '99999999999999999999',
+    experienceId: 'exp_num',
+    seed: DEFAULT_SEED,
+  });
 
-    // ─── Category 5: 3 very long strings (>1 KB each) ─────────────────
-    const long1 = 'x'.repeat(1024);
-    const long2 =
-        'convert-visitor-' + 'abcdef0123456789-'.repeat(100).slice(0, 1100);
-    const long3 =
-        '日'.repeat(512); // 512 chars × 3 UTF-8 bytes ≈ 1.5 KB
-    inputs.push({
-        description: 'Long ASCII: 1024 repeated x',
-        visitorId: long1,
-        experienceId: 'exp_long',
-        seed: DEFAULT_SEED,
-    });
-    inputs.push({
-        description: 'Long ASCII: ~1.1 KB hex-like pattern',
-        visitorId: long2,
-        experienceId: 'exp_long',
-        seed: DEFAULT_SEED,
-    });
-    inputs.push({
-        description: 'Long Unicode: 512 CJK chars (~1.5 KB UTF-8)',
-        visitorId: long3,
-        experienceId: 'exp_long',
-        seed: DEFAULT_SEED,
-    });
+  // ─── Category 5: 3 very long strings (>1 KB each) ─────────────────
+  const long1 = 'x'.repeat(1024);
+  const long2 =
+    'convert-visitor-' + 'abcdef0123456789-'.repeat(100).slice(0, 1100);
+  const long3 =
+    '日'.repeat(512); // 512 chars × 3 UTF-8 bytes ≈ 1.5 KB
+  inputs.push({
+    description: 'Long ASCII: 1024 repeated x',
+    visitorId: long1,
+    experienceId: 'exp_long',
+    seed: DEFAULT_SEED,
+  });
+  inputs.push({
+    description: 'Long ASCII: ~1.1 KB hex-like pattern',
+    visitorId: long2,
+    experienceId: 'exp_long',
+    seed: DEFAULT_SEED,
+  });
+  inputs.push({
+    description: 'Long Unicode: 512 CJK chars (~1.5 KB UTF-8)',
+    visitorId: long3,
+    experienceId: 'exp_long',
+    seed: DEFAULT_SEED,
+  });
 
-    // ─── Category 6: 3 edge cases ─────────────────────────────────────
-    // NFC vs NFD — the SAME user-visible string encoded two ways produces
-    // DIFFERENT byte sequences, so MUST hash to different values. Parity
-    // requires Kotlin to treat the raw String bytes the same way JS does
-    // (no implicit normalization on either side).
-    inputs.push({
-        description: 'Edge: NFC-precomposed é (U+00E9) — 2-byte UTF-8',
-        visitorId: 'é',
-        experienceId: 'exp_edge',
-        seed: DEFAULT_SEED,
-    });
-    inputs.push({
-        description: 'Edge: NFD-decomposed e + combining acute (U+0065 U+0301) — 3-byte UTF-8',
-        visitorId: 'é',
-        experienceId: 'exp_edge',
-        seed: DEFAULT_SEED,
-    });
-    inputs.push({
-        description: 'Edge: trailing whitespace — "visitor_trail "',
-        visitorId: 'visitor_trail ',
-        experienceId: 'exp_edge',
-        seed: DEFAULT_SEED,
-    });
-    inputs.push({
-        description: 'Edge: mid-string NUL character — "a\\u0000b"',
-        visitorId: 'a b',
-        experienceId: 'exp_edge',
-        seed: DEFAULT_SEED,
-    });
+  // ─── Category 6: 3 edge cases ─────────────────────────────────────
+  // NFC vs NFD — the SAME user-visible string encoded two ways produces
+  // DIFFERENT byte sequences, so MUST hash to different values. Parity
+  // requires Kotlin to treat the raw String bytes the same way JS does
+  // (no implicit normalization on either side).
+  inputs.push({
+    description: 'Edge: NFC-precomposed é (U+00E9) — 2-byte UTF-8',
+    visitorId: 'é',
+    experienceId: 'exp_edge',
+    seed: DEFAULT_SEED,
+  });
+  inputs.push({
+    description: 'Edge: NFD-decomposed e + combining acute (U+0065 U+0301) — 3-byte UTF-8',
+    visitorId: 'é',
+    experienceId: 'exp_edge',
+    seed: DEFAULT_SEED,
+  });
+  inputs.push({
+    description: 'Edge: trailing whitespace — "visitor_trail "',
+    visitorId: 'visitor_trail ',
+    experienceId: 'exp_edge',
+    seed: DEFAULT_SEED,
+  });
+  inputs.push({
+    description: 'Edge: mid-string NUL character — "a\\u0000b"',
+    visitorId: 'a b',
+    experienceId: 'exp_edge',
+    seed: DEFAULT_SEED,
+  });
 
-    // ─── Extra seed coverage (cheap, adds signal) ─────────────────────
-    inputs.push({
-        description: 'Seed=0: zero-seed must be treated as a valid seed, not null fallback',
-        visitorId: 'visitor_42',
-        experienceId: '',
-        seed: 0,
-    });
-    inputs.push({
-        description: 'Seed=12345: single-char visitor with non-default seed',
-        visitorId: 'a',
-        experienceId: '',
-        seed: 12345,
-    });
-    inputs.push({
-        description: 'Seed=2147483647: int32 max seed',
-        visitorId: 'visitor_boundary',
-        experienceId: 'exp_seed',
-        seed: 2147483647,
-    });
+  // ─── Extra seed coverage (cheap, adds signal) ─────────────────────
+  inputs.push({
+    description: 'Seed=0: zero-seed must be treated as a valid seed, not null fallback',
+    visitorId: 'visitor_42',
+    experienceId: '',
+    seed: 0,
+  });
+  inputs.push({
+    description: 'Seed=12345: single-char visitor with non-default seed',
+    visitorId: 'a',
+    experienceId: '',
+    seed: 12345,
+  });
+  inputs.push({
+    description: 'Seed=2147483647: int32 max seed',
+    visitorId: 'visitor_boundary',
+    experienceId: 'exp_seed',
+    seed: 2147483647,
+  });
 
-    return inputs;
+  return inputs;
 }
 
 /**
@@ -260,46 +260,46 @@ function buildInputs() {
  * the options object so the test suite can sweep seed values.
  */
 function computeVector(input) {
-    const bm = new BucketingManager();
-    const value = bm.getValueVisitorBased(input.visitorId, {
-        experienceId: input.experienceId,
-        seed: input.seed,
-    });
-    const variationId = bm.selectBucket(BUCKETS, value);
+  const bm = new BucketingManager();
+  const value = bm.getValueVisitorBased(input.visitorId, {
+    experienceId: input.experienceId,
+    seed: input.seed,
+  });
+  const variationId = bm.selectBucket(BUCKETS, value);
 
-    // expectedHash is recorded for debug visibility (AC-4 says it's
-    // optional and NOT asserted by Kotlin). Recompute it with the same
-    // bundled murmurhash that the BucketingManager uses internally by
-    // back-solving: hash = (value * 2^32) / max_traffic would lose
-    // precision, so instead we recompute directly with generateHash
-    // semantics. The simplest faithful reproduction is to call
-    // getValueVisitorBased on a fresh BM with max_traffic=2^32, which
-    // yields `hash` unchanged. But that's surprising — so just emit
-    // the rounded `value` context; skip expectedHash to stay honest.
-    //
-    // Per story AC-4: "expectedHash is optional — included for debug
-    // but not asserted". We intentionally OMIT it: recording a synthetic
-    // hash would mislead debuggers chasing real parity bugs. If a future
-    // debugger wants the raw 32-bit hash, they can re-run this script
-    // with a printf-hash branch.
+  // expectedHash is recorded for debug visibility (AC-4 says it's
+  // optional and NOT asserted by Kotlin). Recompute it with the same
+  // bundled murmurhash that the BucketingManager uses internally by
+  // back-solving: hash = (value * 2^32) / max_traffic would lose
+  // precision, so instead we recompute directly with generateHash
+  // semantics. The simplest faithful reproduction is to call
+  // getValueVisitorBased on a fresh BM with max_traffic=2^32, which
+  // yields `hash` unchanged. But that's surprising — so just emit
+  // the rounded `value` context; skip expectedHash to stay honest.
+  //
+  // Per story AC-4: "expectedHash is optional — included for debug
+  // but not asserted". We intentionally OMIT it: recording a synthetic
+  // hash would mislead debuggers chasing real parity bugs. If a future
+  // debugger wants the raw 32-bit hash, they can re-run this script
+  // with a printf-hash branch.
 
-    return {
-        description: input.description,
-        visitorId: input.visitorId,
-        experienceId: input.experienceId,
-        seed: input.seed,
-        expectedValue: value,
-        expectedVariationId: variationId,
-        buckets: BUCKETS,
-    };
+  return {
+    description: input.description,
+    visitorId: input.visitorId,
+    experienceId: input.experienceId,
+    seed: input.seed,
+    expectedValue: value,
+    expectedVariationId: variationId,
+    buckets: BUCKETS,
+  };
 }
 
 function main() {
-    const inputs = buildInputs();
-    const vectors = inputs.map(computeVector);
-    // Pretty-print with 2-space indent — the JSON file is committed,
-    // so diff-readability matters more than compactness.
-    process.stdout.write(JSON.stringify(vectors, null, 2) + '\n');
+  const inputs = buildInputs();
+  const vectors = inputs.map(computeVector);
+  // Pretty-print with 2-space indent — the JSON file is committed,
+  // so diff-readability matters more than compactness.
+  process.stdout.write(JSON.stringify(vectors, null, 2) + '\n');
 }
 
 main();
