@@ -126,7 +126,15 @@ public class ConvertSDK internal constructor(
      * inert to production callers: the Builder path wires the real
      * [com.convert.sdk.core.api.ApiManager] once at construction and no
      * other production code path rewrites it.
+     *
+     * `@Volatile` so that [startRefreshLoop] (running on the SDK scope)
+     * and [ConvertContext.runExperience] (running on the calling thread)
+     * always see the latest reference after [attachTestApiManager] swaps
+     * it. Production reassignment never happens, but the annotation
+     * documents intent and eliminates a theoretical visibility hole in
+     * the test path.
      */
+    @Volatile
     internal var apiManager: ApiManager? = apiManager
         private set
 
