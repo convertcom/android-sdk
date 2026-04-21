@@ -49,10 +49,11 @@ import com.goncalossilva.murmurhash.MurmurHash3
  * ### Bucket selection (AC-3)
  *
  * `selectBucket` walks the `buckets` map in insertion order, accumulating
- * `pct * 100 + redistribute` into `prev`. The first bucket whose running
- * total strictly exceeds `value` wins. A value at or past the sum of all
- * boundaries returns `null`, signalling "not bucketed" (common when
- * `max_traffic < 10000`).
+ * `pct * 100 + redistribute` into `prev` (typed as [Double] to preserve
+ * fractional boundaries for non-integer percentages — JS SDK parity). The
+ * first bucket whose running total strictly exceeds `value` wins. A value
+ * at or past the sum of all boundaries returns `null`, signalling "not
+ * bucketed" (common when `max_traffic < 10000`).
  *
  * ### Why insertion order matters
  *
@@ -168,10 +169,16 @@ public class BucketingManager(
         value: Int,
         redistribute: Int = 0,
     ): String? {
-        var prev = 0
+        // prev is Double, not Int — the JS SDK's `prev += buckets[id] * 100 +
+        // redistribute` runs on JS Numbers (double-precision floats), so a
+        // fractional percentage like `33.333` yields fractional boundaries
+        // (3333.3, 6666.6, 9999.9) that an Int accumulator would silently
+        // truncate. Preserving Double keeps the comparison `value < prev`
+        // byte-identical to the JS SDK output on non-integer percentages.
+        var prev = 0.0
         var selected: String? = null
         for ((variationId, pct) in buckets) {
-            prev += (pct * PERCENTAGE_TO_BASIS_MULTIPLIER).toInt() + redistribute
+            prev += pct * PERCENTAGE_TO_BASIS_MULTIPLIER + redistribute
             if (value < prev) {
                 selected = variationId
                 break
@@ -235,7 +242,11 @@ public class BucketingManager(
          * Multiplier applied to each bucket's percentage (0..100) to lift
          * it into the `0..10000` basis-point space that [selectBucket]
          * accumulates against. Matches JS SDK `buckets[id] * 100`.
+         *
+         * Typed as [Double] (not [Int]) so the `pct * MULT + redistribute`
+         * expression retains the fractional component for non-integer
+         * percentages — see the Double-typed accumulator in [selectBucket].
          */
-        private const val PERCENTAGE_TO_BASIS_MULTIPLIER: Int = 100
+        private const val PERCENTAGE_TO_BASIS_MULTIPLIER: Double = 100.0
     }
 }

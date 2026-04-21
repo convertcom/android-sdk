@@ -206,7 +206,10 @@ public class ConvertContext internal constructor(
                 tag = TAG,
             )
         }
-        return variation?.let { toPublicVariation(experience, it) }
+        // Sticky path does not re-compute the hash, so the bucketingAllocation
+        // value is unknown — pass null to match the JS SDK's sticky branch
+        // (`bucketingAllocation` is only populated on the fresh-bucket path).
+        return variation?.let { toPublicVariation(experience, it, bucketingAllocationValue = null) }
     }
 
     /**
@@ -273,7 +276,11 @@ public class ConvertContext internal constructor(
                 "visitorId" to visitorId,
             ),
         )
-        return toPublicVariation(experience, variation)
+        return toPublicVariation(
+            experience = experience,
+            variation = variation,
+            bucketingAllocationValue = allocation.bucketingAllocation.toDouble(),
+        )
     }
 
     /**
@@ -319,12 +326,20 @@ public class ConvertContext internal constructor(
      * experience so callers get a self-describing object without needing
      * to look up the experience separately.
      *
+     * [bucketingAllocationValue] is the hash-pipeline value (range
+     * `0..maxTraffic`) the JS SDK surfaces as `bucketingAllocation` on
+     * the returned BucketedVariation — not the variation's configured
+     * traffic percentage. `null` when the caller took the sticky fast
+     * path (JS SDK matches this — sticky bucketing returns
+     * `bucketingAllocation: undefined`).
+     *
      * `changes` is intentionally not copied — Story 3.3 adds the full
      * change-list plumbing.
      */
     private fun toPublicVariation(
         experience: ConfigExperience,
         variation: ExperienceVariationConfig,
+        bucketingAllocationValue: Double?,
     ): Variation = Variation(
         id = variation.id,
         key = variation.key,
@@ -332,7 +347,7 @@ public class ConvertContext internal constructor(
         experienceId = experience.id,
         experienceKey = experience.key,
         experienceName = experience.name,
-        bucketingAllocation = variation.trafficAllocation?.toDouble(),
+        bucketingAllocation = bucketingAllocationValue,
         changes = null,
     )
 

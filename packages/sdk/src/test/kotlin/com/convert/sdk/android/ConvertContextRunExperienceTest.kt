@@ -212,7 +212,12 @@ internal class ConvertContextRunExperienceTest {
         val first = ctx.runExperience("welcome")
         val second = ctx.runExperience("welcome")
 
-        assertEquals(first, second)
+        // Compare on identity-bearing fields; the fresh-bucket path sets
+        // `bucketingAllocation` to the hash-pipeline value while the
+        // sticky path leaves it null (matches JS SDK BucketedVariation
+        // semantics), so whole-object equality intentionally differs.
+        assertEquals(first?.id, second?.id)
+        assertEquals(first?.key, second?.key)
         assertEquals("var-a", second?.id)
     }
 
@@ -279,8 +284,17 @@ internal class ConvertContextRunExperienceTest {
         // second call's enableTracking flag does NOT trigger another
         // enqueue because the sticky path short-circuits before the
         // bucketing step.
+        //
+        // Compare on variation id / key / experience id rather than full
+        // equality — the JS SDK surface has `bucketingAllocation` populated
+        // on the fresh-bucket path and `null` on the sticky path, so the
+        // two Variation objects are intentionally unequal at the whole-object
+        // level while pointing at the same selected variation.
         assertNotNull(first)
-        assertEquals(first, second)
+        assertNotNull(second)
+        assertEquals(first?.id, second?.id)
+        assertEquals(first?.key, second?.key)
+        assertEquals(first?.experienceId, second?.experienceId)
     }
 
     @Test
