@@ -121,7 +121,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   responses. Shared with the SDK's [com.convert.sdk.android.adapter.FileConfigCache]
  *   so cache and fetch paths have identical parse behaviour.
  */
-public class ApiManager(
+public open class ApiManager(
     private val httpClient: HttpClient,
     private val logger: Logger,
     private val config: ConvertConfig,
@@ -370,6 +370,38 @@ public class ApiManager(
             false
         }
         return isHttps || isLoopback
+    }
+
+    /**
+     * Stub — Story 3.2 SDK-4 placeholder for the bucketing-event enqueue
+     * that Story 5.1 will implement. Callers (primarily
+     * [com.convert.sdk.android.ConvertContext.runExperience]) invoke this
+     * on every non-sticky bucketing decision; the real body will build a
+     * `viewExp` tracking payload and hand it to the outbound event queue.
+     *
+     * Declared `open` so tests in the `:packages:sdk` module can override
+     * it with a recording spy (see `ConvertContextRunExperienceTest`
+     * `RecordingApiManager`). The stub body is intentionally empty — the
+     * "tracking disabled" and "SDK not ready" branches are gated upstream
+     * by the caller, so a no-op here is the correct default until
+     * Story 5.1 lands.
+     *
+     * @param visitorId the visitor whose bucketing is being reported.
+     * @param experienceId the experience id (not key — tracking payload
+     *   references the stable id).
+     * @param variationId the id of the selected variation.
+     */
+    public open fun enqueueBucketingEvent(
+        visitorId: String,
+        experienceId: String,
+        variationId: String,
+    ) {
+        // Intentional no-op — Story 5.1 implements.
+        logger.debug(
+            message = "ApiManager.enqueueBucketingEvent() stub — " +
+                "visitorId=$visitorId experienceId=$experienceId variationId=$variationId",
+            tag = TAG,
+        )
     }
 
     public companion object {

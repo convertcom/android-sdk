@@ -12,7 +12,6 @@ import com.convert.sdk.core.model.generated.ConfigExperience
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -75,30 +74,30 @@ internal class ConvertContextRunExperienceTest {
 
     // --- test fixtures ----------------------------------------------------
 
+    /**
+     * Builds a two-variation 50/50 test config with a single experience
+     * (`exp-1` keyed `welcome`). Override [pctA] / [pctB] per-test for
+     * traffic-allocation-miss scenarios. The rest of the defaults
+     * ensure the visitor hash vectors used in the assertions remain
+     * stable across tests.
+     */
     private fun testConfig(
-        experienceId: String = "exp-1",
-        experienceKey: String = "welcome",
-        variationIdA: String = "var-a",
-        variationKeyA: String = "control",
-        variationIdB: String = "var-b",
-        variationKeyB: String = "treatment",
-        // 50/50 split — default. Override per-test for traffic-miss scenarios.
         pctA: Double = 50.0,
         pctB: Double = 50.0,
     ): ConfigResponseData = ConfigResponseData(
         experiences = listOf(
             ConfigExperience(
-                id = experienceId,
-                key = experienceKey,
+                id = "exp-1",
+                key = "welcome",
                 variations = listOf(
                     ExperienceVariationConfig(
-                        id = variationIdA,
-                        key = variationKeyA,
+                        id = "var-a",
+                        key = "control",
                         trafficAllocation = BigDecimal.valueOf(pctA),
                     ),
                     ExperienceVariationConfig(
-                        id = variationIdB,
-                        key = variationKeyB,
+                        id = "var-b",
+                        key = "treatment",
                         trafficAllocation = BigDecimal.valueOf(pctB),
                     ),
                 ),
@@ -106,8 +105,20 @@ internal class ConvertContextRunExperienceTest {
         ),
     )
 
-    private fun buildSdk(config: ConfigResponseData): ConvertSDK =
-        ConvertSDK.builder(appContext).data(config).build()
+    /**
+     * Builds the SDK in direct-data mode and waits for the data seed
+     * coroutine to finish before returning. The Builder's
+     * `launchInitialDataSeed` posts `setData` onto the SDK scope
+     * (`Dispatchers.Default`) so the returned SDK reports `hasData ==
+     * false` for a brief window after `build()` returns; all of the
+     * tests below need the config in place before they call into
+     * `runExperience`.
+     */
+    private fun buildSdk(config: ConfigResponseData): ConvertSDK {
+        val sdk = ConvertSDK.builder(appContext).data(config).build()
+        awaitCondition(timeoutMs = 2_000L) { sdk.dataManager.hasData() }
+        return sdk
+    }
 
     // --- AC-6 step 1: config-not-ready gate -------------------------------
 
@@ -295,11 +306,8 @@ internal class ConvertContextRunExperienceTest {
     fun `runExperience fires SystemEvents BUCKETING on new bucketing`() {
         val sdk = buildSdk(testConfig())
         val received = mutableListOf<Map<String, Any?>>()
-        sdk.on(SystemEvents.BUCKETING, object : EventCallback {
-            override fun onEvent(data: Map<String, Any?>) {
-                received.add(data)
-            }
-        })
+        val callback = RecordingEventCallback(received)
+        sdk.on(SystemEvents.BUCKETING, callback)
         val ctx = sdk.createContext("visitor_abc")
 
         ctx.runExperience("welcome")
@@ -320,11 +328,8 @@ internal class ConvertContextRunExperienceTest {
         // the outbound network enqueue is.
         val sdk = buildSdk(testConfig())
         val received = mutableListOf<Map<String, Any?>>()
-        sdk.on(SystemEvents.BUCKETING, object : EventCallback {
-            override fun onEvent(data: Map<String, Any?>) {
-                received.add(data)
-            }
-        })
+        val callback = RecordingEventCallback(received)
+        sdk.on(SystemEvents.BUCKETING, callback)
         val ctx = sdk.createContext("visitor_abc")
 
         ctx.runExperience("welcome", enableTracking = false)
@@ -367,6 +372,20 @@ internal class ConvertContextRunExperienceTest {
             Thread.sleep(10)
         }
         assertTrue("Timed out waiting for condition", check())
+    }
+
+    /**
+     * Simple [EventCallback] helper that appends every dispatched payload
+     * to the supplied [sink]. Replaces an inline anonymous-object literal
+     * that tripped detekt's `Wrapping` rule on the `sdk.on(event, object : EventCallback {...})`
+     * call site.
+     */
+    internal class RecordingEventCallback(
+        private val sink: MutableList<Map<String, Any?>>,
+    ) : EventCallback {
+        override fun onEvent(data: Map<String, Any?>) {
+            sink.add(data)
+        }
     }
 
     /** Recorded call to [com.convert.sdk.core.api.ApiManager.enqueueBucketingEvent]. */
