@@ -30,6 +30,18 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@convertcom/js-sdk-bucketing@file:../javascript-sdk/packages/bucketing::locator=convert-android-sdk-release-tooling%40workspace%3A.":
+  version: 3.1.2
+  resolution: "@convertcom/js-sdk-bucketing@file:../javascript-sdk/packages/bucketing#../javascript-sdk/packages/bucketing::hash=e0b32a&locator=convert-android-sdk-release-tooling%40workspace%3A."
+  peerDependencies:
+    "@convertcom/js-sdk-enums": ">=2.3.0"
+    "@convertcom/js-sdk-logger": ">=2.1.2"
+    "@convertcom/js-sdk-types": ">=3.9.0"
+    "@convertcom/js-sdk-utils": ">=2.2.3"
+  checksum: 10c0/4cb42cbd7be9e596671396e5b8c8dbc46562e121bbeba6cbd4c4bffe708bb582553cc2e3cd3741352b9b3f8ce40e19dd562419a993fc14d39a601f008d6fb50f
+  languageName: node
+  linkType: hard
+
 "@isaacs/cliui@npm:^8.0.2":
   version: 8.0.2
   resolution: "@isaacs/cliui@npm:8.0.2"
@@ -1159,6 +1171,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "convert-android-sdk-release-tooling@workspace:."
   dependencies:
+    "@convertcom/js-sdk-bucketing": "file:../javascript-sdk/packages/bucketing"
     "@semantic-release/changelog": "npm:^6.0.0"
     "@semantic-release/exec": "npm:^7.0.0"
     "@semantic-release/git": "npm:^10.0.0"
