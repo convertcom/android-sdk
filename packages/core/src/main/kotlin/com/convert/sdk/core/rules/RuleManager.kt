@@ -77,7 +77,7 @@ import kotlinx.serialization.json.jsonPrimitive
  * unknown operator) is caught + logged. The evaluator returns
  * `true` / `false` deterministically.
  */
-internal class RuleManager(
+public class RuleManager(
     private val config: ConvertConfig,
     private val logger: Logger,
 ) {
@@ -92,7 +92,7 @@ internal class RuleManager(
      * @return `true` if the visitor matches the rule set, `false`
      *   otherwise.
      */
-    fun evaluate(rules: RuleObjectAudience?, attributes: Map<String, JsonElement>): Boolean {
+    public fun evaluate(rules: RuleObjectAudience?, attributes: Map<String, JsonElement>): Boolean {
         val orGroups = rules?.OR
         if (orGroups.isNullOrEmpty()) return true
         return orGroups.any { orGroup ->
@@ -107,7 +107,7 @@ internal class RuleManager(
      * ([com.convert.sdk.core.model.generated.RuleObjectORInner] →
      * [com.convert.sdk.core.model.generated.RuleObjectORInnerANDInner]).
      */
-    fun evaluate(rules: RuleObject?, attributes: Map<String, JsonElement>): Boolean {
+    public fun evaluate(rules: RuleObject?, attributes: Map<String, JsonElement>): Boolean {
         val orGroups = rules?.OR
         if (orGroups.isNullOrEmpty()) return true
         return orGroups.any { orGroup ->

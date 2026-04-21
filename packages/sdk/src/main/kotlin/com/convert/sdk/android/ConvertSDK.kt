@@ -34,6 +34,8 @@ import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.port.DataStore
 import com.convert.sdk.core.port.HttpClient
 import com.convert.sdk.core.port.Logger
+import com.convert.sdk.core.rules.RuleManager
+import com.convert.sdk.core.rules.rawRuleSerializersModule
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,6 +45,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.modules.plus
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
@@ -116,6 +119,7 @@ public class ConvertSDK internal constructor(
     apiManager: ApiManager? = null,
     internal val fileConfigCache: FileConfigCache? = null,
     initialBucketingManager: BucketingManager? = null,
+    initialRuleManager: RuleManager? = null,
     scope: CoroutineScope? = null,
 ) {
 
@@ -167,6 +171,22 @@ public class ConvertSDK internal constructor(
      */
     internal val bucketingManager: BucketingManager = initialBucketingManager
         ?: BucketingManager(config = config, logger = logger)
+
+    /**
+     * Shared [RuleManager] — Story 3.4. Exposed `internal` so
+     * [ConvertContext.runExperience] can reach it for audience /
+     * location gate evaluation. Stateless with respect to visitor
+     * identity; all per-visitor state lives on the caller
+     * ([ConvertContext.currentAttributes] / `currentLocationProperties`)
+     * and is passed into `evaluate` per call.
+     *
+     * The Builder path supplies one instance wired to the same
+     * [logger] and [config] the SDK uses everywhere; pure-JVM smoke
+     * tests fall back to a default instance so [ConvertContext] is
+     * never nulled here.
+     */
+    internal val ruleManager: RuleManager = initialRuleManager
+        ?: RuleManager(config = config, logger = logger)
 
     /**
      * SDK-scoped [CoroutineScope] owning every background coroutine the
@@ -940,6 +960,15 @@ public class ConvertSDK internal constructor(
                 json = sharedJson,
             )
 
+            // Story 3.2 SDK-4 / Story 3.4 — pre-construct the bucketing
+            // and rule managers so the ConvertSDK(...) call stays compact
+            // and `build()` fits under detekt's LongMethod ceiling. Both
+            // managers are stateless w.r.t. visitor identity (state lives
+            // on DataManager.storeData / ConvertContext); the config /
+            // logger references are what they need from the Builder.
+            val bucketingManager = BucketingManager(config = assembled, logger = logger)
+            val ruleManager = RuleManager(config = assembled, logger = logger)
+
             val sdk = ConvertSDK(
                 config = assembled,
                 appContext = appContext,
@@ -948,28 +977,10 @@ public class ConvertSDK internal constructor(
                 httpClient = httpClient,
                 eventManager = eventManager,
                 initialDataManager = dataManager,
-                // Story 2.3: hand the already-constructed ApiManager and
-                // FileConfigCache to the SDK so its init block can wire a
-                // refresh loop on top of the same collaborators the
-                // initial seed uses. Passing them in (rather than
-                // re-instantiating inside ConvertSDK) keeps the dependency
-                // graph assembly in one place — Builder.build().
                 apiManager = apiManager,
                 fileConfigCache = fileConfigCache,
-                // Story 3.2 SDK-4 — hand the bucketing manager in so
-                // ConvertContext.runExperience picks up the same instance
-                // (and its config-resolved seed / maxTraffic) that the
-                // Builder assembled. The manager is stateless w.r.t.
-                // visitor bucketing (state lives in DataManager.storeData),
-                // so inline construction here is fine.
-                initialBucketingManager = BucketingManager(
-                    config = assembled,
-                    logger = logger,
-                ),
-                // Story 2.4: share the same scope with EventManager so
-                // all dispatch — ConvertSDK's own launches + EventManager
-                // subscriber broadcasts + deferred replay — flows through
-                // one SupervisorJob and one dispatcher.
+                initialBucketingManager = bucketingManager,
+                initialRuleManager = ruleManager,
                 scope = sdkScope,
             )
 
@@ -1230,13 +1241,26 @@ private const val BUILDER_TAG: String = "ConvertSDK.Builder"
 private fun buildSharedJson(): Json = Json {
     ignoreUnknownKeys = true
     explicitNulls = false
-    // Story 2.2 AC-12 (F-172): register the BigDecimal contextual
-    // serializer so FileConfigCache.write can encode ConfigResponseData
-    // without throwing on @Contextual java.math.BigDecimal fields
-    // (notably ConfigProjectSettings.minOrderValue / maxOrderValue).
-    // Every component using this Json (ApiManager, FileConfigCache,
+    // Story 2.2 AC-12 (F-172): [bigDecimalSerializersModule] registers the
+    // BigDecimal contextual serializer so FileConfigCache.write can encode
+    // ConfigResponseData without throwing on @Contextual
+    // java.math.BigDecimal fields (notably
+    // ConfigProjectSettings.minOrderValue / maxOrderValue). Every
+    // component using this Json (ApiManager, FileConfigCache,
     // DataManager's per-visitor StoreData) inherits the registration.
-    serializersModule = bigDecimalSerializersModule
+    //
+    // Story 3.4: [rawRuleSerializersModule] supplies a catch-all
+    // deserializer for the Convert backend's rule-element payloads
+    // (which have no class discriminator — rule_type is implicit in
+    // shape). kotlinx-serialization cannot deserialise the generated
+    // RuleElement* interfaces without it. The module wraps each rule
+    // element's raw JsonObject in a concrete holder that RuleManager
+    // walks by JSON keys. Without this, any config response carrying
+    // audience/location rules fails to parse and the SDK stays
+    // unready forever.
+    //
+    // Composed via SerializersModule.plus so both registrations apply.
+    serializersModule = bigDecimalSerializersModule + rawRuleSerializersModule
 }
 
 private fun buildSdkScope(logger: Logger): CoroutineScope =
