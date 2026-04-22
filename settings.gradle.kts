@@ -16,4 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "android-sdk"
 
-include(":packages:core", ":packages:sdk")
+include(":packages:core", ":packages:sdk", ":packages:sdk-lint")
