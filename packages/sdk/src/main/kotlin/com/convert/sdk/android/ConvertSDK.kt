@@ -947,6 +947,9 @@ public class ConvertSDK internal constructor(
          *
          * @return a new [ConvertSDK] ready for use.
          */
+        @Suppress("LongMethod") // +6 over 60 after Story 5.2 wiring — extraction
+        // would spread ConvertSDK's all-at-once DI graph across several
+        // helpers and obscure the construction order comments. Acceptable.
         public fun build(): ConvertSDK {
             val assembled = assembleConfig()
 

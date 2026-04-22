@@ -97,7 +97,6 @@ internal class FileEventQueue(
      */
     private val mutex: Mutex = Mutex()
 
-    @Suppress("TooGenericExceptionCaught")
     override suspend fun persist(events: List<VisitorEvent>) {
         if (events.isEmpty()) return
         mutex.withLock {
@@ -107,6 +106,7 @@ internal class FileEventQueue(
         }
     }
 
+    @Suppress("TooGenericExceptionCaught")
     private fun persistLocked(events: List<VisitorEvent>) {
         try {
             if (!cacheDir.exists() && !cacheDir.mkdirs()) {

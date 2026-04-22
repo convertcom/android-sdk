@@ -20,7 +20,6 @@ import com.convert.sdk.core.port.Logger
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
-import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -74,29 +73,29 @@ internal class ApiManagerRetryTest {
 
         api.enqueueBucketingEvent("v-1", "e-1", "var-a")
         api.flushForTest()
-        runCurrent()                             // initial POST resolves
+        runCurrent() // initial POST resolves
         assertEquals(1, http.calls.size, "initial POST")
 
-        advanceTimeBy(9_999)                     // not yet retried
+        advanceTimeBy(9_999) // not yet retried
         runCurrent()
         assertEquals(1, http.calls.size, "before 10s tick")
 
-        advanceTimeBy(2)                         // ~10s elapsed
+        advanceTimeBy(2) // ~10s elapsed
         runCurrent()
         assertEquals(2, http.calls.size, "first retry at 10s")
 
-        advanceTimeBy(20_000)                    // ~30s elapsed
+        advanceTimeBy(20_000) // ~30s elapsed
         runCurrent()
         assertEquals(3, http.calls.size, "second retry at 20s after first")
 
-        advanceTimeBy(40_000)                    // ~70s elapsed
+        advanceTimeBy(40_000) // ~70s elapsed
         runCurrent()
         assertEquals(4, http.calls.size, "third retry at 40s after second")
 
-        // Cancel the timer BEFORE advanceUntilIdle — otherwise the
-        // forever-ticking timer loop makes `advanceUntilIdle` hang.
+        // Cancel the timer BEFORE further advancement — a forever-ticking
+        // timer loop would make the test hang or double-persist.
         api.cancelTimerForTest()
-        runCurrent()                             // drain the persist launch
+        runCurrent() // drain the persist launch
         assertEquals(1, queue.persisted.size, "snapshot must persist after max retries")
     }
 
