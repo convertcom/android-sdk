@@ -124,6 +124,122 @@ class SdkViewModelTest {
         assertTrue(vm.networkOnline.value)
     }
 
+    // --- Story 7.2 additions -----------------------------------------
+
+    @Test
+    fun `tab selection defaults to Events`() {
+        val subscriber = FakeEventSubscriber()
+        val vm = SdkViewModel(eventSubscriber = subscriber, initialNetworkOnline = true)
+        assertEquals(InspectorTab.EVENTS, vm.selectedTab.value)
+    }
+
+    @Test
+    fun `selectTab updates the selectedTab flow`() {
+        val subscriber = FakeEventSubscriber()
+        val vm = SdkViewModel(eventSubscriber = subscriber, initialNetworkOnline = true)
+        vm.selectTab(InspectorTab.LOGS)
+        assertEquals(InspectorTab.LOGS, vm.selectedTab.value)
+        vm.selectTab(InspectorTab.EVENTS)
+        assertEquals(InspectorTab.EVENTS, vm.selectedTab.value)
+    }
+
+    @Test
+    fun `bucketing event added with QUEUED lifecycle`() = runTest(testDispatcher) {
+        val subscriber = FakeEventSubscriber()
+        val vm = SdkViewModel(eventSubscriber = subscriber, initialNetworkOnline = true)
+        subscriber.emit(
+            "bucketing",
+            mapOf("experienceKey" to "welcome", "variationKey" to "control", "visitorId" to "v-1"),
+        )
+        advanceUntilIdle()
+        val e = vm.events.value.single()
+        assertEquals("bucketing", e.eventName)
+        assertEquals(EventLifecycle.QUEUED, e.lifecycle)
+    }
+
+    @Test
+    fun `conversion event added with QUEUED lifecycle`() = runTest(testDispatcher) {
+        val subscriber = FakeEventSubscriber()
+        val vm = SdkViewModel(eventSubscriber = subscriber, initialNetworkOnline = true)
+        subscriber.emit(
+            "conversion",
+            mapOf("visitorId" to "v-1", "goalKey" to "purchase"),
+        )
+        advanceUntilIdle()
+        val e = vm.events.value.single()
+        assertEquals("conversion", e.eventName)
+        assertEquals(EventLifecycle.QUEUED, e.lifecycle)
+    }
+
+    @Test
+    fun `api queue released with 2xx transitions QUEUED to DELIVERED`() = runTest(testDispatcher) {
+        val subscriber = FakeEventSubscriber()
+        val vm = SdkViewModel(eventSubscriber = subscriber, initialNetworkOnline = true)
+
+        subscriber.emit("bucketing", mapOf("experienceKey" to "e-1", "visitorId" to "v-1"))
+        subscriber.emit("conversion", mapOf("goalKey" to "purchase", "visitorId" to "v-1"))
+        advanceUntilIdle()
+        // Both start QUEUED.
+        assertTrue(vm.events.value.all { it.lifecycle == EventLifecycle.QUEUED })
+
+        subscriber.emit("api.queue.released", mapOf("batchSize" to 2, "statusCode" to 200))
+        advanceUntilIdle()
+
+        // Both now DELIVERED.
+        val all = vm.events.value.filter { it.eventName in setOf("bucketing", "conversion") }
+        assertEquals(2, all.size, "the two networked events are still tracked")
+        assertTrue(
+            all.all { it.lifecycle == EventLifecycle.DELIVERED },
+            "2xx release should transition QUEUED -> DELIVERED",
+        )
+    }
+
+    @Test
+    fun `api queue released with 5xx does not transition`() = runTest(testDispatcher) {
+        val subscriber = FakeEventSubscriber()
+        val vm = SdkViewModel(eventSubscriber = subscriber, initialNetworkOnline = true)
+
+        subscriber.emit("bucketing", mapOf("experienceKey" to "e-1", "visitorId" to "v-1"))
+        advanceUntilIdle()
+        assertEquals(EventLifecycle.QUEUED, vm.events.value.single().lifecycle)
+
+        subscriber.emit("api.queue.released", mapOf("batchSize" to 1, "statusCode" to 500))
+        advanceUntilIdle()
+        // Non-2xx is ignored by the resolver — event stays QUEUED.
+        assertEquals(
+            EventLifecycle.QUEUED,
+            vm.events.value.single { it.eventName == "bucketing" }.lifecycle,
+            "non-2xx release should NOT transition to DELIVERED",
+        )
+    }
+
+    @Test
+    fun `ready and config updated events have NONE lifecycle`() = runTest(testDispatcher) {
+        val subscriber = FakeEventSubscriber()
+        val vm = SdkViewModel(eventSubscriber = subscriber, initialNetworkOnline = true)
+        subscriber.emit("ready", mapOf("environment" to "production"))
+        subscriber.emit("config.updated", mapOf("timestamp" to 1L))
+        advanceUntilIdle()
+        val system = vm.events.value.filter { it.eventName in setOf("ready", "config.updated") }
+        assertEquals(2, system.size)
+        assertTrue(
+            system.all { it.lifecycle == EventLifecycle.NONE },
+            "system events that never hit the network have NONE lifecycle",
+        )
+    }
+
+    @Test
+    fun `event ids are unique and stable`() = runTest(testDispatcher) {
+        val subscriber = FakeEventSubscriber()
+        val vm = SdkViewModel(eventSubscriber = subscriber, initialNetworkOnline = true)
+        subscriber.emit("bucketing", mapOf("experienceKey" to "e-1"))
+        subscriber.emit("bucketing", mapOf("experienceKey" to "e-2"))
+        subscriber.emit("conversion", mapOf("goalKey" to "g-1"))
+        advanceUntilIdle()
+        val ids = vm.events.value.map { it.id }
+        assertEquals(ids.distinct().size, ids.size, "every inspector event must have a unique id")
+    }
+
     /**
      * Minimal in-memory [EventSubscriber] double. Registers callbacks by
      * name; tests invoke `emit(...)` to simulate SDK-side fires.

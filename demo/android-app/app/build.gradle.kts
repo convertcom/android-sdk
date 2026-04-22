@@ -153,4 +153,23 @@ dependencies {
     testImplementation("io.mockk:mockk:1.13.13")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+    // Story 7.2 AC-8 — Compose UI tests for EventInspectorSheet.
+    //
+    // `ui-test-junit4` is a JUnit-4 rule library (`createComposeRule`).
+    // This module runs on JUnit 5, but the junit-vintage-engine below
+    // lets JUnit 4 tests cohabit with JUnit Jupiter tests (same pattern
+    // `:packages:sdk` uses for its Robolectric suite).
+    //
+    // `ui-test-manifest` supplies the instrumentation manifest needed
+    // by `createComposeRule` even on the local JVM classpath.
+    //
+    // Robolectric provides the Android shadow runtime so the Compose
+    // rule can stand up a `ComponentActivity` without an instrumented
+    // device. The project already uses Robolectric 4.16 in the SDK
+    // module's version catalog.
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("androidx.compose.ui:ui-test-manifest")
+    testImplementation("org.robolectric:robolectric:4.16")
+    testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.11.4")
 }
