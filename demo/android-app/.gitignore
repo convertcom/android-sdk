@@ -1,0 +1,14 @@
+# Demo app local artefacts — root .gitignore already covers most of these,
+# but a module-local file documents intent and catches edge cases when the
+# demo is cloned in isolation.
+
+.gradle/
+.kotlin/
+build/
+app/build/
+.idea/
+local.properties
+*.iml
+.DS_Store
+/captures/
+/out/
