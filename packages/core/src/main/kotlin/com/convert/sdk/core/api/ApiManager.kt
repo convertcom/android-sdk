@@ -20,8 +20,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -124,7 +122,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * #### Snapshot-and-release concurrency (AC-9)
  *
- * [flush] copies the queue and clears it under [queueMutex], then
+ * [flush] copies the queue and clears it under [queueLock], then
  * releases the lock before issuing the HTTP POST. This prevents the
  * lock being held for the duration of a slow network call. On failure
  * (non-2xx or thrown exception) the snapshot is prepended back to the
@@ -199,7 +197,16 @@ public open class ApiManager(
         config.network?.tracking ?: ConfigDefaults.DEFAULT_TRACKING_ENABLED,
     )
 
-    private val queueMutex: Mutex = Mutex()
+    /**
+     * Guards [eventQueue]. Every mutation (enqueue, snapshot, clear,
+     * requeue) goes through `synchronized(queueLock)`. JVM monitor lock
+     * is chosen over `kotlinx.coroutines.Mutex` because the non-suspend
+     * public API ([enqueueBucketingEvent], [enqueueConversionEvent])
+     * cannot `withLock { ... }`. Work done inside the lock is always
+     * O(snapshot size) and NEVER includes HTTP I/O (see [flush]'s
+     * snapshot-and-release pattern — lock is released BEFORE the POST).
+     */
+    private val queueLock: Any = Any()
     private val eventQueue: MutableList<VisitorEvent> = mutableListOf()
 
     private val batchSize: Int =
@@ -347,7 +354,7 @@ public open class ApiManager(
      */
     private fun enqueueInternal(event: VisitorEvent) {
         val shouldFlush: Boolean
-        synchronized(eventQueue) {
+        synchronized(queueLock) {
             eventQueue += event
             shouldFlush = eventQueue.size >= batchSize
         }
@@ -360,18 +367,20 @@ public open class ApiManager(
      * Posts the current queue contents to the tracking endpoint.
      *
      * Snapshot-and-release sequence (AC-9):
-     *  1. Under [queueMutex], copy + drain [eventQueue] into a local
+     *  1. Under [queueLock], copy + drain [eventQueue] into a local
      *     snapshot. Release the lock.
      *  2. Build the JSON payload from the snapshot (one Visitor entry
      *     per unique visitorId).
-     *  3. POST to `{trackEndpoint}/track/{sdkKey}` on
-     *     [Dispatchers.IO].
+     *  3. POST to `{trackEndpoint}/track/{sdkKey}` on [ioDispatcher].
      *  4. On HTTP 2xx: fire [SystemEvents.API_QUEUE_RELEASED] with
      *     `{reason, result, visitors}` matching JS SDK `api-manager.ts:232-237`
      *     and drop the snapshot.
      *  5. On non-2xx or thrown exception: re-prepend the snapshot to
      *     the queue under the lock so the next flush retries. No event
      *     fires on failure (Story 5.2 will add retry semantics).
+     *
+     * The HTTP call runs OUTSIDE the lock — holding a monitor across a
+     * network call would starve concurrent enqueues.
      *
      * Skipped with WARN when `sdkKey` or projectId is unresolvable —
      * we must not POST to a partial URL.
@@ -389,7 +398,7 @@ public open class ApiManager(
             return
         }
 
-        val snapshot: List<VisitorEvent> = queueMutex.withLock {
+        val snapshot: List<VisitorEvent> = synchronized(queueLock) {
             if (eventQueue.isEmpty()) return
             val copy = eventQueue.toList()
             eventQueue.clear()
@@ -457,8 +466,8 @@ public open class ApiManager(
         timerJob = null
     }
 
-    private suspend fun requeueFront(snapshot: List<VisitorEvent>) {
-        queueMutex.withLock {
+    private fun requeueFront(snapshot: List<VisitorEvent>) {
+        synchronized(queueLock) {
             // Preserve original ordering: the retry should flush the
             // oldest event first. addAll(0, ...) prepends, keeping the
             // snapshot's own relative order.
