@@ -75,6 +75,7 @@ class SdkViewModel(
     private val experienceRunner: ExperienceRunner = NoOpExperienceRunner,
     private val featureRunner: FeatureRunner = NoOpFeatureRunner,
     private val conversionTracker: ConversionTracker = NoOpConversionTracker,
+    private val configSnapshotProvider: ConfigSnapshotProvider = NoOpConfigSnapshotProvider,
 ) : ViewModel() {
 
     private val _events = MutableStateFlow<List<InspectorEvent>>(emptyList())
@@ -140,6 +141,25 @@ class SdkViewModel(
      * older entries roll off the tail.
      */
     val conversionResults: StateFlow<List<ConversionResult>> = _conversionResults.asStateFlow()
+
+    private val _configState = MutableStateFlow<ConfigState>(ConfigState.Loading)
+
+    /**
+     * Story 7.6 AC-5 / AC-6 / AC-7 — the Config screen's three-branch
+     * rendering state.
+     *
+     * Transitions:
+     *  - [ConfigState.Loading] → [ConfigState.Loaded] on the first
+     *    `ready` event (or any subsequent `config.updated`).
+     *  - [ConfigState.Loading] → [ConfigState.Failed] when a WARN or
+     *    ERROR log accumulates BEFORE any `ready` fire — per
+     *    Story 7.6 Gotcha 3, the UI infers the error from the log
+     *    stream because the SDK does not expose a typed error event.
+     *  - Once [ConfigState.Loaded] is reached, subsequent WARN/ERROR
+     *    logs do NOT downgrade state. The demo already has a usable
+     *    config in memory; a stale-refresh WARN is not a regression.
+     */
+    val configState: StateFlow<ConfigState> = _configState.asStateFlow()
 
     /**
      * Story 7.5 — display-only memory of which goal keys this ViewModel
@@ -535,6 +555,14 @@ class SdkViewModel(
             onApiQueueReleased(payload)
             return
         }
+        // Story 7.6 AC-5 — both ready and config.updated refresh the
+        // configState to Loaded with a new snapshot + timestamp. Doing
+        // this BEFORE the inspector capture keeps the Config screen in
+        // sync with the most recent event even if a later subscriber
+        // (hypothetically) throws.
+        if (event == SystemEvents.READY || event == SystemEvents.CONFIG_UPDATED) {
+            refreshConfigSnapshot()
+        }
         val lifecycle = when (event) {
             SystemEvents.BUCKETING, SystemEvents.CONVERSION -> EventLifecycle.QUEUED
             else -> EventLifecycle.NONE
@@ -546,6 +574,25 @@ class SdkViewModel(
             lifecycle = lifecycle,
         )
         _events.update { listOf(captured) + it }
+    }
+
+    /**
+     * Story 7.6 AC-5 — pulls a fresh snapshot from [configSnapshotProvider]
+     * and publishes a new [ConfigState.Loaded] stamped with the
+     * current wall-clock time. Called on `ready` and `config.updated`.
+     *
+     * Any exception from the provider is swallowed — the ViewModel
+     * must never crash the host on a snapshot failure. The state stays
+     * at whatever value it had (typically Loading on the very first
+     * ready after a provider bug), and the user sees the caller's
+     * error path through the ordinary log stream.
+     */
+    private fun refreshConfigSnapshot() {
+        val snapshot = runCatching { configSnapshotProvider.snapshot() }.getOrNull() ?: return
+        _configState.value = ConfigState.Loaded(
+            snapshot = snapshot,
+            lastFetchedAt = System.currentTimeMillis(),
+        )
     }
 
     /**
@@ -583,6 +630,25 @@ class SdkViewModel(
             throwable = throwable,
         )
         _logs.update { listOf(entry) + it }
+        // Story 7.6 AC-7 — a WARN or ERROR log that fires BEFORE the
+        // SDK has emitted its first `ready` signals the config-fetch
+        // path failed AND there is no cached config to fall back on.
+        // Transition the Config screen to Failed so the user sees the
+        // reason + hint instead of an indefinite spinner. Post-ready
+        // WARN/ERROR does NOT downgrade — the app already has usable
+        // config in memory (see configState KDoc).
+        if (level == LogLevel.WARN || level == LogLevel.ERROR) {
+            _configState.update { current ->
+                if (current is ConfigState.Loading) {
+                    ConfigState.Failed(
+                        reason = message,
+                        hint = CONFIG_FAILURE_HINT,
+                    )
+                } else {
+                    current
+                }
+            }
+        }
     }
 
     override fun onCleared() {
@@ -628,6 +694,14 @@ class SdkViewModel(
          * sent with every `trackPurchaseConversion` call.
          */
         const val DEFAULT_PRODUCTS_COUNT: Int = 2
+
+        /**
+         * Story 7.6 AC-7 — fixed remediation hint rendered in the
+         * Config screen's error card. The story names this literal
+         * verbatim ("Check network + SDK key") so a future
+         * UX-copy refresh can find and replace it in one place.
+         */
+        const val CONFIG_FAILURE_HINT: String = "Check network + SDK key"
     }
 }
 
@@ -678,4 +752,22 @@ private object NoOpConversionTracker : ConversionTracker {
     // tests exercise; the real goal-existence check lives in the
     // DemoApplication-wired tracker backed by ConvertContext.hasGoal.
     override fun hasGoal(goalKey: String): Boolean = true
+}
+
+/**
+ * Story 7.6 — default [ConfigSnapshotProvider] used by the production
+ * constructor when the caller does not supply one. Returns an empty
+ * snapshot with `trackingEnabled = null` so the ConfigScreen renders
+ * sensible defaults (masked key `""`, `"—"` for tracking) rather than
+ * a crash. The real SDK-backed impl is wired in
+ * [com.convert.sdk.demo.DemoApplication].
+ */
+private object NoOpConfigSnapshotProvider : ConfigSnapshotProvider {
+    override fun snapshot(): ConfigSnapshot = ConfigSnapshot(
+        sdkKey = "",
+        environment = null,
+        experienceKeys = emptyList(),
+        featureKeys = emptyList(),
+        trackingEnabled = null,
+    )
 }
