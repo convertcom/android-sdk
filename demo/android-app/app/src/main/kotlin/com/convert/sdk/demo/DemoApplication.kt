@@ -12,6 +12,8 @@ import com.convert.sdk.core.model.Feature
 import com.convert.sdk.core.model.GoalData
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.Variation
+import com.convert.sdk.demo.viewmodel.ConfigSnapshot
+import com.convert.sdk.demo.viewmodel.ConfigSnapshotProvider
 import com.convert.sdk.demo.viewmodel.ConversionTracker
 import com.convert.sdk.demo.viewmodel.EventSubscriber
 import com.convert.sdk.demo.viewmodel.ExperienceRunner
@@ -244,5 +246,50 @@ class DemoApplication : Application() {
             } else {
                 false
             }
+    }
+
+    /**
+     * Story 7.6 AC-5 — builds a [ConfigSnapshotProvider] that reads
+     * the SDK's current state through its **public** API surface.
+     *
+     * The demo cannot read `sdk.dataManager` directly (the property is
+     * `internal` to the SDK module) but it can infer the two lists the
+     * panel requires by asking a per-visitor [ConvertContext] for its
+     * eligible experience and feature sets — these are the
+     * `runExperiences()` / `runFeatures()` calls the other screens
+     * already exercise. Each `Variation` carries its `experienceKey`;
+     * each `Feature` carries its `key`.
+     *
+     * Honest naming: "Active" in the panel means "eligible for the
+     * current visitor". A visitor outside an experience's audience
+     * will see that experience omitted from the list — which is the
+     * correct signal for a developer debugging audience rules.
+     *
+     * `trackingEnabled` comes from the SDK's public
+     * [com.convert.sdk.android.ConvertSDK.isTrackingEnabled] accessor.
+     * The `null` branch (API manager not yet wired) renders as `"—"`
+     * in [ConfigInfoPanel].
+     *
+     * Same `ConvertSdkInitializedBeforeUse` suppression rationale as
+     * the other factories — DI-container-style lookup fires only
+     * after [MainActivity.onCreate], which follows
+     * [Application.onCreate].
+     */
+    @Suppress("ConvertSdkInitializedBeforeUse")
+    fun configSnapshotProvider(): ConfigSnapshotProvider = object : ConfigSnapshotProvider {
+        private val context: ConvertContext by lazy { sdk.createContext() }
+
+        override fun snapshot(): ConfigSnapshot {
+            val experiences = runCatching { context.runExperiences() }.getOrDefault(emptyList())
+            val features = runCatching { context.runFeatures() }.getOrDefault(emptyList())
+            val tracking = runCatching { sdk.isTrackingEnabled() }.getOrNull()
+            return ConfigSnapshot(
+                sdkKey = BuildConfig.convertSdkKey,
+                environment = null,
+                experienceKeys = experiences.mapNotNull { it.experienceKey },
+                featureKeys = features.mapNotNull { it.key },
+                trackingEnabled = tracking,
+            )
+        }
     }
 }

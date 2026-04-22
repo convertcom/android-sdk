@@ -44,8 +44,8 @@ demo/android-app/
 | 7.2 | Full EventInspectorSheet (two tabs, badges) |
 | 7.3 | Experiences screen full impl |
 | 7.4 | Features screen full impl |
-| 7.5 *(this)* | Conversions journey |
-| 7.6 | Offline/airplane-mode demo |
+| 7.5 | Conversions journey |
+| 7.6 *(this)* | Offline screen + Config screen |
 
 ## Try it: Experiences screen
 
@@ -247,3 +247,100 @@ of the Experiences and Features lists — tapping one screen's buttons
 never drops the other screens' cards. Clearing the Conversions list
 through a future `Clear` button (not wired in this MVP) would NOT
 reset the dedup memory — only a fresh visitor id does.
+
+## Try it: Offline screen
+
+The fourth tab — Offline — proves the SDK's offline resilience
+contract from Story 5.2. The demonstration is a four-beat cycle
+anchored on the device's **airplane mode** toggle, because modern
+Android does not let apps programmatically enable or disable
+connectivity (Story 7.6 Gotcha 1):
+
+1. **Enable airplane mode** on the device/emulator (Settings → Network
+   & internet → Airplane mode, or long-press the power button → Airplane
+   mode). The inspector's network-status pill and the Offline screen's
+   status banner both switch to `Offline` (red dot).
+2. **Tap `Run Experience` or `Buy` while offline.** A result card
+   appears at the top of the Offline screen (the same ResultCard the
+   Experiences / Conversions screens render), and the inspector's
+   Events tab shows a new BUCKETING or CONVERSION event with the
+   **QUEUED** badge (amber). The SDK has captured the event locally
+   but has not flushed it.
+3. **Disable airplane mode.** Story 5.2's NetworkObserver fires on the
+   OS's `onAvailable` callback; the SDK drains its event queue; a
+   `api.queue.released` event fires with `statusCode=200`; the
+   inspector transitions every currently-queued event to the
+   **DELIVERED** badge (green). Zero events are lost.
+4. **Compare counts.** The number of DELIVERED events matches the
+   number of taps you made while offline — the SDK's offline
+   guarantee is visible, not theoretical.
+
+### Why `FLUSHING` (blue) is rare
+
+The inspector's lifecycle enum includes a `FLUSHING` state between
+`QUEUED` and `DELIVERED`, but the current SDK does not fire a
+dedicated `flush-started` event — so queued events typically jump
+straight from QUEUED to DELIVERED when `api.queue.released` fires.
+The state remains in the enum for forward-compatibility with a future
+SDK that surfaces flush-in-flight visibility; for now, the two
+observable states are QUEUED (amber) and DELIVERED (green).
+
+### Offline screen buttons
+
+- **Run Experience** targets the same hardcoded
+  `"test-experience"` key as the Experiences screen. Sticky bucketing
+  (Story 3.2) means a visitor bucketed on the Experiences tab stays
+  bucketed here — same variation, same card.
+- **Buy** calls the same `trackPurchaseConversion()` path as the
+  Conversions tab. A first tap produces a tracked card; a second tap
+  produces the dedup card and the corresponding DEBUG log line. The
+  inspector's CONVERSION event still fires on the first tap only.
+
+## Try it: Config screen
+
+The fifth tab — Config — is a read-only panel showing what the SDK
+currently knows about your project. There are no taps here; the panel
+updates reactively whenever the SDK fires `ready` or `config.updated`.
+
+### Panel rows
+
+| Row | Source | Example |
+|-----|--------|---------|
+| SDK Key | `BuildConfig.convertSdkKey` (from `local.properties`) | `abcdef12...` |
+| Environment | Empty until the SDK exposes it | `(not set)` |
+| Active Experiences | `ConvertContext.runExperiences()` count + keys | `2 active — welcome, checkout` |
+| Active Features | `ConvertContext.runFeatures()` count + keys | `1 active — banner` |
+| Config Last Fetched | Stamped when the ViewModel observes `ready` / `config.updated` | `14:32:17.842` |
+| Tracking Enabled | `ConvertSDK.isTrackingEnabled()` | `Yes` / `No` / `—` |
+
+### SDK key masking
+
+The SDK Key row **never** renders the full key. Any key longer than 8
+characters is masked to `<first 8 chars>...` so a screenshare or
+screenshot cannot leak it. Short placeholders (`"demo-sdk-key"` is 12
+chars, so it also masks to `demo-sdk...`) still render masked. Your
+real SDK key lives in `local.properties` which is git-ignored.
+
+### States
+
+- **Loading** — a `CircularProgressIndicator` plus "Fetching
+  configuration..." text renders until the SDK fires its first
+  `ready` event.
+- **Loaded** — the `ConfigInfoPanel` replaces the spinner with the
+  six rows above.
+- **Failed** — an error card renders when the SDK has not fired
+  `ready` AND a `WARN` or `ERROR` log has accumulated (typically
+  "no cached config + network fetch failed"). The card shows the
+  captured log message as the reason and the canonical
+  `Check network + SDK key` hint. Fix your `convertSdkKey` and
+  relaunch.
+
+### Active vs configured
+
+The panel says "Active" because it reads the **eligible** sets for
+the current visitor via `ConvertContext.runExperiences()` /
+`runFeatures()`, not the raw project config. A visitor outside an
+experience's audience will see that experience omitted. This is the
+most honest answer the SDK's public API surfaces today; the
+dashboard's project view is the source of truth for the configured
+superset.

@@ -58,7 +58,12 @@ class OfflineScreenTest {
         composeRule.setContent {
             MaterialTheme { OfflineScreen(viewModel = vm) }
         }
-        composeRule.onNodeWithText("Online", substring = true).assertIsDisplayed()
+        // Exact match — avoids catching the screen title "Online" wouldn't
+        // be in; "Online" is a standalone banner label.
+        composeRule.onNodeWithText("Online").assertIsDisplayed()
+        // The descriptive suffix is part of the banner — proves we rendered
+        // the banner, not some other place.
+        composeRule.onNodeWithText("— events flush live", substring = true).assertIsDisplayed()
     }
 
     @Test
@@ -69,7 +74,8 @@ class OfflineScreenTest {
         }
         vm.setNetworkOnline(false)
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("Offline", substring = true).assertIsDisplayed()
+        // Descriptive suffix disambiguates from the screen title "Offline".
+        composeRule.onNodeWithText("— events queued", substring = true).assertIsDisplayed()
     }
 
     @Test
