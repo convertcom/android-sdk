@@ -114,3 +114,27 @@ exceptions:
       - NullPointerException
       - IndexOutOfBoundsException
       - Throwable
+
+# Story 6.1 AC-6 — enforce KDoc on every public declaration.
+# Default detekt severity is "error" (since root `build.maxIssues: 0` and
+# `weights` are unmodified for this rule set). UndocumentedPublicClass and
+# UndocumentedPublicFunction fail the `detekt` task on any new public API
+# that lands without a KDoc summary. UndocumentedPublicProperty is left
+# inactive: Kotlin `data class` constructor `val` properties are the
+# project's dominant pattern, and forcing a KDoc per property produces
+# more noise than signal (the class-level KDoc already enumerates every
+# field via `@property` tags).
+comments:
+  UndocumentedPublicClass:
+    active: true
+    searchInNestedClass: true
+    searchInInnerClass: true
+    searchInInnerObject: true
+    searchInInnerInterface: true
+    searchInProtectedClass: false
+  UndocumentedPublicFunction:
+    active: true
+    searchProtectedFunction: false
+  # Property-level rule intentionally kept inactive — see comment above.
+  UndocumentedPublicProperty:
+    active: false

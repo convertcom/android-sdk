@@ -17,6 +17,17 @@ workRuntime = "2.11.1"
 startupRuntime = "1.2.0"
 murmurhash = "0.4.1"
 detekt = "1.23.6"
+# Dokka 2.x — Story 6.1. The 2.x line introduced "Dokka Gradle Plugin v2"
+# (plugin id `org.jetbrains.dokka`) which replaced the 1.x DSL and is the
+# only line actively developed. Pinned to 2.2.0 (latest 2.x stable as of
+# 2026-04-22 per Maven Central metadata): the story text baselines 2.0.0
+# but explicitly permits "a more recent 2.x at impl time". 2.2.0 removes
+# V1 compat mode entirely and only exposes the V2 task `dokkaGenerateHtml`
+# (the legacy `dokkaHtml` alias is gone).
+# Project-wide V2 mode is enabled via `gradle.properties` — required
+# because vanniktech 0.36.0's `JavadocJar.Dokka("dokkaGenerateHtml")` hook
+# requires V2.
+dokka = "2.2.0"
 vanniktechMavenPublish = "0.36.0"
 junitJupiter = "5.11.4"
 mockk = "1.13.13"
@@ -81,5 +92,9 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 # Kotlin support since AGP 9.0." [Source: architecture.md §Verified-Technology-Versions]
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
+# Dokka (Story 6.1) — applied to both :packages:core and :packages:sdk so that
+# `./gradlew dokkaHtml` produces HTML API reference docs and vanniktech
+# publishing can hand the Dokka output to the Javadoc JAR.
+dokka = { id = "org.jetbrains.dokka", version.ref = "dokka" }
 vanniktech-maven-publish = { id = "com.vanniktech.maven.publish", version.ref = "vanniktechMavenPublish" }
 kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }

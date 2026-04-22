@@ -63,12 +63,12 @@ import kotlinx.serialization.json.doubleOrNull
  *
  * ### Unknown operators
  *
- * [apply] returns `null` when [matchType] is not a recognised operator.
- * The caller (typically [RuleManager]) is expected to log a WARN with
- * the unknown operator name and treat the comparison as `false` (per
- * AC-7). Separating the "unknown" signal from a `false` match lets the
- * caller distinguish a failed comparison from an unsupported operator
- * in aggregated logs.
+ * [apply] returns `null` when the `matchType` argument is not a recognised
+ * operator. The caller (typically [RuleManager]) is expected to log a
+ * WARN with the unknown operator name and treat the comparison as
+ * `false` (per AC-7). Separating the "unknown" signal from a `false`
+ * match lets the caller distinguish a failed comparison from an
+ * unsupported operator in aggregated logs.
  */
 internal object Comparisons {
 
@@ -95,6 +95,9 @@ internal object Comparisons {
      * and [apply] will dispatch it. Used by [RuleManager] to produce a
      * "unknown match_type" WARN with a stable phrasing before returning
      * `false` on behalf of the caller.
+     *
+     * @param matchType the `match_type` string from the rule element.
+     * @return `true` when the operator is dispatchable by [apply].
      */
     fun isKnown(matchType: String): Boolean = matchType in KNOWN
 

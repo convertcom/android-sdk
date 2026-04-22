@@ -84,6 +84,16 @@ jobs:
       - name: Run Android Lint (Debug variant)
         run: ./gradlew :packages:sdk:lintDebug --no-daemon
 
+      - name: Build Dokka HTML API reference
+        # Story 6.1 AC-7. Fails if Dokka can't build — catches a malformed
+        # KDoc reference, a broken `@sample` link, or a plugin mis-config.
+        # V2 task name is `dokkaGenerate` (aggregates every format); the
+        # legacy `dokkaHtml` alias was removed in Dokka 2.2.0. Outputs
+        # land under `packages/{core,sdk}/build/dokka/html/` and are
+        # consumed by vanniktech's JavadocJar.Dokka("dokkaGenerateHtml")
+        # hook at publish time.
+        run: ./gradlew dokkaGenerate --no-daemon
+
   test-core:
     name: Test :packages:core (JVM)
     runs-on: ubuntu-latest
