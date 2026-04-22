@@ -31,7 +31,7 @@ import org.junit.jupiter.api.Test
  * [com.convert.sdk.android.worker.EventFlushWorker] can pick it up later.
  *
  * Contract:
- *  1. Returns a copy of the live queue as [com.convert.sdk.core.port.PersistedEvent]s.
+ *  1. Returns a copy of the live queue as [com.convert.sdk.core.model.VisitorEvent]s.
  *  2. Does NOT drain the queue — a subsequent flush still ships the same events.
  *  3. Returns an empty list when nothing is enqueued.
  */
@@ -76,7 +76,7 @@ internal class ApiManagerSnapshotTest {
         val secondSnapshot = api.snapshotQueue()
         assertEquals(3, secondSnapshot.size, "snapshotQueue must NOT drain the queue")
 
-        // PersistedEvent envelope carries visitorId + pre-built event JSON
+        // VisitorEvent envelope carries visitorId + TrackingEvent
         assertTrue(snapshot.any { it.visitorId == "v-1" })
         assertTrue(snapshot.any { it.visitorId == "v-2" })
         // The returned list must be a copy (defensive): mutations to it
@@ -119,27 +119,6 @@ internal class ApiManagerSnapshotTest {
         assertEquals(3, snapshot.size)
         // Every snapshot entry carries the same visitor id
         assertTrue(snapshot.all { it.visitorId == "v-1" })
-    }
-
-    @Test
-    fun `snapshotQueue entries carry the enqueue timestamp`() = runTest {
-        val api = ApiManager(
-            httpClient = NoOpHttpClient(),
-            logger = NoOpLogger(),
-            config = configWithProject(),
-            json = json,
-            scope = null,
-        )
-        val before = System.currentTimeMillis()
-        api.enqueueBucketingEvent("v-1", "e-1", "var-a")
-        val after = System.currentTimeMillis()
-
-        val snapshot = api.snapshotQueue()
-        val entry = snapshot.single()
-        assertTrue(
-            entry.timestampMs in before..after,
-            "timestampMs must be captured at enqueue time (got ${entry.timestampMs}, before=$before, after=$after)",
-        )
     }
 
     private class NoOpHttpClient : HttpClient {
