@@ -5,9 +5,10 @@
  */
 package com.convert.sdk.demo.ui
 
+import androidx.activity.ComponentActivity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.convert.sdk.demo.ui.component.EventInspectorSheet
@@ -41,7 +42,7 @@ import org.robolectric.annotation.Config
 class EventInspectorSheetTest {
 
     @get:Rule
-    val composeRule = createComposeRule()
+    val composeRule = createAndroidComposeRule<ComponentActivity>()
 
     private fun newVm(): Pair<SdkViewModel, FakeSubscriber> {
         val subscriber = FakeSubscriber()

@@ -15,8 +15,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
 /**
- * Story 7.1 AC-9 — shared ViewModel that aggregates SDK state for every
- * demo screen.
+ * Story 7.1 AC-9 / Story 7.2 — shared ViewModel that aggregates SDK
+ * state for every demo screen.
  *
  * ### Responsibilities
  *
@@ -37,6 +37,18 @@ import kotlinx.coroutines.flow.update
  *   [com.convert.sdk.demo.ui.screen.OfflineScreen] in Story 7.5 when
  *   the developer toggles airplane mode; the initial value is a
  *   caller-supplied default.
+ *
+ * - (Story 7.2) Tracks each networked event's delivery lifecycle
+ *   ([EventLifecycle]): `bucketing` and `conversion` start QUEUED
+ *   when observed; a 2xx `api.queue.released` transitions every
+ *   currently-QUEUED event to DELIVERED. Non-networked events
+ *   (`ready`, `config.updated`) carry [EventLifecycle.NONE] and
+ *   render without a status badge.
+ *
+ * - (Story 7.2) Holds the active inspector [InspectorTab] so the
+ *   developer's tab choice survives screen navigation (the
+ *   [EventInspectorSheet] is recomposed on every route change, so a
+ *   `remember {}` here would reset to the default every time).
  *
  * ### Testing
  *
@@ -81,6 +93,15 @@ class SdkViewModel(
      * "Online ✓ / Offline ✗" banner binds to this.
      */
     val networkOnline: StateFlow<Boolean> = _networkOnline.asStateFlow()
+
+    private val _selectedTab = MutableStateFlow(InspectorTab.EVENTS)
+
+    /**
+     * Story 7.2 AC-2 — active inspector tab. Stored in the ViewModel
+     * so it survives screen navigation; a `remember {}` inside the
+     * composable would reset whenever the user changes screens.
+     */
+    val selectedTab: StateFlow<InspectorTab> = _selectedTab.asStateFlow()
 
     /**
      * Internal logger that both forwards to any delegate the caller
@@ -138,9 +159,51 @@ class SdkViewModel(
         _networkOnline.value = online
     }
 
+    /** Story 7.2 AC-2 — updates the active inspector tab. */
+    fun selectTab(tab: InspectorTab) {
+        _selectedTab.value = tab
+    }
+
     private fun onSdkEvent(event: String, payload: Map<String, Any?>) {
-        val captured = InspectorEvent(eventName = event, payload = payload)
+        // Route API_QUEUE_RELEASED through the resolver — it is a
+        // meta-signal (not user-visible content) that drives lifecycle
+        // transitions on previously-queued events.
+        if (event == SystemEvents.API_QUEUE_RELEASED) {
+            onApiQueueReleased(payload)
+            return
+        }
+        val lifecycle = when (event) {
+            SystemEvents.BUCKETING, SystemEvents.CONVERSION -> EventLifecycle.QUEUED
+            else -> EventLifecycle.NONE
+        }
+        val captured = InspectorEvent(
+            id = InspectorEvent.nextId(),
+            eventName = event,
+            payload = payload,
+            lifecycle = lifecycle,
+        )
         _events.update { listOf(captured) + it }
+    }
+
+    /**
+     * Story 7.2 AC-7 — when `api.queue.released` fires with a 2xx
+     * status, every currently-QUEUED networked event is considered
+     * delivered; transition them in place. Non-2xx statuses leave the
+     * events in QUEUED so the developer can still see what was in
+     * flight (the next successful flush will resolve them).
+     */
+    private fun onApiQueueReleased(payload: Map<String, Any?>) {
+        val status = (payload["statusCode"] as? Number)?.toInt() ?: return
+        if (status !in 200..299) return
+        _events.update { list ->
+            list.map { event ->
+                if (event.lifecycle == EventLifecycle.QUEUED) {
+                    event.copy(lifecycle = EventLifecycle.DELIVERED)
+                } else {
+                    event
+                }
+            }
+        }
     }
 
     private fun appendLog(
@@ -149,7 +212,13 @@ class SdkViewModel(
         tag: String?,
         throwable: Throwable? = null,
     ) {
-        val entry = LogEntry(level = level, message = message, tag = tag, throwable = throwable)
+        val entry = LogEntry(
+            id = LogEntry.nextId(),
+            level = level,
+            message = message,
+            tag = tag,
+            throwable = throwable,
+        )
         _logs.update { listOf(entry) + it }
     }
 
