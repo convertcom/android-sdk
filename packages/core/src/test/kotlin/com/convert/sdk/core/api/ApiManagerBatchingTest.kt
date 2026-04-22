@@ -403,6 +403,56 @@ internal class ApiManagerBatchingTest {
         assertEquals(1, http.calls.size)
     }
 
+    /**
+     * Story 5.4 AC-2 — `enqueueAll` (the re-enqueue path used by
+     * [com.convert.sdk.android.ConvertSDK.onNetworkAvailable] /
+     * [com.convert.sdk.android.ConvertSDK.onProcessStart]) must also
+     * honour the tracking flag. Without this guard, persisted events from
+     * before a consent revocation would continue flowing into the queue
+     * on network restore.
+     */
+    @Test
+    fun `enqueueAll is a no-op when tracking is disabled`() = runTest {
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val api = ApiManager(http, CapturingLogger(), configWithProject(tracking = false), json)
+
+        val persisted = com.convert.sdk.core.port.PersistedEvent(
+            visitorId = "v-1",
+            segments = emptyMap(),
+            event = kotlinx.serialization.json.buildJsonObject {
+                put("eventType", kotlinx.serialization.json.JsonPrimitive("bucketing"))
+                put(
+                    "data",
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("experienceId", kotlinx.serialization.json.JsonPrimitive("e-1"))
+                        put("variationId", kotlinx.serialization.json.JsonPrimitive("var-a"))
+                    },
+                )
+            },
+            timestampMs = 1_700_000_000L,
+        )
+
+        api.enqueueAllForTest(listOf(persisted))
+
+        // Queue must stay empty — no events accepted while disabled.
+        assertEquals(
+            0,
+            api.snapshotQueueForTest().size,
+            "enqueueAll must short-circuit before taking the queue lock",
+        )
+
+        // Re-enable: the same call now accepts events.
+        api.setTrackingEnabled(true)
+        api.enqueueAllForTest(listOf(persisted))
+        assertEquals(
+            1,
+            api.snapshotQueueForTest().size,
+            "enqueueAll must accept events after re-enable",
+        )
+
+        api.cancelTimerForTest()
+    }
+
     // ------------------------------------------------------------------
     // AC-3 — URL / sdkKey / projectId guards
     // ------------------------------------------------------------------
