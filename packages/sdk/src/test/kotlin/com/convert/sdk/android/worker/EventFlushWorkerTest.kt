@@ -99,12 +99,14 @@ internal class EventFlushWorkerTest {
         .putString(EventFlushWorker.KEY_SDK_KEY, "sk-test")
         .putString(EventFlushWorker.KEY_PROJECT_ID, "proj-1")
         .putString(EventFlushWorker.KEY_ACCOUNT_ID, "acc-1")
-        // Full URL already substituted — the enqueue site (ConvertSDK) is
-        // responsible for interpolating [project_id] when it constructs
-        // the Data bundle.
+        // Story 5.3 contract: ConvertSDK passes the template URL with
+        // `[project_id]` already substituted but NO `/track/` segment —
+        // the worker itself appends `/track/{sdkKey}` in buildTrackUrl.
+        // The MockWebServer base URL is the natural equivalent of the
+        // substituted template here.
         .putString(
             EventFlushWorker.KEY_TRACK_ENDPOINT,
-            "${server.url("/").toString().trimEnd('/')}/track/",
+            server.url("/").toString().trimEnd('/'),
         )
         .build()
 
@@ -138,10 +140,14 @@ internal class EventFlushWorkerTest {
         assertTrue("body must contain visitorId", body.contains("\"visitorId\""))
         assertTrue("body must contain accountId", body.contains("\"accountId\":\"acc-1\""))
         assertTrue("body must contain projectId", body.contains("\"projectId\":\"proj-1\""))
-        // URL path: /track/{sdkKey}
-        assertTrue(
-            "track URL must include sdkKey (was ${recorded.path})",
-            recorded.path?.contains("/track/sk-test") == true,
+        // URL path: exactly /track/{sdkKey} (no duplicated `/track/`
+        // segment — regression guard against an earlier bug where the
+        // enqueue side was emitting `.../track/` and the worker double-
+        // appended).
+        assertEquals(
+            "track URL path must be exactly /track/sk-test",
+            "/track/sk-test",
+            recorded.path,
         )
 
         // Queue cleared on success
