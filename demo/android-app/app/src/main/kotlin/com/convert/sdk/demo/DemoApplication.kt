@@ -6,9 +6,12 @@
 package com.convert.sdk.demo
 
 import android.app.Application
+import com.convert.sdk.android.ConvertContext
 import com.convert.sdk.android.ConvertSDK
 import com.convert.sdk.core.model.LogLevel
+import com.convert.sdk.core.model.Variation
 import com.convert.sdk.demo.viewmodel.EventSubscriber
+import com.convert.sdk.demo.viewmodel.ExperienceRunner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
@@ -35,6 +38,14 @@ import kotlinx.coroutines.async
  * starting the deferred; consumers (event subscribers, runners) await
  * it as needed. The SDK is therefore visible to consumers as a
  * suspending value, not a synchronously-available field.
+ *
+ * The same off-main-thread discipline extends to the per-visitor
+ * [ConvertContext]: `sdk.createContext()` reads/writes the visitor-id
+ * file, so it is also pre-warmed inside [contextDeferred] on
+ * [Dispatchers.Default] (Story 7.3 propagation of F-166). Synchronous
+ * runner calls (`runExperience` etc.) read from the deferred when it
+ * is already complete and return `null`/empty otherwise — matching
+ * the [ExperienceRunner] docstring.
  *
  * The SDK key is compiled into [BuildConfig.convertSdkKey] — see
  * `app/build.gradle.kts` for how `local.properties`'s `convertSdkKey`
@@ -69,12 +80,29 @@ class DemoApplication : Application() {
         }
     }
 
+    /**
+     * Pre-warmed per-visitor [ConvertContext]. Awaits [sdkDeferred] then
+     * calls `sdk.createContext()` on [Dispatchers.Default] — the
+     * createContext call itself touches disk for visitor-id
+     * persistence and so must not run on the main thread either.
+     *
+     * Kept `internal` for the same reason as [sdkDeferred] — future
+     * runners (features, conversions) can compose against it directly.
+     */
+    internal val contextDeferred: Deferred<ConvertContext> by lazy {
+        applicationScope.async(Dispatchers.Default, start = CoroutineStart.LAZY) {
+            sdkDeferred.await().createContext()
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
-        // Trigger background SDK construction; do not await — the main
-        // thread must return promptly. start() returns synchronously
-        // and only enqueues the async block on Dispatchers.Default.
+        // Trigger background SDK + context construction; do not await
+        // — the main thread must return promptly. start() returns
+        // synchronously and only enqueues the async block on
+        // Dispatchers.Default.
         sdkDeferred.start()
+        contextDeferred.start()
     }
 
     /**
@@ -107,5 +135,35 @@ class DemoApplication : Application() {
                 sdkDeferred.await().asSdkEventSource()
             }
         return buildEventSubscriber(applicationScope, sourceDeferred)
+    }
+
+    /**
+     * Builds an [ExperienceRunner] that delegates to the pre-warmed
+     * per-visitor [ConvertContext] from [contextDeferred].
+     *
+     * Synchronous-by-contract: the [ExperienceRunner] docstring says
+     * `runExperience` returns `null` "when the visitor is not
+     * bucketed, the experience is unknown, **or the SDK is not
+     * ready**" and `runExperiences` returns an empty list "when the
+     * config is not ready". The runner therefore does an O(1)
+     * `isCompleted` check against [contextDeferred] and returns
+     * null/empty when the context has not landed yet — never blocks,
+     * never re-creates the context, never touches the SDK on the main
+     * thread.
+     */
+    fun experienceRunner(): ExperienceRunner = object : ExperienceRunner {
+        override fun runExperience(experienceKey: String): Variation? =
+            if (contextDeferred.isCompleted) {
+                contextDeferred.getCompleted().runExperience(experienceKey)
+            } else {
+                null
+            }
+
+        override fun runExperiences(): List<Variation> =
+            if (contextDeferred.isCompleted) {
+                contextDeferred.getCompleted().runExperiences()
+            } else {
+                emptyList()
+            }
     }
 }
