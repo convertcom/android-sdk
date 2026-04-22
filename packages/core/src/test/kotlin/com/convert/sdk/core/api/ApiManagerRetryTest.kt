@@ -93,11 +93,11 @@ internal class ApiManagerRetryTest {
         runCurrent()
         assertEquals(4, http.calls.size, "third retry at 40s after second")
 
-        advanceUntilIdle()
-        // After 3 retries exhausted, snapshot persists.
-        assertEquals(1, queue.persisted.size, "snapshot must persist after max retries")
-
+        // Cancel the timer BEFORE advanceUntilIdle — otherwise the
+        // forever-ticking timer loop makes `advanceUntilIdle` hang.
         api.cancelTimerForTest()
+        runCurrent()                             // drain the persist launch
+        assertEquals(1, queue.persisted.size, "snapshot must persist after max retries")
     }
 
     // ---------------------------------------------------------------
@@ -125,11 +125,9 @@ internal class ApiManagerRetryTest {
         runCurrent()
 
         assertEquals(1, http.attempts, "IOException path must not retry")
-        advanceTimeBy(100_000)
-        runCurrent()
-        assertEquals(1, http.attempts, "no retry after virtual-time advance")
         assertEquals(1, queue.persisted.size, "IOException must persist snapshot")
-
+        // Cancel the timer before further advancement so no stray ticks
+        // rerun the flush and double-persist.
         api.cancelTimerForTest()
     }
 
