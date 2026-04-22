@@ -9,8 +9,10 @@ import android.app.Application
 import com.convert.sdk.android.ConvertContext
 import com.convert.sdk.android.ConvertSDK
 import com.convert.sdk.core.model.Feature
+import com.convert.sdk.core.model.GoalData
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.Variation
+import com.convert.sdk.demo.viewmodel.ConversionTracker
 import com.convert.sdk.demo.viewmodel.EventSubscriber
 import com.convert.sdk.demo.viewmodel.ExperienceRunner
 import com.convert.sdk.demo.viewmodel.FeatureRunner
@@ -201,5 +203,33 @@ class DemoApplication : Application() {
             } else {
                 emptyList()
             }
+    }
+
+    /**
+     * Story 7.5 — builds a [ConversionTracker] that delegates to a
+     * per-visitor [ConvertContext] obtained from the no-arg
+     * [ConvertSDK.createContext]. The context is cached on first use so
+     * repeated button taps hit the same sticky bucket (and the SDK's
+     * per-visitor dedup guard per Story 4.3 AC-6 applies).
+     *
+     * Same `ConvertSdkInitializedBeforeUse` suppression rationale as
+     * [experienceRunner] / [featureRunner] — DI-container-style lookup
+     * that can only fire after [MainActivity.onCreate], which follows
+     * [Application.onCreate].
+     *
+     * NOTE: we deliberately DO NOT share the cached context with
+     * [experienceRunner] / [featureRunner] through a single factory-level
+     * field. Each runner lazily obtains its own [ConvertContext] on
+     * first use — both no-arg calls to [ConvertSDK.createContext] return
+     * the same auto-persisted visitor id, so the downstream bucketing +
+     * dedup decisions stay stable across runners.
+     */
+    @Suppress("ConvertSdkInitializedBeforeUse")
+    fun conversionTracker(): ConversionTracker = object : ConversionTracker {
+        private val context: ConvertContext by lazy { sdk.createContext() }
+
+        override fun trackConversion(goalKey: String, goalData: List<GoalData>) {
+            context.trackConversion(goalKey = goalKey, goalData = goalData)
+        }
     }
 }

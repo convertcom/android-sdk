@@ -43,8 +43,8 @@ demo/android-app/
 | 7.1 | App scaffold, shared layout, stubs |
 | 7.2 | Full EventInspectorSheet (two tabs, badges) |
 | 7.3 | Experiences screen full impl |
-| 7.4 *(this)* | Features screen full impl |
-| 7.5 | Conversions journey |
+| 7.4 | Features screen full impl |
+| 7.5 *(this)* | Conversions journey |
 | 7.6 | Offline/airplane-mode demo |
 
 ## Try it: Experiences screen
@@ -167,3 +167,83 @@ card per returned feature. An empty list yields a single hint card
 The feature result-card list is capped at 20 entries, independent of
 the Experiences list — tapping one screen's buttons never drops the
 other's cards.
+
+## Try it: Conversions screen
+
+The third tab of the demo — Conversions — exercises the SDK's
+conversion-tracking surface AND the per-visitor dedup guard shipped
+in Story 4.3. The full A/B loop (bucketing → variation → user action
+→ conversion tracked) is observable here:
+
+1. **Tap** `Run Experience` on the Experiences tab first — this
+   buckets the visitor and fires a `BUCKETING` event (so the
+   subsequent conversion has an experience/variation to attribute to).
+2. **Switch to the Conversions tab** and tap `Buy`.
+3. **Result card** appears at the top of the Conversions screen:
+
+   > **Conversion tracked: purchase-goal**
+   > Amount: 10.3
+   > ProductsCount: 2
+
+4. **Inspector** `CONVERSION` event appears in the bottom-sheet Events
+   tab carrying `goalKey`, `amount`, and `productsCount`. Because you
+   bucketed first, the event is attributed to the correct
+   experience/variation behind the scenes.
+
+### Dedup behaviour (second tap)
+
+Tap `Buy` a second time and you'll see:
+
+> **Conversion already tracked (dedup)**
+> Goal: purchase-goal
+
+AND a `DEBUG` line in the bottom-sheet **Logs** tab reading:
+
+> `Goal 'purchase-goal' already tracked for visitor, skipping`
+
+No new `CONVERSION` event appears in the Events tab — the SDK's
+Story 4.3 AC-6 dedup guard silently skips the repeat track for the
+same goal + visitor combination.
+
+### Goal key and payload
+
+`Buy` is hardcoded to track the goal key `"purchase-goal"` with the
+payload:
+
+```kotlin
+listOf(
+    GoalData(GoalDataKey.AMOUNT, JsonPrimitive(10.3)),
+    GoalData(GoalDataKey.PRODUCTS_COUNT, JsonPrimitive(2)),
+)
+```
+
+If the Convert account behind your `convertSdkKey` does not have a
+goal with key `"purchase-goal"`, the SDK logs a `WARN` (visible in the
+Logs tab) and no `CONVERSION` event fires — this is a useful error
+path for exercising the "unknown goal" branch.
+
+### Configuring a real goal
+
+1. Add `convertSdkKey=<your-sdk-key>` to `local.properties` (see Setup step 2).
+2. In the Convert dashboard, create a goal in your project with the
+   key `"purchase-goal"` (or pick a different key and adjust
+   `SdkViewModel.DEFAULT_GOAL_KEY` to match). Set the goal type to
+   `Revenue` or `Monetary` so `AMOUNT` and `PRODUCTS_COUNT` payload
+   values are meaningful.
+3. Rebuild and relaunch. The primary button now fires a real
+   `CONVERSION` event against the configured goal.
+
+### Dedup persists across app restarts
+
+The SDK's dedup is **per-visitor**, not per-session. If you close the
+app, relaunch, and tap `Buy` again, the dedup still kicks in because
+the visitor id is auto-persisted. This is the correct Story 4.3
+behaviour — it mirrors how production analytics dedupe repeat
+conversions. If you want to exercise a "fresh" conversion, clear the
+app's data (or uninstall + reinstall) to get a new visitor id.
+
+The conversion result-card list is capped at 20 entries, independent
+of the Experiences and Features lists — tapping one screen's buttons
+never drops the other screens' cards. Clearing the Conversions list
+through a future `Clear` button (not wired in this MVP) would NOT
+reset the dedup memory — only a fresh visitor id does.
