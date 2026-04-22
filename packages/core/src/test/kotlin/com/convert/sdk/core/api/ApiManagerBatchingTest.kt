@@ -7,7 +7,6 @@ package com.convert.sdk.core.api
 
 import com.convert.sdk.core.config.ApiConfig
 import com.convert.sdk.core.config.ApiEndpoint
-import com.convert.sdk.core.config.ConfigDefaults
 import com.convert.sdk.core.config.ConvertConfig
 import com.convert.sdk.core.config.EventsConfig
 import com.convert.sdk.core.config.NetworkConfig
@@ -19,13 +18,12 @@ import com.convert.sdk.core.model.generated.ConfigProject
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.port.HttpClient
 import com.convert.sdk.core.port.Logger
-import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -35,7 +33,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
-import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -59,6 +56,7 @@ import org.junit.jupiter.api.Test
  * Real wall-clock `delay` would make tests flaky; `TestScope` gives us
  * virtual time. `advanceTimeBy` drives the timer forward deterministically.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 internal class ApiManagerBatchingTest {
 
     private val json: Json = Json {
@@ -93,26 +91,32 @@ internal class ApiManagerBatchingTest {
     @Test
     fun `queue flushes at batchSize threshold`() = runTest {
         val http = FakeHttpClient(statusCode = 200, body = "{}")
+        // Large releaseInterval keeps the timer dormant so we can assert
+        // on the size-triggered flush in isolation.
         val api = ApiManager(
             httpClient = http,
             logger = CapturingLogger(),
-            config = configWithProject(batchSize = 3),
+            config = configWithProject(batchSize = 3, releaseInterval = 1_000_000L),
             json = json,
             scope = this,
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
         )
 
         api.enqueueBucketingEvent("v-1", "e-1", "var-a")
         api.enqueueBucketingEvent("v-1", "e-2", "var-b")
+        runCurrent()
         assertEquals(0, http.calls.size, "should not flush below threshold")
 
         api.enqueueBucketingEvent("v-1", "e-3", "var-c")
-        // Flush is launched on the scope; allow it to run.
+        // Flush is launched on the scope; drain scheduled work without
+        // advancing virtual time (timer is dormant at 1Ms ms anyway).
         runCurrent()
 
         assertEquals(1, http.calls.size)
         val body = Json.parseToJsonElement(http.calls.single().body!!).jsonObject
         val events = body["visitors"]!!.jsonArray.single().jsonObject["events"]!!.jsonArray
         assertEquals(3, events.size)
+        api.cancelTimerForTest()
     }
 
     @Test
@@ -124,6 +128,7 @@ internal class ApiManagerBatchingTest {
             config = configWithProject(releaseInterval = 5_000L),
             json = json,
             scope = this,
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
         )
         // Timer loop is launched in init via the scope parameter.
         api.enqueueBucketingEvent("v-1", "e-1", "var-a")
@@ -132,7 +137,9 @@ internal class ApiManagerBatchingTest {
         assertEquals(0, http.calls.size, "timer should not fire before releaseInterval")
 
         advanceTimeBy(2L) // crosses the 5000ms boundary
+        runCurrent()
         assertEquals(1, http.calls.size)
+        api.cancelTimerForTest()
     }
 
     // ------------------------------------------------------------------
@@ -266,7 +273,9 @@ internal class ApiManagerBatchingTest {
     @Test
     fun `API_QUEUE_RELEASED fires on successful flush`() = runTest {
         val http = FakeHttpClient(statusCode = 200, body = "{}")
-        val eventManager = EventManager()
+        // EventManager dispatches subscribers on its own default scope.
+        // Pin it to the test scheduler so fires propagate synchronously.
+        val eventManager = EventManager(scope = this)
         val fires = mutableListOf<Map<String, Any?>>()
         eventManager.on(SystemEvents.API_QUEUE_RELEASED) { fires += it }
 
@@ -282,8 +291,7 @@ internal class ApiManagerBatchingTest {
         api.enqueueBucketingEvent("v-2", "e-1", "var-a")
         api.flushForTest()
 
-        // EventManager dispatches on its own scope; allow it to run.
-        runCurrent()
+        advanceUntilIdle()
         assertEquals(1, fires.size)
         val payload = fires.single()
         assertEquals(2, payload["batchSize"])
@@ -293,7 +301,7 @@ internal class ApiManagerBatchingTest {
     @Test
     fun `API_QUEUE_RELEASED does not fire on failed flush`() = runTest {
         val http = FakeHttpClient(statusCode = 500, body = "boom")
-        val eventManager = EventManager()
+        val eventManager = EventManager(scope = this)
         val fires = mutableListOf<Map<String, Any?>>()
         eventManager.on(SystemEvents.API_QUEUE_RELEASED) { fires += it }
 
@@ -307,7 +315,7 @@ internal class ApiManagerBatchingTest {
 
         api.enqueueBucketingEvent("v-1", "e-1", "var-a")
         api.flushForTest()
-        runCurrent()
+        advanceUntilIdle()
 
         assertTrue(fires.isEmpty(), "no fire on non-2xx — Story 5.2 may retry")
     }

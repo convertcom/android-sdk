@@ -374,167 +374,57 @@ internal class ApiManagerTest {
         assertEquals(1, http.calls.size)
     }
 
-    // --- Story 4.2 SDK-1 — enqueueConversionEvent stub ----------------------
+    // --- Enqueue signature smoke tests -------------------------------------
+    //
+    // Story 5.1 replaced the Story 3.2 / 4.2 / 4.4 stubs with real in-memory
+    // batching + flush. The full behavioural surface (queue mechanics, wire
+    // shape, failure paths, concurrency) is covered by
+    // [ApiManagerBatchingTest]. The handful of tests kept here verify the
+    // public signatures remain stable for `:packages:sdk` callers
+    // (`ConvertContext.runExperience`, `ConvertContext.trackConversion`):
+    // they must accept the current argument shape and never throw.
 
     @Test
-    fun `enqueueConversionEvent stub is a no-op and logs DEBUG with bare goalId`() {
-        // Story 4.2 placeholder for the conversion-event enqueue that
-        // Story 5.1 will implement. Contract for THIS story: public open
-        // method exists, signature matches (visitorId, goalId, goalData?),
-        // body never throws, a DEBUG trace is emitted so operators can
-        // see the stub was reached.
+    fun `enqueueBucketingEvent signature accepts (visitorId, experienceId, variationId, segments)`() {
+        // Lock in the public contract consumed by ConvertContext.runExperience
+        // from Story 3.2 onward. No exception, no caller-visible state is the
+        // acceptance bar here; all behavioural assertions live in
+        // ApiManagerBatchingTest which exercises the real enqueue/flush path.
         val http = FakeHttpClient(statusCode = 200, body = "{}")
-        val logger = CapturingLogger()
-        val api = ApiManager(http, logger, convertConfig(sdkKey = "sk-1"), json)
+        val api = ApiManager(http, CapturingLogger(), convertConfig(sdkKey = "sk-1"), json)
 
-        // goalData == null is the "bare conversion" case — matches the JS SDK
-        // `sendConversion()` path (data-manager.ts:1050-1066) which builds
-        // `{goalId}` with no transaction payload.
-        api.enqueueConversionEvent(
-            visitorId = "v-1",
-            goalId = "g-42",
-            goalData = null,
+        val segments: Map<String, kotlinx.serialization.json.JsonElement> = mapOf(
+            "country" to kotlinx.serialization.json.JsonPrimitive("US"),
         )
 
-        // No HTTP calls — the stub is a pure no-op; Story 5.1 wires the queue.
-        assertEquals(0, http.calls.size)
-        // DEBUG trace includes all three arg values so operators following
-        // a support ticket can trace the call without needing a verbose
-        // trace at INFO/WARN levels.
-        val debugs = logger.allMessages().filter { it.contains("enqueueConversionEvent") }
-        assertEquals(1, debugs.size, "expected one DEBUG trace; got $debugs")
-        assertTrue(debugs.first().contains("visitorId=v-1"), debugs.first())
-        assertTrue(debugs.first().contains("goalId=g-42"), debugs.first())
+        // With-segments + no-segments overloads both compile and don't throw.
+        api.enqueueBucketingEvent("v-1", "e-1", "var-a", segments)
+        api.enqueueBucketingEvent("v-1", "e-2", "var-b")
     }
 
     @Test
-    fun `enqueueConversionEvent stub is a no-op and logs DEBUG with goalData list`() {
-        // Story 4.2 `sendTransaction()`-flavoured call: goalData carries
-        // amount / productsCount / transactionId / customDimensionN.
-        // Still a pure no-op at Story 4.2; the stub distinguishes the two
-        // call variants only by logging the goalData size.
+    fun `enqueueConversionEvent signature accepts (visitorId, goalId, goalData, segments)`() {
+        // Lock in the public contract consumed by ConvertContext.trackConversion
+        // from Story 4.2 onward (bare + transaction variants + Story 4.4's
+        // segments parameter).
         val http = FakeHttpClient(statusCode = 200, body = "{}")
-        val logger = CapturingLogger()
-        val api = ApiManager(http, logger, convertConfig(sdkKey = "sk-1"), json)
+        val api = ApiManager(http, CapturingLogger(), convertConfig(sdkKey = "sk-1"), json)
 
         val goalData = listOf(
             com.convert.sdk.core.model.GoalData(
                 key = com.convert.sdk.core.model.GoalDataKey.AMOUNT,
                 value = kotlinx.serialization.json.JsonPrimitive(29.99),
             ),
-            com.convert.sdk.core.model.GoalData(
-                key = com.convert.sdk.core.model.GoalDataKey.TRANSACTION_ID,
-                value = kotlinx.serialization.json.JsonPrimitive("TX-42"),
-            ),
         )
-
-        api.enqueueConversionEvent(
-            visitorId = "v-1",
-            goalId = "g-42",
-            goalData = goalData,
-        )
-
-        assertEquals(0, http.calls.size)
-        val debugs = logger.allMessages().filter { it.contains("enqueueConversionEvent") }
-        assertEquals(1, debugs.size)
-        assertTrue(debugs.first().contains("goalDataSize=2"), debugs.first())
-    }
-
-    // --- Story 4.4 — segments parameter on enqueue stubs --------------------
-
-    @Test
-    fun `enqueueBucketingEvent stub accepts segments map and logs segmentsSize`() {
-        // Story 4.4 AC-3: the bucketing enqueue stub now takes a merged
-        // segments map so Story 5.1 can thread it into the outbound Visitor
-        // payload. The stub itself is still a no-op; all we verify here is
-        // (a) the signature compiles with a non-empty segments argument and
-        // (b) the DEBUG trace reports segmentsSize so operators can confirm
-        // the call site supplied segments.
-        val http = FakeHttpClient(statusCode = 200, body = "{}")
-        val logger = CapturingLogger()
-        val api = ApiManager(http, logger, convertConfig(sdkKey = "sk-1"), json)
-
-        val segments: Map<String, kotlinx.serialization.json.JsonElement> = mapOf(
-            "country" to kotlinx.serialization.json.JsonPrimitive("US"),
-            "device" to kotlinx.serialization.json.JsonPrimitive("mobile"),
-        )
-
-        api.enqueueBucketingEvent(
-            visitorId = "v-1",
-            experienceId = "e-1",
-            variationId = "var-a",
-            segments = segments,
-        )
-
-        assertEquals(0, http.calls.size)
-        val debugs = logger.allMessages().filter { it.contains("enqueueBucketingEvent") }
-        assertEquals(1, debugs.size, "expected one DEBUG trace; got $debugs")
-        assertTrue(debugs.first().contains("segmentsSize=2"), debugs.first())
-    }
-
-    @Test
-    fun `enqueueBucketingEvent stub defaults to empty segments when omitted`() {
-        // Story 4.4: existing call sites that predate the segments parameter
-        // must keep compiling. The default value is empty map; the DEBUG
-        // trace reports segmentsSize=0 for the unset case.
-        val http = FakeHttpClient(statusCode = 200, body = "{}")
-        val logger = CapturingLogger()
-        val api = ApiManager(http, logger, convertConfig(sdkKey = "sk-1"), json)
-
-        api.enqueueBucketingEvent(
-            visitorId = "v-1",
-            experienceId = "e-1",
-            variationId = "var-a",
-        )
-
-        val debugs = logger.allMessages().filter { it.contains("enqueueBucketingEvent") }
-        assertEquals(1, debugs.size)
-        assertTrue(debugs.first().contains("segmentsSize=0"), debugs.first())
-    }
-
-    @Test
-    fun `enqueueConversionEvent stub accepts segments map and logs segmentsSize`() {
-        // Story 4.4 AC-3 — conversion enqueue mirror of the bucketing test.
-        // Same rationale: signature compiles, DEBUG trace reports size so
-        // the call site's segment map is observable.
-        val http = FakeHttpClient(statusCode = 200, body = "{}")
-        val logger = CapturingLogger()
-        val api = ApiManager(http, logger, convertConfig(sdkKey = "sk-1"), json)
-
         val segments: Map<String, kotlinx.serialization.json.JsonElement> = mapOf(
             "plan" to kotlinx.serialization.json.JsonPrimitive("gold"),
         )
 
-        api.enqueueConversionEvent(
-            visitorId = "v-1",
-            goalId = "g-42",
-            goalData = null,
-            segments = segments,
-        )
-
-        assertEquals(0, http.calls.size)
-        val debugs = logger.allMessages().filter { it.contains("enqueueConversionEvent") }
-        assertEquals(1, debugs.size)
-        assertTrue(debugs.first().contains("segmentsSize=1"), debugs.first())
-    }
-
-    @Test
-    fun `enqueueConversionEvent stub defaults to empty segments when omitted`() {
-        // Story 4.4: legacy callers passing no segments get emptyMap and a
-        // segmentsSize=0 DEBUG trace.
-        val http = FakeHttpClient(statusCode = 200, body = "{}")
-        val logger = CapturingLogger()
-        val api = ApiManager(http, logger, convertConfig(sdkKey = "sk-1"), json)
-
-        api.enqueueConversionEvent(
-            visitorId = "v-1",
-            goalId = "g-42",
-            goalData = null,
-        )
-
-        val debugs = logger.allMessages().filter { it.contains("enqueueConversionEvent") }
-        assertEquals(1, debugs.size)
-        assertTrue(debugs.first().contains("segmentsSize=0"), debugs.first())
+        // All four call shapes used by ConvertContext must compile and not throw.
+        api.enqueueConversionEvent("v-1", "g-1", goalData = null)
+        api.enqueueConversionEvent("v-1", "g-1", goalData = null, segments = segments)
+        api.enqueueConversionEvent("v-1", "g-1", goalData = goalData)
+        api.enqueueConversionEvent("v-1", "g-1", goalData = goalData, segments = segments)
     }
 
     // --- Test helpers -------------------------------------------------------
