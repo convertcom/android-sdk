@@ -56,7 +56,9 @@ internal class NetworkObserverTest {
         val fakeNetwork = networkCtor.newInstance(1)
 
         callback.onAvailable(fakeNetwork)
-        callback.onAvailable(fakeNetwork)  // second tick should also count
+        // Second tick should also count — register() is idempotent but
+        // onAvailable is not; every network re-establish runs it.
+        callback.onAvailable(fakeNetwork)
 
         assertEquals(
             "each onAvailable should invoke the onNetworkAvailable hook",

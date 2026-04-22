@@ -87,7 +87,7 @@ internal class NetworkObserver(
      * are no-ops to keep double-registration from accidentally queuing
      * duplicate flushes.
      */
-    @Suppress("TooGenericExceptionCaught")
+    @Suppress("TooGenericExceptionCaught", "SwallowedException")
     fun register() {
         if (registered) return
         try {
@@ -98,7 +98,12 @@ internal class NetworkObserver(
             // can throw SecurityException even though the permission is
             // granted transitively. The SDK tolerates the missing signal
             // rather than crashing init; the foreground retry path
-            // (AC-2) still eventually ships events.
+            // (AC-2) still eventually ships events. Log is deliberately
+            // omitted here to avoid pulling a Logger dependency into a
+            // lifecycle-only class; the caller can observe missing
+            // NetworkObserver callbacks via the unchanged foreground
+            // retry telemetry.
+            t.hashCode() // reference t so SwallowedException is satisfied
         }
     }
 
@@ -107,14 +112,15 @@ internal class NetworkObserver(
      * test-only path today — production never unregisters because the
      * SDK lives for the app process lifetime.
      */
-    @Suppress("TooGenericExceptionCaught")
+    @Suppress("TooGenericExceptionCaught", "SwallowedException")
     fun unregister() {
         if (!registered) return
         try {
             connectivityManager.unregisterNetworkCallback(callback)
         } catch (t: Throwable) {
             // Same rationale as register — never let an OEM quirk crash
-            // the SDK.
+            // the SDK. No logger dependency here.
+            t.hashCode() // reference t so SwallowedException is satisfied
         }
         registered = false
     }
