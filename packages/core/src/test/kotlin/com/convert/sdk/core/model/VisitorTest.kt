@@ -11,7 +11,6 @@ import com.convert.sdk.core.model.generated.VisitorTrackingEvents
 import com.convert.sdk.core.model.generated.VisitorTrackingEventsData
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -19,7 +18,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
-import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
@@ -140,6 +138,9 @@ internal class VisitorTest {
         val data = first["data"]!!.jsonObject
         assertEquals("e-1", data["experienceId"]!!.jsonPrimitive.content)
         assertEquals("var-a", data["variationId"]!!.jsonPrimitive.content)
-        assertTrue(data is JsonObject)
+        // Empty goalId is present on BUCKETING events (OpenAPI makes the
+        // field required); under explicitNulls=false it still serializes
+        // because the value is a non-null empty string, not null.
+        assertEquals("", data["goalId"]!!.jsonPrimitive.content)
     }
 }
