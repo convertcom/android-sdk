@@ -128,18 +128,17 @@ class EventInspectorSheetTest {
                 EventInspectorSheet(viewModel = vm)
             }
         }
+        // Click Logs — the ViewModel's selectedTab flow updates.
         composeRule.onNodeWithText("Logs").performClick()
-        // The ViewModel now reports Logs selected.
+        composeRule.waitForIdle()
         assert(vm.selectedTab.value == InspectorTab.LOGS) {
             "tab selection must persist in the ViewModel, got ${vm.selectedTab.value}"
         }
-        // Simulate a "navigate away and back" recreation by re-setting the
-        // content with the same ViewModel instance. The persisted selection
-        // should still be LOGS — not reset by local remember {} state.
-        // Note: createComposeRule's setContent may only be called once; if
-        // re-set is unsupported here we instead verify the invariant via
-        // the ViewModel read above. Either way, the ViewModel-carried
-        // selection proves cross-recomposition persistence (AC-2).
+        // And — crucial for AC-2 — the visible UI reflects it without the
+        // test having to re-select: the Logs empty-state is rendered
+        // (we seeded no logs). If the composable used a local `remember {}`
+        // this would have stayed on the Events empty state after the click.
+        composeRule.onNodeWithText("No logs yet").assertIsDisplayed()
     }
 
     // ---- Test doubles ----------------------------------------------

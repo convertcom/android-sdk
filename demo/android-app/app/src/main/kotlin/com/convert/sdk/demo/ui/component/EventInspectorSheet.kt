@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -87,19 +86,22 @@ fun EventInspectorSheet(viewModel: SdkViewModel) {
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
         )
 
+        // TabRow's `selectedTabIndex` must match the child Tab order
+        // declared below. We use a fixed list in this exact order and
+        // derive the index from that list — avoiding an
+        // [InspectorTab.ordinal] dependency that would silently skew
+        // the indicator if the enum members were reordered.
+        val tabOrder = remember { listOf(InspectorTab.EVENTS, InspectorTab.LOGS) }
         TabRow(
-            selectedTabIndex = selectedTab.ordinal,
+            selectedTabIndex = tabOrder.indexOf(selectedTab).coerceAtLeast(0),
         ) {
-            Tab(
-                selected = selectedTab == InspectorTab.EVENTS,
-                onClick = { viewModel.selectTab(InspectorTab.EVENTS) },
-                text = { Text("Events") },
-            )
-            Tab(
-                selected = selectedTab == InspectorTab.LOGS,
-                onClick = { viewModel.selectTab(InspectorTab.LOGS) },
-                text = { Text("Logs") },
-            )
+            tabOrder.forEach { tab ->
+                Tab(
+                    selected = selectedTab == tab,
+                    onClick = { viewModel.selectTab(tab) },
+                    text = { Text(tabLabel(tab)) },
+                )
+            }
         }
 
         HorizontalDivider()
@@ -109,6 +111,11 @@ fun EventInspectorSheet(viewModel: SdkViewModel) {
             InspectorTab.LOGS -> LogsTab(logs = logs)
         }
     }
+}
+
+private fun tabLabel(tab: InspectorTab): String = when (tab) {
+    InspectorTab.EVENTS -> "Events"
+    InspectorTab.LOGS -> "Logs"
 }
 
 /* ---------------- Network status ---------------- */
@@ -200,7 +207,6 @@ private fun EventRow(event: InspectorEvent) {
             if (lifecycleLabel != null) {
                 Badge(label = lifecycleLabel, color = lifecycleColor)
             }
-            Spacer(Modifier.width(4.dp))
             Text(
                 text = timestamp,
                 style = MaterialTheme.typography.labelSmall,
