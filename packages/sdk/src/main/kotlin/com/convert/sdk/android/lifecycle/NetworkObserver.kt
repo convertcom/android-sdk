@@ -5,6 +5,7 @@
  */
 package com.convert.sdk.android.lifecycle
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
@@ -86,7 +87,18 @@ internal class NetworkObserver(
      * Subscribes to the OS default-network transitions. Subsequent calls
      * are no-ops to keep double-registration from accidentally queuing
      * duplicate flushes.
+     *
+     * `@SuppressLint("MissingPermission")` — the SDK's own manifest
+     * intentionally does NOT declare `ACCESS_NETWORK_STATE`; per the
+     * user guide ([docs/user-guide.md#permissions]) the consumer app
+     * provides it when best-effort offline recovery is desired. When
+     * the permission is absent, `registerDefaultNetworkCallback` throws
+     * `SecurityException`, which the try/catch below swallows so the
+     * SDK degrades gracefully to the foreground-retry path. AGP 9.x's
+     * stricter lint would otherwise flag this call even though the
+     * runtime contract is explicitly honoured.
      */
+    @SuppressLint("MissingPermission")
     @Suppress("TooGenericExceptionCaught", "SwallowedException")
     fun register() {
         if (registered) return

@@ -75,6 +75,19 @@ kotlin {
 
 dependencies {
     api(project(":packages:core"))
+
+    // Story 6.3: bundle the custom lint-rule JAR into the published AAR
+    // so consumer apps pick the rules up automatically — no extra
+    // consumer-side dependency, lint runs on every `lintDebug` /
+    // `lintRelease` as soon as this SDK is on the classpath.
+    //
+    // `lintPublish` (not `lintChecks`) is the correct scope per story
+    // Gotcha 1: `lintChecks` runs the rules on THIS module's own lint
+    // report, `lintPublish` adds them to the AAR for downstream
+    // consumers. We want the latter — the SDK module itself doesn't
+    // call `ConvertSDK.builder(…)` and would only emit noise.
+    lintPublish(project(":packages:sdk-lint"))
+
     implementation(libs.okhttp)
     // Story 2.2: FileConfigCache serialises/deserialises ConfigResponseData
     // directly in this module (not through the core ApiManager). The core

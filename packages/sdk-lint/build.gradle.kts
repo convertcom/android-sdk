@@ -37,6 +37,29 @@ kotlin {
     jvmToolchain(17)
 }
 
+// AGP's `lintPublish` configuration requires exactly one JAR in the
+// outgoing variant — namely this module's lint-rule JAR. By default,
+// the Kotlin JVM plugin declares `kotlin-stdlib` as an `api`
+// dependency, which propagates to the consumer via `lintPublish` and
+// trips AGP's
+//   "Found more than one jar in the 'lintPublish' configuration"
+// guard at `prepareLintJarForPublish`.
+//
+// Remove stdlib from the `api`/`implementation`/`runtimeOnly` buckets
+// and re-add it as `compileOnly` — still on the compile classpath so
+// Kotlin sources compile, but absent from the outgoing JAR set. The
+// consumer's lint runtime bundles its own Kotlin stdlib, so this is
+// behaviour-preserving for the published rules.
+configurations.named("api") {
+    dependencies.removeAll { it.group == "org.jetbrains.kotlin" && it.name == "kotlin-stdlib" }
+}
+configurations.named("implementation") {
+    dependencies.removeAll { it.group == "org.jetbrains.kotlin" && it.name == "kotlin-stdlib" }
+}
+dependencies {
+    compileOnly("org.jetbrains.kotlin:kotlin-stdlib:${libs.versions.kotlin.get()}")
+}
+
 dependencies {
     // lint-api is the detector authoring surface. `compileOnly` — the
     // consumer's lint tool provides the runtime JAR; bundling it into
