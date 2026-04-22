@@ -10,6 +10,7 @@ import com.convert.sdk.core.model.BucketingEvent
 import com.convert.sdk.core.model.ConversionEvent
 import com.convert.sdk.core.model.GoalDataKey
 import com.convert.sdk.core.model.VisitorEvent
+import com.convert.sdk.core.model.generated.ConfigResponseData
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -89,6 +90,43 @@ public object TrackingPayloadBuilder {
         events: List<VisitorEvent>,
         config: ConvertConfig,
         json: Json,
+    ): String = build(events = events, config = config, json = json, liveData = config.data)
+
+    /**
+     * Overload that lets the caller supply the live [ConfigResponseData]
+     * explicitly — this is the fix for the Story 5.5-surfaced sdkKey+fetch
+     * tracking bug.
+     *
+     * Before the fix, `buildPayload` pulled accountId / projectId from
+     * `config.data` which is ONLY populated when using `Builder.data(...)`
+     * direct-data mode. In sdkKey+fetch mode (the primary production
+     * path), `config.data` is null; the fetched payload lives in
+     * `DataManager.data`. The enrichData flag was also inverted by the same
+     * null check. This overload accepts the live data explicitly so
+     * [ApiManager.flush] can pass `effectiveConfigData()` through.
+     *
+     * The [enrichData] semantics: matches the JS SDK — `true` means
+     * "the SDK does not have a config, ask the server to enrich this
+     * payload against its own copy of the project config". We set it to
+     * `true` only when BOTH the Builder-supplied `config.data` AND the
+     * live [liveData] accessor return null — any non-null means the SDK
+     * has some config and the server should not re-fetch.
+     *
+     * @param events the events to ship; may be empty.
+     * @param config the SDK configuration; only `network?.source` and
+     *   the `config.data` fallback are used — `accountId` / `projectId`
+     *   come from [liveData] (falling back to `config.data`).
+     * @param json shared [Json] instance used to serialise the output.
+     * @param liveData the current [ConfigResponseData], typically
+     *   `sdk.dataManager.data` at flush time. `null` is permitted —
+     *   represents the genuinely-never-loaded-config case (enrichData = true).
+     * @return the complete JSON body ready to be POSTed.
+     */
+    public fun build(
+        events: List<VisitorEvent>,
+        config: ConvertConfig,
+        json: Json,
+        liveData: ConfigResponseData?,
     ): String {
         val grouped: Map<String, List<VisitorEvent>> = events.groupBy { it.visitorId }
         val visitorsArray = buildJsonArray {
@@ -96,10 +134,15 @@ public object TrackingPayloadBuilder {
                 add(buildVisitorEntry(visitorId, groupEvents))
             }
         }
+        val effectiveData = liveData ?: config.data
         val payload = buildJsonObject {
-            put(KEY_ACCOUNT_ID, config.data?.accountId ?: "")
-            put(KEY_PROJECT_ID, config.data?.project?.id ?: "")
-            put(KEY_ENRICH_DATA, config.data == null)
+            put(KEY_ACCOUNT_ID, effectiveData?.accountId ?: "")
+            put(KEY_PROJECT_ID, effectiveData?.project?.id ?: "")
+            // JS-parity: `enrichData: true` means "the SDK has no config,
+            // ask the server to enrich". True only when BOTH the Builder-
+            // supplied data AND the live accessor are null — any non-null
+            // source means the SDK has loaded a config.
+            put(KEY_ENRICH_DATA, effectiveData == null)
             config.network?.source?.let { put(KEY_SOURCE, it) }
             put(KEY_VISITORS, visitorsArray)
         }

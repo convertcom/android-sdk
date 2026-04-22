@@ -8,6 +8,7 @@ package com.convert.sdk.android
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import androidx.annotation.VisibleForTesting
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
@@ -54,6 +55,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -664,6 +666,36 @@ public class ConvertSDK internal constructor(
     }
 
     /**
+     * Test-only flush trigger — Story 5.5 Task 3.
+     *
+     * Drives an immediate, synchronous [ApiManager.flushNow] so integration
+     * tests ([com.convert.sdk.android.integration.FullChainIntegrationTest])
+     * can assert on a [okhttp3.mockwebserver.MockWebServer]'s recorded
+     * tracking POST without racing the [ApiManager] timer loop
+     * ([com.convert.sdk.core.config.ConfigDefaults.DEFAULT_EVENTS_RELEASE_INTERVAL_MS]
+     * defaults to 1 second — too slow for a CI run that wants
+     * sub-second determinism).
+     *
+     * Implementation choice: [runBlocking] rather than scheduling onto the
+     * SDK [scope] — tests need to block until the HTTP POST completes so
+     * they can inspect `mockServer.takeRequest(...)` immediately afterwards.
+     * Launching asynchronously would force every caller to re-implement the
+     * same `awaitCondition { mockServer.requestCount >= 1 }` pattern; the
+     * explicit `runBlocking` here centralises the wait.
+     *
+     * Pure-JVM test path ([apiManager] is `null` — no Android wiring): the
+     * call is a silent no-op. Production callers MUST NOT invoke this —
+     * [VisibleForTesting] with `otherwise = NONE` makes the method
+     * inaccessible at the bytecode level to any non-test module, and
+     * Android Lint flags misuse.
+     */
+    @VisibleForTesting(otherwise = VisibleForTesting.NONE)
+    internal fun flushForTesting() {
+        val api = apiManager ?: return
+        runBlocking { api.flushNow() }
+    }
+
+    /**
      * Flips the SDK-level outbound-tracking flag (Story 5.4 AC-1).
      *
      * Delegates to [ApiManager.setTrackingEnabled] — the flag lives on
@@ -1236,13 +1268,22 @@ public class ConvertSDK internal constructor(
             // BigDecimal fields.
             val fileEventQueue: EventQueue = FileEventQueue(context = appContext, logger = logger)
             val apiManager = buildApiManager(
-                httpClient,
-                logger,
-                assembled,
-                sharedJson,
-                eventManager,
-                sdkScope,
-                fileEventQueue,
+                httpClient = httpClient,
+                logger = logger,
+                config = assembled,
+                sharedJson = sharedJson,
+                eventManager = eventManager,
+                sdkScope = sdkScope,
+                eventQueue = fileEventQueue,
+                // Story 5.5 fix: ApiManager must read the live loaded
+                // config (populated by DataManager.setData after the
+                // background fetch completes), not the Builder-time
+                // `assembled.data` (which is null in sdkKey+fetch mode).
+                // Without this, every flush in sdkKey+fetch mode silently
+                // no-ops because `config.data?.project?.id` is null even
+                // though the SDK has a fully-loaded config sitting in
+                // DataManager.
+                liveConfigData = { dataManager.data },
             )
             val fileConfigCache = FileConfigCache(
                 context = appContext,
@@ -1603,6 +1644,7 @@ private fun buildApiManager(
     eventManager: com.convert.sdk.core.event.EventManager,
     sdkScope: CoroutineScope,
     eventQueue: EventQueue,
+    liveConfigData: () -> ConfigResponseData?,
 ): ApiManager = ApiManager(
     httpClient = httpClient,
     logger = logger,
@@ -1611,6 +1653,7 @@ private fun buildApiManager(
     eventManager = eventManager,
     scope = sdkScope,
     eventQueue = eventQueue,
+    liveConfigData = liveConfigData,
 )
 
 private fun buildSdkScope(logger: Logger): CoroutineScope =
