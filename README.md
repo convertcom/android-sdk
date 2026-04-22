@@ -111,7 +111,11 @@ That's it. Everything else is [in the user guide](./docs/user-guide.md).
 | Kotlin | 2.x (binary-compatible with any 2.x consumer) |
 | Gradle | 8.x |
 
-The SDK declares `ACCESS_NETWORK_STATE` in its merged manifest to drive the offline-recovery observer — consumers do not need to add it manually.
+For best offline-recovery behaviour, declare `ACCESS_NETWORK_STATE` in your app's manifest — the SDK uses it to trigger a queue flush when connectivity returns. If the permission is missing the SDK degrades gracefully (the foreground retry path still delivers events; only the "flush-on-network-regained" push is skipped).
+
+```xml
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+```
 
 ## What's New
 

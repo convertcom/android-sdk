@@ -197,6 +197,11 @@ internal class ReadmeQuickstartSmokeTest {
     private fun userGuideFeatureFlagTypedVariables(sdk: ConvertSDK) {
         val ctx = sdk.createContext()
         val feature = ctx.runFeature("checkout-v2")
+        if (feature?.enabled == true) {
+            // enableCheckoutV2()
+        }
+        // Also exercise the explicit status check to keep the bitrot-check
+        // honest — the user-guide mentions both forms.
         if (feature?.status == FeatureStatus.ENABLED) {
             // enableCheckoutV2()
         }

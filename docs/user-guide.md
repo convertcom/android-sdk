@@ -68,13 +68,17 @@ If you hit a stripped-class warning from R8, open an issue with the obfuscation 
 
 ### Permissions
 
-The SDK's merged `AndroidManifest.xml` adds a single permission:
+For best offline-recovery behaviour, declare `ACCESS_NETWORK_STATE` in your app's `AndroidManifest.xml`:
 
 ```xml
 <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 ```
 
-This is needed for the offline-recovery observer (see [Offline Behavior](#offline-behavior)). No other permissions are required.
+The SDK uses this permission to observe connectivity changes via `ConnectivityManager.registerDefaultNetworkCallback` — when the device regains connectivity, the SDK triggers an immediate flush of any events it queued while offline.
+
+If the permission is missing the SDK **degrades gracefully**: the network observer's registration call catches the `SecurityException`, the SDK logs nothing, and the foreground-retry path still delivers queued events eventually (the only loss is the "push immediately on reconnect" optimisation — events still flush on the next scheduled batch).
+
+No other permissions are required. `INTERNET` is auto-merged from AGP's default library manifest.
 
 ---
 
@@ -266,14 +270,17 @@ Feature flags ride the same bucketing machinery as experiences but return a `Fea
 import com.convert.sdk.core.model.FeatureStatus
 
 val feature = ctx.runFeature("checkout-v2")
-if (feature?.status == FeatureStatus.ENABLED) {
+if (feature?.enabled == true) {
     enableCheckoutV2()
 }
+// Equivalent to: if (feature?.status == FeatureStatus.ENABLED) { ... }
 ```
+
+The `enabled` property is a convenience for the `status == ENABLED` check that matches the JS SDK's idiomatic usage.
 
 ### Typed variable helpers
 
-When a feature is `ENABLED`, its `variables` map holds `JsonPrimitive` values. Use the extension helpers in `com.convert.sdk.android.FeatureExtensions`:
+When a feature is `ENABLED`, its `variables` map holds `JsonElement` values — typically `JsonPrimitive` for scalars, occasionally `JsonObject` / `JsonArray` for structured variables. For the common scalar case, use the extension helpers in `com.convert.sdk.android.FeatureExtensions`:
 
 ```kotlin
 import com.convert.sdk.android.getString
@@ -510,7 +517,7 @@ Check in order:
 2. Are your `runExperience` / `trackConversion` calls using `enableTracking = true`? Per-call `false` silently skips the network event.
 3. Is the SDK ready? Wrap calls in `sdk.onReady { ... }` — pre-ready calls return `null` / skip silently.
 4. Is your SDK key correct and pointed at the right environment? Check `logLevel(LogLevel.DEBUG)` output for `config.response` details.
-5. Is the device online? Events enqueue offline and ship when connectivity resumes — check WorkManager's `WORK_MANAGER_WORKER_TAG` in `adb shell dumpsys jobscheduler`.
+5. Is the device online? Events enqueue offline and ship when connectivity resumes — the unique WorkManager work name is `convert-event-flush`. Inspect the pending job via `adb shell dumpsys jobscheduler | grep convert-event-flush` or via Android Studio's **App Inspection → Background Task Inspector**.
 
 ### "`runExperience` always returns `null`"
 
