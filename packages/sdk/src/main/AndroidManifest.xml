@@ -1,3 +1,36 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Convert Android SDK — library manifest.
+
+  Story 5.2 AC: declare ACCESS_NETWORK_STATE permission for the
+  NetworkObserver lifecycle component (foreground-only network-
+  transition observer used to drive offline-event flush retry).
+
+  Story 5.3 AC-8: declare the App Startup InitializationProvider and
+  register SdkInitializer. App Startup auto-merges this provider into
+  every host app that depends on the SDK; the library's provider entry
+  uses tools:node="merge" to co-exist with the host app's own entry
+  (and with other libraries that declare their own SDK initializers).
+
+  The meta-data entry's `android:name` MUST equal the fully-qualified
+  class name of the Initializer; its `android:value` must be "androidx.startup"
+  so App Startup picks it up. See the androidx.startup docs for the
+  canonical wiring.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application>
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="com.convert.sdk.android.lifecycle.SdkInitializer"
+                android:value="androidx.startup" />
+        </provider>
+    </application>
 </manifest>
