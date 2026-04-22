@@ -420,6 +420,15 @@ public open class ApiManager(
      */
     public open fun reenqueuePersisted(events: List<com.convert.sdk.core.model.VisitorEvent>) {
         if (events.isEmpty()) return
+        // Story 5.4 AC-2 — tracking-flag guard BEFORE the monitor lock.
+        // [ConvertSDK.onNetworkAvailable] / [ConvertSDK.onProcessStart]
+        // drive this path on connectivity / foreground restore; without
+        // the short-circuit, persisted events from before a consent
+        // revocation would continue flowing into the live queue.
+        if (!trackingEnabled.get()) {
+            logger.debug("ApiManager.enqueueAll() skipped: tracking disabled", TAG)
+            return
+        }
         synchronized(queueLock) {
             // Build a dedup set from the live queue's TrackingEvent payloads.
             val liveSet: MutableSet<TrackingEvent> =

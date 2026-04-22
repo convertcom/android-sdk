@@ -677,6 +677,57 @@ public class ConvertSDK internal constructor(
     }
 
     /**
+     * Flips the SDK-level outbound-tracking flag (Story 5.4 AC-1).
+     *
+     * Delegates to [ApiManager.setTrackingEnabled] — the flag lives on
+     * [ApiManager] (pre-wired in Story 2.3 AC-5) as the single source of
+     * truth. Every future [ApiManager.enqueueBucketingEvent] /
+     * [ApiManager.enqueueConversionEvent] / [ApiManager.enqueueAll] call
+     * reads the flag and short-circuits when `false`.
+     *
+     * **Does NOT flush the queue on re-enable** (Gotcha 1 from Story 5.4):
+     * calling `setTrackingEnabled(true)` after a period of `false` only
+     * re-opens the enqueue gate for subsequent events. Events generated
+     * while disabled were never enqueued and cannot be recovered; events
+     * enqueued BEFORE the disable that are still sitting on the queue
+     * continue flushing through the normal timer / batch mechanism.
+     *
+     * Bucketing, rule evaluation, sticky persistence, and goal dedup
+     * continue to function normally regardless of the flag (AC-3, AC-6)
+     * — only the network enqueue is suppressed.
+     *
+     * Pure-JVM test path ([apiManager] is `null` — no Android wiring):
+     * the call is a silent no-op. Production code paths always have
+     * [apiManager] wired by the Builder.
+     *
+     * @param enabled `true` to allow outbound tracking events, `false` to
+     *   suppress them at the enqueue step.
+     */
+    public fun setTrackingEnabled(enabled: Boolean) {
+        apiManager?.setTrackingEnabled(enabled)
+    }
+
+    /**
+     * Returns the current SDK-level tracking-enabled flag (Story 5.4
+     * Task 1).
+     *
+     * Reads from [ApiManager.isTrackingEnabled] — no local caching, so a
+     * caller that flips the flag via [setTrackingEnabled] sees the new
+     * value immediately on the next read.
+     *
+     * Pure-JVM test path ([apiManager] is `null`): returns
+     * [com.convert.sdk.core.config.ConfigDefaults.DEFAULT_TRACKING_ENABLED]
+     * (the same default the ApiManager itself would initialise to), so
+     * that consumers of the smoke-test SDK see the expected-defaults
+     * surface without crashing on a null dereference.
+     *
+     * @return `true` iff outbound tracking events are currently permitted.
+     */
+    public fun isTrackingEnabled(): Boolean =
+        apiManager?.isTrackingEnabled()
+            ?: com.convert.sdk.core.config.ConfigDefaults.DEFAULT_TRACKING_ENABLED
+
+    /**
      * Lock used to serialise the auto-UUID read-generate-persist
      * sequence in [createContext]. Without it, two concurrent cold-start
      * calls could both read a null `visitor_id`, both generate distinct
