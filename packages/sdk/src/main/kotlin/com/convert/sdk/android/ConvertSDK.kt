@@ -296,11 +296,22 @@ public class ConvertSDK internal constructor(
         if (appContext != null && apiManager != null) {
             registerLifecycleObserverWhenReady()
         }
-        // Story 5.2 AC-4: kick the NetworkObserver once the SDK object is
-        // assembled. Registration is best-effort inside the observer
-        // itself (some OEM ROMs still throw SecurityException from
-        // registerDefaultNetworkCallback); a missing observer is never
-        // fatal — the foreground retry path still eventually ships events.
+        // Story 5.2 AC-4: NetworkObserver registration deliberately does
+        // NOT happen here in the init block — it is called by
+        // [Builder.build] after it has assigned its `sdkRef[0] = sdk`
+        // holder. If we registered here, the OS may synchronously fire
+        // `onAvailable` on a binder thread before the Builder's
+        // late-bound reference is assigned, and the
+        // `sdkRef[0]?.onNetworkAvailable()` callback no-ops against a
+        // null. Deferring to the Builder avoids the race.
+    }
+
+    /**
+     * Registers the [NetworkObserver] once the SDK reference is fully
+     * assembled. Callable only from [Builder.build] to preserve the
+     * late-binding contract described in the init-block comment.
+     */
+    internal fun registerNetworkObserver() {
         networkObserver?.register()
     }
 
@@ -1057,6 +1068,13 @@ public class ConvertSDK internal constructor(
                 scope = sdkScope,
             )
             sdkRef[0] = sdk
+            // Now that the late-bound sdkRef is populated, it is safe to
+            // register the NetworkObserver. The callback closure uses
+            // sdkRef[0]?.onNetworkAvailable(); any synchronous OS-fired
+            // onAvailable tick during register() would have observed a
+            // null sdkRef[0] if we had registered inside ConvertSDK.init
+            // (see the commentary there).
+            sdk.registerNetworkObserver()
 
             // Direct-data mode (AC-3) or sdk-key mode (AC-5/6/7) — delegate
             // to the file-private seeding helper so that `build()` stays
