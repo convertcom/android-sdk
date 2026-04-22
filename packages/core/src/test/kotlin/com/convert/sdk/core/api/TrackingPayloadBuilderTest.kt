@@ -7,17 +7,17 @@ package com.convert.sdk.core.api
 
 import com.convert.sdk.core.config.ConvertConfig
 import com.convert.sdk.core.config.NetworkConfig
+import com.convert.sdk.core.model.BucketingEvent
+import com.convert.sdk.core.model.ConversionEvent
+import com.convert.sdk.core.model.VisitorEvent
 import com.convert.sdk.core.model.generated.ConfigProject
 import com.convert.sdk.core.model.generated.ConfigResponseData
-import com.convert.sdk.core.port.PersistedEvent
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Test
  *
  * The builder exists so [com.convert.sdk.android.worker.EventFlushWorker]
  * (Story 5.3 AC-1) can rebuild the same outbound POST body from
- * disk-loaded [PersistedEvent]s that [ApiManager.flush] builds from
+ * disk-loaded [VisitorEvent]s that [ApiManager.flush] builds from
  * in-memory [ApiManager.VisitorEvent]s — without the worker reaching
  * into ApiManager internals.
  *
@@ -37,7 +37,7 @@ import org.junit.jupiter.api.Test
  *     accountId / projectId / enrichData / source / visitors keys.
  *  2. Events group by visitorId with the LAST enqueue's segments
  *     snapshotted to the visitor (JS SDK parity).
- *  3. An empty segments map is rendered as an absent `segments` key
+ *  3. A null/empty segments map is rendered as an absent `segments` key
  *     (not an empty object).
  *  4. `source` is omitted when `config.network?.source` is null.
  *  5. `enrichData = true` when `config.data` is null; `false` otherwise.
@@ -50,19 +50,22 @@ internal class TrackingPayloadBuilderTest {
         encodeDefaults = false
     }
 
-    private fun makeEvent(
+    private fun makeBucketingEvent(
         visitorId: String,
-        eventType: String,
-        timestamp: Long,
-        segments: Map<String, kotlinx.serialization.json.JsonElement> = emptyMap(),
-    ): PersistedEvent = PersistedEvent(
+        segments: Map<String, JsonElement>? = null,
+    ): VisitorEvent = VisitorEvent(
         visitorId = visitorId,
         segments = segments,
-        event = buildJsonObject {
-            put("eventType", eventType)
-            put("data", buildJsonObject { put("k", JsonPrimitive("v")) })
-        },
-        timestampMs = timestamp,
+        event = BucketingEvent(experienceId = "exp-1", variationId = "var-1"),
+    )
+
+    private fun makeConversionEvent(
+        visitorId: String,
+        segments: Map<String, JsonElement>? = null,
+    ): VisitorEvent = VisitorEvent(
+        visitorId = visitorId,
+        segments = segments,
+        event = ConversionEvent(goalId = "goal-1"),
     )
 
     private fun configWithProject(source: String? = null): ConvertConfig = ConvertConfig(
@@ -83,9 +86,9 @@ internal class TrackingPayloadBuilderTest {
     @Test
     fun `build groups events by visitorId and sets accountId and projectId`() {
         val events = listOf(
-            makeEvent("v-1", "bucketing", 100L),
-            makeEvent("v-2", "conversion", 200L),
-            makeEvent("v-1", "conversion", 300L),
+            makeBucketingEvent("v-1"),
+            makeConversionEvent("v-2"),
+            makeConversionEvent("v-1"),
         )
         val result = TrackingPayloadBuilder.build(events, configWithProject(), json)
 
@@ -105,11 +108,14 @@ internal class TrackingPayloadBuilderTest {
 
     @Test
     fun `build snapshots segments from last enqueue per visitor`() {
-        val firstSegments = mapOf("tier" to JsonPrimitive("bronze"))
-        val lastSegments = mapOf("tier" to JsonPrimitive("gold"), "region" to JsonPrimitive("us-east"))
+        val firstSegments = mapOf("tier" to kotlinx.serialization.json.JsonPrimitive("bronze"))
+        val lastSegments = mapOf(
+            "tier" to kotlinx.serialization.json.JsonPrimitive("gold"),
+            "region" to kotlinx.serialization.json.JsonPrimitive("us-east"),
+        )
         val events = listOf(
-            makeEvent("v-1", "bucketing", 100L, firstSegments),
-            makeEvent("v-1", "conversion", 200L, lastSegments),
+            makeBucketingEvent("v-1", firstSegments),
+            makeConversionEvent("v-1", lastSegments),
         )
         val result = TrackingPayloadBuilder.build(events, configWithProject(), json)
 
@@ -121,18 +127,18 @@ internal class TrackingPayloadBuilderTest {
     }
 
     @Test
-    fun `build omits segments key when the last enqueue's segments are empty`() {
-        val events = listOf(makeEvent("v-1", "bucketing", 100L, emptyMap()))
+    fun `build omits segments key when the last enqueue segments are null or empty`() {
+        val events = listOf(makeBucketingEvent("v-1", segments = null))
         val result = TrackingPayloadBuilder.build(events, configWithProject(), json)
 
         val visitors = json.parseToJsonElement(result).jsonObject["visitors"]!!.jsonArray
         val v1 = visitors.first().jsonObject
-        assertNull(v1["segments"], "empty segments must not render a segments key")
+        assertNull(v1["segments"], "null segments must not render a segments key")
     }
 
     @Test
     fun `build sets enrichData true when config-data is null`() {
-        val events = listOf(makeEvent("v-1", "bucketing", 100L))
+        val events = listOf(makeBucketingEvent("v-1"))
         val result = TrackingPayloadBuilder.build(events, configWithoutData(), json)
 
         val payload = json.parseToJsonElement(result).jsonObject
@@ -144,7 +150,7 @@ internal class TrackingPayloadBuilderTest {
 
     @Test
     fun `build renders source when network-source is set`() {
-        val events = listOf(makeEvent("v-1", "bucketing", 100L))
+        val events = listOf(makeBucketingEvent("v-1"))
         val result = TrackingPayloadBuilder.build(events, configWithProject(source = "android"), json)
 
         val payload = json.parseToJsonElement(result).jsonObject
@@ -162,9 +168,9 @@ internal class TrackingPayloadBuilderTest {
     @Test
     fun `build preserves event order within a visitor group`() {
         val events = listOf(
-            makeEvent("v-1", "bucketing", 100L),
-            makeEvent("v-1", "bucketing", 200L),
-            makeEvent("v-1", "conversion", 300L),
+            makeBucketingEvent("v-1"),
+            makeBucketingEvent("v-1"),
+            makeConversionEvent("v-1"),
         )
         val result = TrackingPayloadBuilder.build(events, configWithProject(), json)
 

@@ -11,12 +11,11 @@ import androidx.work.Data
 import androidx.work.ListenableWorker
 import androidx.work.testing.TestListenableWorkerBuilder
 import com.convert.sdk.android.adapter.FileEventQueue
+import com.convert.sdk.core.model.BucketingEvent
+import com.convert.sdk.core.model.ConversionEvent
+import com.convert.sdk.core.model.VisitorEvent
 import com.convert.sdk.core.port.Logger
-import com.convert.sdk.core.port.PersistedEvent
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
@@ -85,15 +84,15 @@ internal class EventFlushWorkerTest {
         }
     }
 
-    private fun makeEvent(visitorId: String, eventType: String, timestamp: Long): PersistedEvent =
-        PersistedEvent(
+    private fun makeEvent(visitorId: String, eventType: String): VisitorEvent =
+        VisitorEvent(
             visitorId = visitorId,
-            segments = emptyMap(),
-            event = buildJsonObject {
-                put("eventType", eventType)
-                put("data", buildJsonObject { put("k", JsonPrimitive("v")) })
+            segments = null,
+            event = if (eventType == "bucketing") {
+                BucketingEvent(experienceId = "exp-1", variationId = "var-1")
+            } else {
+                ConversionEvent(goalId = "goal-1")
             },
-            timestampMs = timestamp,
         )
 
     private fun inputData(): Data = Data.Builder()
@@ -115,8 +114,8 @@ internal class EventFlushWorkerTest {
         runBlocking {
             FileEventQueue(context, Logger.NoOp).persist(
                 listOf(
-                    makeEvent("v-1", "bucketing", 100L),
-                    makeEvent("v-2", "conversion", 200L),
+                    makeEvent("v-1", "bucketing"),
+                    makeEvent("v-2", "conversion"),
                 ),
             )
         }
@@ -158,7 +157,7 @@ internal class EventFlushWorkerTest {
     @Test
     fun `worker returns Result retry on HTTP failure`() {
         runBlocking {
-            FileEventQueue(context, Logger.NoOp).persist(listOf(makeEvent("v-1", "bucketing", 100L)))
+            FileEventQueue(context, Logger.NoOp).persist(listOf(makeEvent("v-1", "bucketing")))
         }
         server.enqueue(MockResponse().setResponseCode(500))
 
@@ -199,7 +198,7 @@ internal class EventFlushWorkerTest {
     @Test
     fun `worker returns Result retry on IOException`() {
         runBlocking {
-            FileEventQueue(context, Logger.NoOp).persist(listOf(makeEvent("v-1", "bucketing", 100L)))
+            FileEventQueue(context, Logger.NoOp).persist(listOf(makeEvent("v-1", "bucketing")))
         }
         // Shutdown the server to force a connection failure.
         server.shutdown()
@@ -224,7 +223,7 @@ internal class EventFlushWorkerTest {
         // nothing to POST to, so it logs and returns success to avoid an
         // infinite retry loop on mis-configured input.
         runBlocking {
-            FileEventQueue(context, Logger.NoOp).persist(listOf(makeEvent("v-1", "bucketing", 100L)))
+            FileEventQueue(context, Logger.NoOp).persist(listOf(makeEvent("v-1", "bucketing")))
         }
         val worker: EventFlushWorker =
             TestListenableWorkerBuilder<EventFlushWorker>(context)

@@ -6,9 +6,9 @@
 package com.convert.sdk.android
 
 import android.content.Context
+import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.Configuration
-import androidx.work.ExistingWorkPolicy
 import androidx.work.WorkManager
 import androidx.work.testing.WorkManagerTestInitHelper
 import com.convert.sdk.android.worker.EventFlushWorker
@@ -17,17 +17,15 @@ import com.convert.sdk.core.config.ApiConfig
 import com.convert.sdk.core.config.ApiEndpoint
 import com.convert.sdk.core.config.ConvertConfig
 import com.convert.sdk.core.config.EventsConfig
+import com.convert.sdk.core.model.BucketingEvent
+import com.convert.sdk.core.model.VisitorEvent
 import com.convert.sdk.core.model.generated.ConfigProject
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.port.EventQueue
 import com.convert.sdk.core.port.HttpClient
 import com.convert.sdk.core.port.Logger
-import com.convert.sdk.core.port.PersistedEvent
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -37,6 +35,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -92,15 +91,12 @@ internal class ConvertSDKLifecycleHooksTest {
 
     @Test
     fun `onStop flushes and enqueues worker`() = runBlocking {
-        val events = mutableListOf<PersistedEvent>()
-        events += PersistedEvent(
-            visitorId = "v-1",
-            segments = emptyMap(),
-            event = buildJsonObject {
-                put("eventType", "bucketing")
-                put("data", buildJsonObject { put("k", JsonPrimitive("v")) })
-            },
-            timestampMs = 100L,
+        val events = listOf(
+            VisitorEvent(
+                visitorId = "v-1",
+                segments = null,
+                event = BucketingEvent(experienceId = "exp-1", variationId = "var-1"),
+            ),
         )
         val recordingQueue = RecordingEventQueue()
         val recordingApi = RecordingApiManager(snapshotReturns = events)
@@ -111,11 +107,31 @@ internal class ConvertSDKLifecycleHooksTest {
 
         // Drive the lifecycle hook we care about.
         sdk.onProcessStopForTest()
-        // onProcessStop launches a coroutine on sdk.scope; wait for it to
-        // complete by draining the queue adapter's recorded writes.
-        while (!recordingApi.flushCalled.get()) { Thread.sleep(5) }
-        while (recordingQueue.persisted.isEmpty() && recordingApi.snapshotQueueCalled.get() < 1) {
-            Thread.sleep(5)
+        // onProcessStop launches a coroutine on sdk.scope; wait for each
+        // observable milestone to tick through before asserting. The
+        // Thread.sleeps are tiny — the entire chain runs within tens of
+        // milliseconds on a Default dispatcher.
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!recordingApi.flushCalled.get() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10)
+        }
+        while (recordingApi.snapshotQueueCalled.get() < 1 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10)
+        }
+        while (recordingQueue.persisted.size < 1 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10)
+        }
+        // Drain main-looper runnables so WorkManager's enqueueUniqueWork
+        // observable sees the scheduled work. Robolectric runs main-looper
+        // work in paused mode; without this, getWorkInfos returns an empty
+        // list even though enqueueUniqueWork was called.
+        shadowOf(Looper.getMainLooper()).idle()
+        // Small final idle loop — WorkManager sync is async and may need
+        // a couple of looper ticks before getWorkInfosForUniqueWork
+        // reflects the enqueue.
+        repeat(5) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(20)
         }
 
         assertTrue("flushNow must be called on onStop", recordingApi.flushCalled.get())
@@ -139,14 +155,10 @@ internal class ConvertSDKLifecycleHooksTest {
     @Test
     fun `onStart restores persisted events`() = runBlocking {
         val persisted = listOf(
-            PersistedEvent(
+            VisitorEvent(
                 visitorId = "v-restored",
-                segments = emptyMap(),
-                event = buildJsonObject {
-                    put("eventType", "bucketing")
-                    put("data", buildJsonObject { put("k", JsonPrimitive("v")) })
-                },
-                timestampMs = 111L,
+                segments = null,
+                event = BucketingEvent(experienceId = "exp-1", variationId = "var-1"),
             ),
         )
         val recordingQueue = RecordingEventQueue(initial = persisted)
@@ -226,13 +238,13 @@ internal class ConvertSDKLifecycleHooksTest {
      * events left on disk from a previous session) and records every
      * mutation.
      */
-    private class RecordingEventQueue(initial: List<PersistedEvent> = emptyList()) : EventQueue {
-        val persisted: MutableList<PersistedEvent> = initial.toMutableList()
+    private class RecordingEventQueue(initial: List<VisitorEvent> = emptyList()) : EventQueue {
+        val persisted: MutableList<VisitorEvent> = initial.toMutableList()
         val cleared: AtomicBoolean = AtomicBoolean(false)
-        override suspend fun persist(events: List<PersistedEvent>) {
+        override suspend fun persist(events: List<VisitorEvent>) {
             persisted.addAll(events)
         }
-        override suspend fun read(): List<PersistedEvent> = persisted.toList()
+        override suspend fun read(): List<VisitorEvent> = persisted.toList()
         override suspend fun clear() {
             cleared.set(true)
             persisted.clear()
@@ -248,7 +260,7 @@ internal class ConvertSDKLifecycleHooksTest {
      * deterministic.
      */
     private class RecordingApiManager(
-        private val snapshotReturns: List<PersistedEvent> = emptyList(),
+        private val snapshotReturns: List<VisitorEvent> = emptyList(),
     ) : ApiManager(
         httpClient = object : HttpClient {
             override suspend fun get(url: String, headers: Map<String, String>) =
@@ -270,18 +282,18 @@ internal class ConvertSDKLifecycleHooksTest {
         val flushCalled: AtomicBoolean = AtomicBoolean(false)
         val enqueueAllCalled: AtomicBoolean = AtomicBoolean(false)
         val snapshotQueueCalled: AtomicInteger = AtomicInteger(0)
-        val enqueueAllReceived: MutableList<PersistedEvent> = mutableListOf()
+        val enqueueAllReceived: MutableList<VisitorEvent> = mutableListOf()
 
         override suspend fun flushNow() {
             flushCalled.set(true)
         }
 
-        override fun snapshotQueue(): List<PersistedEvent> {
+        override fun snapshotQueue(): List<VisitorEvent> {
             snapshotQueueCalled.incrementAndGet()
             return snapshotReturns
         }
 
-        override fun enqueueAll(events: List<PersistedEvent>) {
+        override fun enqueueAll(events: List<VisitorEvent>) {
             enqueueAllCalled.set(true)
             enqueueAllReceived.addAll(events)
         }

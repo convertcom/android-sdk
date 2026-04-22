@@ -434,6 +434,36 @@ public open class ApiManager(
     }
 
     /**
+     * Bulk-enqueues events restored from disk on foreground resume (onStart).
+     *
+     * ### Story 5.3 AC-4 — rehydrate path
+     *
+     * Called by [com.convert.sdk.android.ConvertSDK.onProcessStart] when the
+     * app returns to the foreground. Events previously persisted by
+     * [com.convert.sdk.android.ConvertSDK.onProcessStop] (or not yet delivered
+     * by [com.convert.sdk.android.worker.EventFlushWorker]) are re-enqueued
+     * here so the foreground batch timer can ship them through the normal
+     * retry path.
+     *
+     * Each [com.convert.sdk.core.model.VisitorEvent] carries (visitorId,
+     * segments, TrackingEvent) — [ApiManager] appends each to its internal
+     * queue, re-serializing the [TrackingEvent] into the internal wire-JSON
+     * format.
+     *
+     * @param events events read from [com.convert.sdk.core.port.EventQueue];
+     *   may be empty (caller short-circuits on empty, but a no-op is safe).
+     */
+    public open fun enqueueAll(events: List<com.convert.sdk.core.model.VisitorEvent>) {
+        if (events.isEmpty()) return
+        synchronized(queueLock) {
+            events.forEach { ve ->
+                val internalEvent = toInternalVisitorEvent(ve)
+                eventQueueInternal += internalEvent
+            }
+        }
+    }
+
+    /**
      * Converts a [com.convert.sdk.core.model.VisitorEvent] (the port's
      * persisted type) into the [VisitorEvent] the internal live queue uses.
      * Re-serializes the [TrackingEvent] sealed subtype into a [JsonObject].
@@ -634,11 +664,15 @@ public open class ApiManager(
      * always reset to 0 so a network-restore-triggered flush gets the
      * full backoff budget rather than inheriting some stale counter.
      */
-    public suspend fun flushNow() {
+    public open suspend fun flushNow() {
         flush()
     }
 
     /**
+     * `open` solely so that test doubles in the `:packages:sdk` module
+     * can override [snapshotQueue] without instantiating a full Robolectric
+     * Android context. Production callers never override.
+     *
      * Returns a point-in-time copy of the live in-memory event queue as
      * [com.convert.sdk.core.model.VisitorEvent]s, without draining.
      *
@@ -659,7 +693,7 @@ public open class ApiManager(
      * @return a list of [com.convert.sdk.core.model.VisitorEvent] mirroring
      *   the live queue in enqueue order.
      */
-    public fun snapshotQueue(): List<com.convert.sdk.core.model.VisitorEvent> = synchronized(queueLock) {
+    public open fun snapshotQueue(): List<com.convert.sdk.core.model.VisitorEvent> = synchronized(queueLock) {
         eventQueueInternal.map { ve ->
             com.convert.sdk.core.model.VisitorEvent(
                 visitorId = ve.visitorId,
