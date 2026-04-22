@@ -55,11 +55,15 @@ import org.jetbrains.uast.tryResolve
  *    initialiser is a DI container lookup, not a builder chain.
  *    Consumers can suppress with
  *    `lintOptions { disable "ConvertSdkInitializedBeforeUse" }` per AC-4.
- *  - **False negative** when a helper function returns an *uninitialised*
- *    `ConvertSDK` and the caller immediately uses it — the detector sees
- *    a function return type of `ConvertSDK` and has no visibility into
- *    the helper. Intentional — this is exactly the "full flow analysis"
- *    scope we deferred.
+ *  - **False negative** when the SDK is reached through intermediate
+ *    indirection that the detector cannot resolve to a local
+ *    declaration — for example a `companion object` property that
+ *    delegates to `lazy { otherObject.sdk }`, a property with a
+ *    custom getter, or a cross-file import whose initialiser lives
+ *    in a different compilation unit. The detector inspects only the
+ *    resolved declaration's initialiser in the current file; full
+ *    inter-procedural flow analysis is explicitly out of scope for
+ *    the MVP (see `Dev Notes → Lint Rule Authoring Is Hard`).
  *
  * ### Severity
  *
@@ -70,10 +74,11 @@ import org.jetbrains.uast.tryResolve
 public class ConvertSdkInitializedBeforeUseDetector : Detector(), Detector.UastScanner {
 
     /**
-     * Only dispatch into [visitMethodCall] for the eight Convert SDK
-     * instance methods. AGP's lint runs this list against method-call
-     * sites in the compilation unit and invokes us per hit — which is
-     * dramatically cheaper than a pure UAST visitor over every call.
+     * Only dispatch into [visitMethodCall] for the six Convert SDK
+     * public instance methods listed in [APPLICABLE_METHODS]. AGP's
+     * lint indexes this list against method-call sites in the
+     * compilation unit and invokes us per hit — which is dramatically
+     * cheaper than a pure UAST visitor over every call.
      */
     override fun getApplicableMethodNames(): List<String> = APPLICABLE_METHODS
 
