@@ -30,22 +30,42 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose") version "2.3.20"
 }
 
-// Read the convertSdkKey from local.properties (git-ignored) so devs can
-// point the demo at their own Convert account. AC-3 prefers this path
-// over a hard-coded key. When the entry is missing we fall back to the
-// placeholder `"demo-sdk-key"` so `assembleDebug` succeeds cleanly in CI
-// and on fresh clones — the SDK initialises, the first config fetch
-// fails silently, and the scaffolding launch-verification gate still
-// passes (AC-10).
-val convertSdkKey: String = run {
-    val localProps = Properties().apply {
-        val f = rootProject.file("local.properties")
-        if (f.exists()) {
-            f.inputStream().use { load(it) }
-        }
+// Read every demo-tunable key from `local.properties` (git-ignored) so
+// devs can point the demo at their own Convert account without editing
+// Kotlin source. Each key is optional — when missing, a fallback literal
+// is injected so `./gradlew :app:assembleDebug` succeeds cleanly on a
+// fresh clone. The fallbacks are documented in `local.properties.example`
+// and MUST stay in lockstep with the hardcoded defaults the demo source
+// and the existing Compose UI tests assert on:
+//
+//   | property              | fallback literal      |
+//   | --------------------- | --------------------- |
+//   | convertSdkKey         | "demo-sdk-key"        |
+//   | convertEnvironment    | ""  (empty sentinel)  |
+//   | convertExperienceKey  | "test-experience"     |
+//   | convertFeatureKey     | "test-feature"        |
+//   | convertGoalKey        | "purchase-goal"       |
+//
+// The empty-string sentinel for `convertEnvironment` signals "not
+// configured" to `DemoApplication.onCreate`, which skips the builder
+// call when the value is blank. `BuildConfig` emits `@NonNull` Java
+// strings, so empty-string is preferred over `null` (which would
+// require nullable typing at every read site).
+private val convertLocalProps: Properties = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) {
+        f.inputStream().use { load(it) }
     }
-    localProps.getProperty("convertSdkKey") ?: "demo-sdk-key"
 }
+
+private fun demoTunable(key: String, fallback: String): String =
+    convertLocalProps.getProperty(key) ?: fallback
+
+val convertSdkKey: String = demoTunable("convertSdkKey", "demo-sdk-key")
+val convertEnvironment: String = demoTunable("convertEnvironment", "")
+val convertExperienceKey: String = demoTunable("convertExperienceKey", "test-experience")
+val convertFeatureKey: String = demoTunable("convertFeatureKey", "test-feature")
+val convertGoalKey: String = demoTunable("convertGoalKey", "purchase-goal")
 
 android {
     namespace = "com.convert.sdk.demo"
@@ -62,6 +82,10 @@ android {
         versionName = "0.1.0"
 
         buildConfigField("String", "convertSdkKey", "\"$convertSdkKey\"")
+        buildConfigField("String", "convertEnvironment", "\"$convertEnvironment\"")
+        buildConfigField("String", "convertExperienceKey", "\"$convertExperienceKey\"")
+        buildConfigField("String", "convertFeatureKey", "\"$convertFeatureKey\"")
+        buildConfigField("String", "convertGoalKey", "\"$convertGoalKey\"")
     }
 
     compileOptions {
