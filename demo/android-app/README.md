@@ -11,8 +11,17 @@ If SDK code changes aren't picked up, run `./gradlew --stop` in both projects an
 ## Setup
 
 1. Open `demo/android-app/` in Android Studio.
-2. (Optional) Copy `local.properties.example` to `local.properties` and fill in your `convertSdkKey=...`. When omitted, the demo builds with a placeholder key — the first config fetch will fail quietly but the UI still launches.
-3. Run the `app` configuration on an emulator or device.
+2. (Optional) Copy `local.properties.example` to `local.properties` and fill in any of the exposed tunables: `convertSdkKey`, `convertEnvironment`, `convertExperienceKey`, `convertFeatureKey`, `convertGoalKey`. Every entry is optional — when omitted, the demo falls back to the hardcoded literals documented in `local.properties.example` and still builds cleanly.
+3. Run the demo (see the **Run the demo in Android Studio** section below).
+
+## Run the demo in Android Studio
+
+1. **Open the project.** In Android Studio: `File → Open` and select the `demo/android-app/` folder (not the repo root — the demo is a standalone Gradle project wired to the SDK via `includeBuild("../../")`).
+2. **Wait for Gradle sync.** On first open, Android Studio indexes the project and syncs Gradle. When you see the **"Sync successful"** toast at the bottom, the `app` run configuration is auto-generated from the `:app` module's AGP metadata and pre-selected in the toolbar dropdown — no manual creation needed.
+3. **Pick a target device.** Either start an emulator from `Device Manager` (any Pixel system image on Android 7.0 / API 24 or later works) or plug in a physical device with USB debugging enabled. The device dropdown sits immediately to the right of the run-configuration dropdown.
+4. **Click the green ▶ Run button** (or `Shift+F10` on Linux/Windows, `⌃R` on macOS). Android Studio builds the `:app` module, installs the APK, and launches the demo. Launch success = the demo home screen renders with the **Experiences** tab selected.
+
+You do NOT need to create a new run configuration — Android Studio picks up the Application configuration for the `:app` module automatically at sync time. If the dropdown shows "Add Configuration" instead of `app`, Gradle sync hasn't completed yet; wait for it.
 
 ## Structure
 
@@ -93,6 +102,10 @@ per resolved variation. An empty list yields a single hint card
    and the inspector fires a `BUCKETING` event carrying `experienceKey`,
    `variationKey`, and `visitorId`.
 
+You can also override the key itself without touching source — set
+`convertExperienceKey=<your-experience-key>` in `local.properties` and
+rebuild.
+
 The result-card list is capped at 20 entries — older cards drop off when
 you keep tapping, so the screen stays usable in a demo loop.
 
@@ -164,6 +177,10 @@ card per returned feature. An empty list yields a single hint card
    card with typed variables; the inspector fires a `BUCKETING` event
    carrying the resolving experience and variation.
 
+You can also override the key itself without touching source — set
+`convertFeatureKey=<your-feature-key>` in `local.properties` and
+rebuild.
+
 The feature result-card list is capped at 20 entries, independent of
 the Experiences list — tapping one screen's buttons never drops the
 other's cards.
@@ -226,12 +243,15 @@ path for exercising the "unknown goal" branch.
 
 1. Add `convertSdkKey=<your-sdk-key>` to `local.properties` (see Setup step 2).
 2. In the Convert dashboard, create a goal in your project with the
-   key `"purchase-goal"` (or pick a different key and adjust
-   `SdkViewModel.DEFAULT_GOAL_KEY` to match). Set the goal type to
-   `Revenue` or `Monetary` so `AMOUNT` and `PRODUCTS_COUNT` payload
-   values are meaningful.
+   key `"purchase-goal"` (or pick a different key and override it via
+   `convertGoalKey=<your-goal-key>` in `local.properties`). Set the
+   goal type to `Revenue` or `Monetary` so `AMOUNT` and
+   `PRODUCTS_COUNT` payload values are meaningful.
 3. Rebuild and relaunch. The primary button now fires a real
    `CONVERSION` event against the configured goal.
+
+You can also override the key itself without touching source — set
+`convertGoalKey=<your-goal-key>` in `local.properties` and rebuild.
 
 ### Dedup persists across app restarts
 
