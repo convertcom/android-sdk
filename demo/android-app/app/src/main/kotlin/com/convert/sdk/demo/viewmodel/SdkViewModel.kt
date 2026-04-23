@@ -14,6 +14,7 @@ import com.convert.sdk.core.model.GoalDataKey
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.Variation
 import com.convert.sdk.core.port.Logger
+import com.convert.sdk.demo.BuildConfig
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -730,10 +731,18 @@ class SdkViewModel(
         const val RESULTS_CAP: Int = 20
 
         /**
-         * Story 7.5 AC-1 — hardcoded goal key the Conversions screen's
-         * "Buy" button tracks. Documented in `demo/android-app/README.md`.
+         * Story 7.5 AC-1 — goal key the Conversions screen's "Buy"
+         * button tracks. Story 7.7 redirected the source of truth to
+         * [BuildConfig.convertGoalKey] so a developer can override the
+         * key from `local.properties`; the fallback literal
+         * `"purchase-goal"` matches the pre-existing default and keeps
+         * the Conversions/Offline screen tests green without changes.
+         *
+         * `const` dropped because [BuildConfig] fields are `static final`
+         * Java strings but NOT Kotlin compile-time constants — `val` is
+         * the correct replacement. Runtime semantics are identical.
          */
-        const val DEFAULT_GOAL_KEY: String = "purchase-goal"
+        val DEFAULT_GOAL_KEY: String = BuildConfig.convertGoalKey
 
         /**
          * Story 7.5 AC-1 — hardcoded AMOUNT goal-data value sent with
