@@ -60,6 +60,14 @@ import kotlinx.coroutines.launch
  * `"demo-sdk-key"` is used; the SDK initialises, the first config
  * fetch fails quietly, and the rest of the demo still launches
  * cleanly (plenty for scaffolding / AC-10).
+ *
+ * Story 7.7 — the deployment environment is ALSO sourced from
+ * `local.properties` via [BuildConfig.convertEnvironment]. When the
+ * value is blank (the default — fallback literal is `""`), the
+ * `ConvertSDK.Builder.environment(...)` call is skipped entirely and
+ * the Config screen's Environment row renders `(not set)`. When
+ * populated (e.g. `convertEnvironment=staging`), the value is passed
+ * through to the builder and surfaced in the Config snapshot.
  */
 class DemoApplication : Application() {
 
@@ -117,11 +125,24 @@ class DemoApplication : Application() {
      * [sdkDeferred] coroutine on [Dispatchers.Default]. Extracted so
      * the dispatcher hop happens at exactly one point and the build
      * chain stays readable.
+     *
+     * Story 7.7 — assembles the builder via a step-by-step `var` so
+     * `.environment(...)` is applied only when the `local.properties`
+     * override is non-blank. The empty-string fallback for
+     * [BuildConfig.convertEnvironment] signals "not configured" and
+     * MUST NOT be forwarded to the builder (doing so would set a
+     * real but invalid environment tag on the SDK).
      */
-    private fun buildSdk(): ConvertSDK = ConvertSDK.builder(this)
-        .sdkKey(BuildConfig.convertSdkKey)
-        .logLevel(LogLevel.DEBUG)
-        .build()
+    private fun buildSdk(): ConvertSDK {
+        var builder = ConvertSDK.builder(this)
+            .sdkKey(BuildConfig.convertSdkKey)
+            .logLevel(LogLevel.DEBUG)
+        val environment = BuildConfig.convertEnvironment
+        if (environment.isNotBlank()) {
+            builder = builder.environment(environment)
+        }
+        return builder.build()
+    }
 
     /**
      * Builds an [EventSubscriber] that bridges the demo ViewModel's
@@ -288,7 +309,7 @@ class DemoApplication : Application() {
         val tracking = sdk?.let { runCatching { it.isTrackingEnabled() }.getOrNull() }
         ConfigSnapshot(
             sdkKey = BuildConfig.convertSdkKey,
-            environment = null,
+            environment = BuildConfig.convertEnvironment.takeIf { it.isNotBlank() },
             experienceKeys = experiences.mapNotNull { it.experienceKey },
             featureKeys = features.mapNotNull { it.key },
             trackingEnabled = tracking,
