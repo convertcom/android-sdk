@@ -35,6 +35,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.convert.sdk.demo.BuildConfig
 import com.convert.sdk.demo.viewmodel.ConversionResult
 import com.convert.sdk.demo.viewmodel.ExperienceResult
 import com.convert.sdk.demo.viewmodel.SdkViewModel
@@ -264,13 +265,23 @@ private fun OfflineResultCard(result: Any) {
 }
 
 /**
- * Hardcoded experience key tapped by the Offline screen's "Run
- * Experience" button. Matches the Experiences screen's
- * [DEFAULT_EXPERIENCE_KEY] verbatim so a developer bucketed on one
- * screen remains bucketed when they return to Offline — the SDK
- * sticky-bucketing path (Story 3.2) hits the same slot.
+ * Experience key tapped by the Offline screen's "Run Experience"
+ * button. Story 7.7 redirected the source of truth to
+ * [BuildConfig.convertExperienceKey] so a developer can override the
+ * key from `local.properties`; the fallback literal `"test-experience"`
+ * matches the pre-existing default and keeps the `OfflineScreenTest`
+ * click-path assertions green without changes.
+ *
+ * Reads the same `BuildConfig.convertExperienceKey` as the Experiences
+ * screen, so a developer bucketed on one screen remains bucketed when
+ * they return to Offline — the SDK sticky-bucketing path (Story 3.2)
+ * hits the same slot.
+ *
+ * `const` dropped because [BuildConfig] fields are `static final` Java
+ * strings but NOT Kotlin compile-time constants — `val` is the correct
+ * replacement. Runtime semantics are identical.
  */
-private const val DEFAULT_EXPERIENCE_KEY: String = "test-experience"
+private val DEFAULT_EXPERIENCE_KEY: String = BuildConfig.convertExperienceKey
 
 private val ONLINE_GREEN = Color(0xFF2E7D32)  // Material green 800
 private val OFFLINE_RED = Color(0xFFC62828)   // Material red 800
