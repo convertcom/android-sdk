@@ -25,8 +25,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.convert.sdk.demo.ui.component.ResultCard
-import com.convert.sdk.demo.ui.component.ResultCardItem
 import com.convert.sdk.demo.viewmodel.FeatureResult
 import com.convert.sdk.demo.viewmodel.SdkViewModel
 
@@ -41,16 +39,16 @@ import com.convert.sdk.demo.viewmodel.SdkViewModel
  *     "Run Features" (calls [SdkViewModel.runFeatures]).
  *  3. Either an empty-state text ("Tap a button to run a
  *     feature.") when [SdkViewModel.featureResults] is empty, or a
- *     [LazyColumn] of [ResultCard]s rendered newest-first.
+ *     [LazyColumn] of [FeatureResultCard]s rendered newest-first.
  *
- * Each [ResultCard] derives its title + items from the corresponding
+ * Each [FeatureResultCard] derives its title + items from the corresponding
  * [FeatureResult]:
  *  - Non-error: title = `"Feature: <featureKey>"`, items start with
  *    a `Status` row (`"enabled"` / `"disabled"`), then (when present)
  *    an `Experience` row with the owning experience's key, followed
  *    by one typed-variable row per entry in [FeatureResult.variables].
  *    Each variable row carries a `trailingAnnotation` of
- *    `"[<Type>]"` that the [ResultCard] renders in `labelMedium` +
+ *    `"[<Type>]"` that the [FeatureResultCard] renders in `labelMedium` +
  *    `outline` color per AC-4.
  *  - Error: title = [FeatureResult.errorMessage], items =
  *    `[("Hint", <errorHint>)]`, `isError = true`.
@@ -118,7 +116,7 @@ fun FeaturesScreen(viewModel: SdkViewModel) {
 }
 
 /**
- * Private helper that maps a [FeatureResult] to the [ResultCard]
+ * Private helper that maps a [FeatureResult] to the [FeatureResultCard]
  * shape. Extracted so the public composable stays under detekt's
  * function-size limits and reads top-to-bottom as "layout first,
  * rendering details second".
@@ -131,10 +129,10 @@ fun FeaturesScreen(viewModel: SdkViewModel) {
 @Composable
 private fun ResultCardForFeatureResult(result: FeatureResult) {
     if (result.isError) {
-        ResultCard(
+        FeatureResultCard(
             title = result.errorMessage ?: "No feature",
             items = listOfNotNull(
-                result.errorHint?.let { ResultCardItem(label = "Hint", value = it) },
+                result.errorHint?.let { FeatureResultCardItem(label = "Hint", value = it) },
             ),
             isError = true,
         )
@@ -143,17 +141,17 @@ private fun ResultCardForFeatureResult(result: FeatureResult) {
 
     val items = buildList {
         add(
-            ResultCardItem(
+            FeatureResultCardItem(
                 label = "Status",
                 value = if (result.enabled) "enabled" else "disabled",
             ),
         )
         result.experienceKey?.let { key ->
-            add(ResultCardItem(label = "Experience", value = key))
+            add(FeatureResultCardItem(label = "Experience", value = key))
         }
         result.variables.forEach { variable ->
             add(
-                ResultCardItem(
+                FeatureResultCardItem(
                     label = variable.name,
                     value = variable.value,
                     trailingAnnotation = "[${variable.typeLabel}]",
@@ -162,7 +160,7 @@ private fun ResultCardForFeatureResult(result: FeatureResult) {
         }
     }
 
-    ResultCard(
+    FeatureResultCard(
         title = "Feature: ${result.featureKey}",
         items = items,
     )

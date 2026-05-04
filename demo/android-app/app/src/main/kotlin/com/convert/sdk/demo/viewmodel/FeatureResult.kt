@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicLong
  * A single Features-screen outcome (Story 7.4).
  *
  * Produced by [SdkViewModel.runFeature] / [SdkViewModel.runFeatures] and
- * consumed by [com.convert.sdk.demo.ui.component.ResultCard] via the
+ * consumed by [com.convert.sdk.demo.ui.screen.FeatureResultCard] via the
  * Features screen.
  *
  * Two shapes — identical in spirit to 7.3's [ExperienceResult]:
