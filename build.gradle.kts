@@ -1,7 +1,8 @@
 plugins {
     alias(libs.plugins.detekt) apply false
     alias(libs.plugins.kotlin.jvm) apply false
-    alias(libs.plugins.kotlin.android) apply false
+    // No kotlin-android plugin: AGP 9.1.0 ships with built-in Kotlin support for
+    // com.android.library modules. See gradle/libs.versions.toml for the rationale.
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.android.library) apply false
 }
