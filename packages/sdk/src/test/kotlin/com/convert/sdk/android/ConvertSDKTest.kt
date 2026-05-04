@@ -73,10 +73,6 @@ internal class ConvertSDKTest {
         }
     }
 
-    private companion object {
-        const val CUSTOM_EVENT: String = "custom-event"
-    }
-
     @Test
     fun `builder captures all config options into ConvertConfig`() {
         val sdk = ConvertSDK.builder(appContext)
@@ -396,6 +392,15 @@ internal class ConvertSDKTest {
     }
 
     private companion object {
+        /**
+         * Custom (non-SystemEvents) name used by Story 2.4 AC-7 round-trip
+         * tests so the assertion target does not collide with SDK-fired
+         * events such as READY / CONFIG_UPDATED. Centralised here so the
+         * single literal change point keeps the round-trip and off-by-token
+         * tests aligned.
+         */
+        const val CUSTOM_EVENT: String = "custom-event"
+
         /**
          * Number of back-to-back `build()` measurements taken by the NFR1
          * timing test. With 5 samples we can drop the min and max
