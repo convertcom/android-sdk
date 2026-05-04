@@ -9,6 +9,7 @@ import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 /**
  * Top-level SDK configuration.
@@ -46,6 +47,12 @@ import kotlinx.serialization.Serializable
  * @property rules rule-engine tuning knobs.
  * @property logger logger configuration.
  * @property network networking behaviour (tracking on/off, cache level).
+ * @property mapper JS-SDK FR2 parity hook (`mapper`). Opaque consumer-
+ *   supplied object (callable, transformer, table, …) that future
+ *   bucketing / response-mapping stories will route data through. Stored
+ *   on this config for parity with the JS SDK config surface; not
+ *   serialized (`@Transient`) because it has no JSON shape, and not
+ *   read by any Story 2.1 code path. Wiring lands in a later story.
  */
 @Serializable
 public data class ConvertConfig(
@@ -60,6 +67,8 @@ public data class ConvertConfig(
     val rules: RulesConfig? = null,
     val logger: LoggerConfig? = null,
     val network: NetworkConfig? = null,
+    @Transient
+    val mapper: Any? = null,
 ) {
     /**
      * Redacts [sdkKeySecret] from the auto-generated `toString()` output.
@@ -88,6 +97,10 @@ public data class ConvertConfig(
         append(", rules=").append(rules)
         append(", logger=").append(logger)
         append(", network=").append(network)
+        // Render mapper as a presence marker only — the consumer-supplied
+        // object may be a callable closure capturing arbitrary state we
+        // don't want spilled into logs.
+        append(", mapper=").append(if (mapper != null) "[set]" else "null")
         append(")")
     }
 }
@@ -162,12 +175,19 @@ public data class EventsConfig(
  *   case-sensitive. JS SDK default is `true`.
  * @property negation default negation semantics for rule matching; `null`
  *   falls back to the JS SDK's runtime default.
+ * @property comparisonProcessor JS-SDK FR2 parity hook
+ *   (`rules.comparisonProcessor`). String identifier of the comparison
+ *   processor implementation the rule engine should use; `null` selects
+ *   the default. The Kotlin rule engine (Story 3.4+) consumes this; in
+ *   Story 2.1 it is captured for parity but not yet read.
  */
 @Serializable
 public data class RulesConfig(
     @SerialName("keys_case_sensitive")
     val keysCaseSensitive: Boolean? = null,
     val negation: String? = null,
+    @SerialName("comparison_processor")
+    val comparisonProcessor: String? = null,
 )
 
 /**

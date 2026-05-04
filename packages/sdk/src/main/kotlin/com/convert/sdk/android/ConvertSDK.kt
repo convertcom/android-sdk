@@ -445,6 +445,9 @@ public class ConvertSDK internal constructor(
         private var cacheLevel: String? = null
         private var rulesKeysCaseSensitive: Boolean? = null
         private var rulesNegation: String? = null
+        private var rulesComparisonProcessor: String? = null
+        private var networkSource: String? = null
+        private var mapper: Any? = null
 
         /** Sets the merchant SDK key. */
         public fun sdkKey(value: String): Builder = apply { sdkKey = value }
@@ -516,6 +519,37 @@ public class ConvertSDK internal constructor(
          */
         public fun rulesNegation(negation: String): Builder = apply {
             rulesNegation = negation
+        }
+
+        /**
+         * Sets the rule-engine comparison processor identifier
+         * (`rules.comparisonProcessor` in the JS SDK). The string is
+         * captured for FR2 parity; the rule engine introduced in a later
+         * story consumes it.
+         */
+        public fun rulesComparisonProcessor(value: String): Builder = apply {
+            rulesComparisonProcessor = value
+        }
+
+        /**
+         * Sets the platform `network.source` identifier appended to
+         * tracking payloads (e.g. `"android"`, `"web"`). Distinct from
+         * FR2's `network.source` "custom HTTP transport" hook which is
+         * out of scope for v1.0 (see AC-2 deferred list).
+         */
+        public fun networkSource(value: String): Builder = apply {
+            networkSource = value
+        }
+
+        /**
+         * Sets the JS-SDK `mapper` parity hook — an opaque consumer-
+         * supplied object that future bucketing / response-mapping stories
+         * will route data through. The Builder captures the reference so
+         * AC-2's full FR2 surface is satisfied; no Story 2.1 code path
+         * reads the value.
+         */
+        public fun mapper(value: Any?): Builder = apply {
+            mapper = value
         }
 
         /**
@@ -638,15 +672,26 @@ public class ConvertSDK internal constructor(
                 null
             }
             val loggerConfig = logLevel?.let { LoggerConfig(logLevel = it) }
-            val networkConfig = if (trackingEnabled != null || cacheLevel != null) {
-                NetworkConfig(tracking = trackingEnabled, cacheLevel = cacheLevel)
+            val networkConfig = if (
+                trackingEnabled != null || cacheLevel != null || networkSource != null
+            ) {
+                NetworkConfig(
+                    tracking = trackingEnabled,
+                    cacheLevel = cacheLevel,
+                    source = networkSource,
+                )
             } else {
                 null
             }
-            val rulesConfig = if (rulesKeysCaseSensitive != null || rulesNegation != null) {
+            val rulesConfig = if (
+                rulesKeysCaseSensitive != null ||
+                rulesNegation != null ||
+                rulesComparisonProcessor != null
+            ) {
                 RulesConfig(
                     keysCaseSensitive = rulesKeysCaseSensitive,
                     negation = rulesNegation,
+                    comparisonProcessor = rulesComparisonProcessor,
                 )
             } else {
                 null
@@ -664,6 +709,7 @@ public class ConvertSDK internal constructor(
                 rules = rulesConfig,
                 logger = loggerConfig,
                 network = networkConfig,
+                mapper = mapper,
             )
         }
 
