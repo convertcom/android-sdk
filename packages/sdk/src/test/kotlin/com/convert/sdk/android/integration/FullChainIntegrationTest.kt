@@ -62,11 +62,12 @@ import java.util.concurrent.TimeUnit
  * ### Wire-format expectations (Epic 5 parity)
  *
  * The JS-parity wire format (Stories 5.1 / 5.2 / 5.3) produces events
- * with `eventType` in `{"bucketing", "conversion"}`. Transactions fold
- * INTO a second `conversion` event carrying `goalData[]` (JS SDK
- * `sendTransaction` path in `javascript-sdk/packages/data/src/data-manager.ts`).
- * There is no `"tr"` or `"transaction"` event type — the Story 5.5 AC
- * wording is aligned to Epic 5 here (readiness Q1 auto-delegation).
+ * with `eventType` in `{"bucketing", "conversion"}`. Revenue data rides
+ * inside a single ConversionEvent's `goalData[]` field — there is no
+ * separate `"tr"` or `"transaction"` event type (F-008 / F-007 / F-015
+ * remediation). `trackConversion` fires exactly ONE
+ * `enqueueConversionEvent` call; the `goalData` list carries the
+ * amount/custom-dimension fields verbatim.
  *
  * ### Batch settings
  *
@@ -286,8 +287,9 @@ internal class FullChainIntegrationTest {
      * 6. Exactly one tracking POST recorded (AC-2 step 8).
      * 7. POST body contains a bucketing event whose data.variationId
      *    matches the returned variation (AC-3).
-     * 8. POST body contains a conversion event with the goal id AND a
-     *    second conversion event carrying goalData.amount = 49.99 (AC-4).
+     * 8. POST body contains exactly one conversion event with goalId AND
+     *    goalData.amount = 49.99 embedded (F-008 single-event contract,
+     *    AC-4).
      */
     @Test
     fun `full chain produces bucketing and conversion events in one POST`() {
@@ -312,8 +314,8 @@ internal class FullChainIntegrationTest {
         )
 
         // trackConversion dispatches onto sdk.scope.launch — wait until
-        // both conversion events (bare + transaction) land in the queue
-        // alongside the bucketing event already enqueued by runExperience.
+        // the single conversion event (F-008: goalData embedded) lands in
+        // the queue alongside the bucketing event from runExperience.
         awaitCondition { sdk.apiManager?.snapshotQueue()?.size == EXPECTED_QUEUE_SIZE }
 
         // --- AC-2 step 7 + 8 ---------------------------------------------
@@ -377,58 +379,51 @@ internal class FullChainIntegrationTest {
     }
 
     /**
-     * AC-4 — verifies the POSTed payload contains two conversion events:
+     * AC-4 — verifies the POSTed payload contains exactly ONE conversion
+     * event carrying both the goalId and the goalData array with
+     * `{key:amount, value:49.99}`.
      *
-     *  - bare hit `{goalId}`
-     *  - transaction `{goalId, goalData: [{key:amount, value:49.99}]}`
-     *
-     * matching the JS SDK's `sendConversion` + `sendTransaction` wire
-     * format (readiness Q1 auto-delegation).
+     * F-008 / F-007 / F-015 remediation: the JS SDK schema defines only
+     * two `eventType` values — `"bucketing"` and `"conversion"`. Revenue
+     * data rides inside a single `ConversionEvent.goalData` field; there
+     * is no separate `"tr"` event type. The prior spec AC wording (bare
+     * hit + separate transaction event) was incorrect and has been
+     * corrected here to match the actual `dispatchConversion` contract
+     * (single [com.convert.sdk.core.api.ApiManager.enqueueConversionEvent]
+     * call per F-008 remediation).
      */
     private fun assertConversionEventsWithTransaction(events: List<JsonObject>) {
         val conversionEvents = events.filter { eventTypeOf(it) == "conversion" }
         assertEquals(
-            "Expected 2 conversion events (bare + transaction), got " +
+            "Expected exactly 1 conversion event (goalData embedded per F-008), got " +
                 conversionEvents.size,
-            2,
+            1,
             conversionEvents.size,
         )
 
-        val bareConversion = conversionEvents.firstOrNull { event ->
-            event["data"]?.jsonObject?.get("goalData") == null
-        }
-        assertNotNull(
-            "Expected one bare conversion event (no goalData field)",
-            bareConversion,
-        )
+        val conversionEvent = conversionEvents.single()
+        val conversionData = conversionEvent["data"]?.jsonObject
+        assertNotNull("conversion event must carry a data object", conversionData)
         assertEquals(
-            "bare conversion event must carry the goalId",
+            "conversion event data.goalId must match the test fixture goal",
             "g-int",
-            bareConversion!!["data"]?.jsonObject?.get("goalId")?.jsonPrimitive?.contentOrNull,
+            conversionData!!["goalId"]?.jsonPrimitive?.contentOrNull,
         )
-
-        val transaction = conversionEvents.firstOrNull { event ->
-            event["data"]?.jsonObject?.get("goalData") != null
-        }
-        assertNotNull("Expected one transaction conversion event with goalData[]", transaction)
-        assertTransactionCarriesAmount(transaction!!)
+        assertConversionCarriesAmount(conversionEvent)
     }
 
     /**
-     * Asserts the transaction conversion event carries `{goalId, goalData}`
-     * with `goalData` containing an `{key:amount, value:GOAL_AMOUNT}`
-     * entry. Split from [assertConversionEventsWithTransaction] so the
+     * Asserts the single conversion event carries `{goalId, goalData}`
+     * with `goalData` containing a `{key:amount, value:GOAL_AMOUNT}`
+     * entry (F-008 single-event wire format — revenue lives in
+     * `ConversionEvent.goalData`, not a separate `"tr"` event).
+     * Split from [assertConversionEventsWithTransaction] so the
      * outer method stays under detekt's `LongMethod` ceiling.
      */
-    private fun assertTransactionCarriesAmount(transaction: JsonObject) {
-        val transactionData = transaction["data"]!!.jsonObject
-        assertEquals(
-            "transaction event must carry the goalId",
-            "g-int",
-            transactionData["goalId"]?.jsonPrimitive?.contentOrNull,
-        )
-        val goalDataArr = transactionData["goalData"]?.jsonArray
-        assertNotNull("transaction event must carry goalData array", goalDataArr)
+    private fun assertConversionCarriesAmount(conversionEvent: JsonObject) {
+        val conversionData = conversionEvent["data"]!!.jsonObject
+        val goalDataArr = conversionData["goalData"]?.jsonArray
+        assertNotNull("conversion event must carry goalData array", goalDataArr)
         val amountEntry = goalDataArr!!.firstOrNull { entry ->
             entry.jsonObject["key"]?.jsonPrimitive?.contentOrNull == "amount"
         }
@@ -485,7 +480,8 @@ internal class FullChainIntegrationTest {
             ),
         )
 
-        // Expect only the two conversion events to be enqueued (no bucketing).
+        // Expect only the one conversion event to be enqueued (no bucketing,
+        // F-008: goalData embedded in a single event).
         awaitCondition {
             sdk.apiManager?.snapshotQueue()?.size == EXPECTED_CONVERSION_ONLY_QUEUE_SIZE
         }
@@ -496,8 +492,8 @@ internal class FullChainIntegrationTest {
             events.none { eventTypeOf(it) == "bucketing" },
         )
         assertEquals(
-            "Two conversion events (bare + transaction) must still fire",
-            2,
+            "Exactly one conversion event (goalData embedded, F-008 contract) must fire",
+            1,
             events.count { eventTypeOf(it) == "conversion" },
         )
     }
@@ -632,15 +628,18 @@ internal class FullChainIntegrationTest {
 
         /**
          * Expected queue size after runExperience + trackConversion with
-         * goalData — one bucketing + two conversion (bare + transaction).
+         * goalData — one bucketing + one conversion (goalData embedded,
+         * F-008 remediation: single ConversionEvent carries goalData,
+         * no separate "tr" event type).
          */
-        private const val EXPECTED_QUEUE_SIZE: Int = 3
+        private const val EXPECTED_QUEUE_SIZE: Int = 2
 
         /**
          * Expected queue size when bucketing is suppressed by
-         * enableTracking=false — two conversion events only.
+         * enableTracking=false — one conversion event only (goalData
+         * embedded per F-008 single-event contract).
          */
-        private const val EXPECTED_CONVERSION_ONLY_QUEUE_SIZE: Int = 2
+        private const val EXPECTED_CONVERSION_ONLY_QUEUE_SIZE: Int = 1
 
         /** HTTP 404 status code — shorthand for the FixtureDispatcher. */
         private const val NOT_FOUND: Int = 404
