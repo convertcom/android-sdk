@@ -30,21 +30,26 @@ import org.robolectric.RobolectricTestRunner
  * Robolectric-backed tests for Story 4.2 AC-6:
  * `ConvertContext.trackConversion(goalKey, goalData?)` full-body behaviour.
  *
- * ### JS SDK parity — event shape overrides story wording
+ * ### Wire-shape contract (F-008 / F-017 remediation)
  *
- * The story text refers to a `hitGoal` tracking event and a separate `tr`
- * event. The JS SDK (`javascript-sdk/packages/data/src/data-manager.ts`
- * `sendConversion` + `sendTransaction`) and the OpenAPI-generated
- * [com.convert.sdk.core.model.generated.ConversionEvent] type both model
- * these as TWO independent conversion events carrying `{goalId}` and
- * `{goalId, goalData}` respectively, **both** with `eventType = "conversion"`.
- * The per-story readiness-assessment auto-delegated Q1 resolved this in
- * favour of parity; these tests encode the parity interpretation via the
- * Story 4.2 SDK-1 [com.convert.sdk.core.api.ApiManager.enqueueConversionEvent]
- * stub's `(visitorId, goalId, goalData?)` signature — two separate calls
- * when `goalData` is non-empty, one call otherwise. Story 5.1 folds the
- * two calls into a single `enqueue(VisitorTrackingEvents)` once the
- * outbound queue lands.
+ * The OpenAPI-generated [com.convert.sdk.core.model.generated.ConversionEvent]
+ * and the JS SDK type schema at
+ * `javascript-sdk/packages/types/src/config/types.gen.ts:2749-2757` define
+ * only TWO event types — `'bucketing'` and `'conversion'` — so a "tr"
+ * event type does not exist on the wire. A revenue-bearing conversion
+ * is a SINGLE `ConversionEvent` whose `goalData` carries the
+ * amount / productsCount / transactionId / customDimensionN entries
+ * alongside `goalId`. These tests therefore assert exactly ONE
+ * [com.convert.sdk.core.api.ApiManager.enqueueConversionEvent] call per
+ * `trackConversion` invocation: `goalData = null` for a bare goal hit,
+ * the caller's list (verbatim) when revenue fields are present.
+ *
+ * The corrected Story 4.2 (post-F-008 remediation) explicitly diverges
+ * from the JS SDK `data-manager.ts:1044-1048` dual-call pattern
+ * (`sendConversion()` + `sendTransaction()`, two separate enqueues both
+ * with eventType `'conversion'`) in favour of the schema-strict single
+ * call. Story 5.1 folds this into a single
+ * `enqueue(VisitorTrackingEvents)` once the outbound queue lands.
  *
  * ### Why Robolectric
  *
@@ -107,10 +112,10 @@ internal class ConvertContextTrackConversionTest {
         return sdk
     }
 
-    // --- AC-1: bare trackConversion enqueues one "hitGoal" event ----------
+    // --- AC-1: bare trackConversion enqueues one conversion event --------
 
     @Test
-    fun `trackConversion enqueues hitGoal event`() {
+    fun `trackConversion enqueues conversion event`() {
         val sdk = buildSdk(testConfig())
         val recordingApi = RecordingConversionApiManager()
         sdk.attachTestApiManager(recordingApi)
@@ -119,7 +124,8 @@ internal class ConvertContextTrackConversionTest {
         ctx.trackConversion("purchase")
 
         awaitCondition { recordingApi.enqueueConversionCalls.isNotEmpty() }
-        // Bare goal-hit path → exactly one call with goalData == null.
+        // Bare goal-hit path → exactly one call with goalData == null
+        // (single-event wire shape per ConversionEvent schema).
         assertEquals(1, recordingApi.enqueueConversionCalls.size)
         val call = recordingApi.enqueueConversionCalls.single()
         assertEquals("visitor_abc", call.visitorId)
@@ -127,10 +133,17 @@ internal class ConvertContextTrackConversionTest {
         assertNull("bare call should have null goalData", call.goalData)
     }
 
-    // --- AC-1: with-goalData trackConversion also enqueues transaction event
+    // --- AC-1: with-goalData trackConversion enqueues a single conversion
+    //           event whose goalData carries the revenue fields (F-008 / F-017).
 
+    // Story 4.2 AC-6 (post-F-008 / F-017 remediation) prescribes the exact
+    // test name verbatim. The Kotlin backticked-function-name form puts the
+    // declaration over detekt's 120-char MaxLineLength threshold; suppressing
+    // locally preserves the story-mandated wording without weakening the
+    // rule globally.
+    @Suppress("MaxLineLength", "MaximumLineLength")
     @Test
-    fun `trackConversion with amount enqueues tr event alongside hitGoal`() {
+    fun `trackConversion with amount enqueues single conversion event with goalData containing amount, productsCount, transactionId`() {
         val sdk = buildSdk(testConfig())
         val recordingApi = RecordingConversionApiManager()
         sdk.attachTestApiManager(recordingApi)
@@ -150,24 +163,25 @@ internal class ConvertContextTrackConversionTest {
 
         ctx.trackConversion("purchase", goalData = goalData)
 
-        awaitCondition { recordingApi.enqueueConversionCalls.size >= 2 }
-        // Parity with JS SDK data-manager.ts:1044-1048 —
-        // sendConversion() + sendTransaction() both run when goalData is present.
+        awaitCondition { recordingApi.enqueueConversionCalls.isNotEmpty() }
+        // Schema-strict single-event shape (F-008 / F-017 remediation):
+        // exactly ONE enqueueConversionEvent call. The single call's goalData
+        // carries amount / productsCount / transactionId. There is NO
+        // second enqueue with any other event shape — `tr` is not a wire
+        // event type per types.gen.ts:2749-2757.
         assertEquals(
-            "expected one bare hit + one transaction call, got ${recordingApi.enqueueConversionCalls}",
-            2,
+            "expected exactly one conversion enqueue, got ${recordingApi.enqueueConversionCalls}",
+            1,
             recordingApi.enqueueConversionCalls.size,
         )
-        val bare = recordingApi.enqueueConversionCalls[0]
-        val transaction = recordingApi.enqueueConversionCalls[1]
-        // Call order matters: bare conversion first (sendConversion), then
-        // transaction (sendTransaction) — matches JS SDK ordering so downstream
-        // enrichment (Story 5.1 bucketingData merge) sees the goal-hit first.
-        assertNull("first call is bare goal hit", bare.goalData)
-        assertNotNull("second call carries the transaction payload", transaction.goalData)
-        assertEquals(3, transaction.goalData?.size)
-        assertEquals("g-42", bare.goalId)
-        assertEquals("g-42", transaction.goalId)
+        val call = recordingApi.enqueueConversionCalls.single()
+        assertEquals("visitor_abc", call.visitorId)
+        assertEquals("g-42", call.goalId)
+        assertNotNull("call must carry the goalData list", call.goalData)
+        assertEquals(3, call.goalData?.size)
+        assertEquals(GoalDataKey.AMOUNT, call.goalData?.get(0)?.key)
+        assertEquals(GoalDataKey.PRODUCTS_COUNT, call.goalData?.get(1)?.key)
+        assertEquals(GoalDataKey.TRANSACTION_ID, call.goalData?.get(2)?.key)
     }
 
     // --- AC-1: unknown goal → WARN, no enqueue, no fire ------------------

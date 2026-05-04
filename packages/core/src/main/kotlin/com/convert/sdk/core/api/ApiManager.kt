@@ -406,16 +406,17 @@ public open class ApiManager(
 
     /**
      * Stub — Story 4.2 SDK-1 placeholder for the conversion-event enqueue
-     * that Story 5.1 will implement. Callers (primarily
-     * [com.convert.sdk.android.ConvertContext.trackConversion]) invoke this
-     * on every conversion: once with `goalData = null` for the bare goal
-     * hit, plus a second time with the caller's goal-data list when
-     * transaction metadata (amount / productsCount / transactionId /
-     * customDimensionN) is present. Matches the JS SDK
-     * `javascript-sdk/packages/data/src/data-manager.ts` `sendConversion()`
-     * + `sendTransaction()` split — two independent enqueues, both with
-     * `eventType = "conversion"` per the OpenAPI-generated
-     * [com.convert.sdk.core.model.generated.ConversionEvent] wire format.
+     * that Story 5.1 will implement. Called EXACTLY ONCE per
+     * [com.convert.sdk.android.ConvertContext.trackConversion] invocation
+     * (F-008 / F-017 remediation): a single `ConversionEvent` carries
+     * `goalId` plus an optional `goalData` list when revenue /
+     * custom-dimension metadata is present. Matches the OpenAPI-generated
+     * [com.convert.sdk.core.model.generated.ConversionEvent] wire format
+     * and the JS SDK type schema at
+     * `javascript-sdk/packages/types/src/config/types.gen.ts:2749-2757`
+     * which declares only two event types — `'bucketing'` and
+     * `'conversion'`. There is no `'tr'` event type; revenue rides
+     * inside the conversion event's `goalData`.
      *
      * Declared `open` so tests in the `:packages:sdk` module can override
      * it with a recording spy — same pattern as [enqueueBucketingEvent].
@@ -426,10 +427,10 @@ public open class ApiManager(
      * @param goalId the stable id of the conversion goal (not the goal
      *   key — tracking payload references the id per
      *   [com.convert.sdk.core.model.generated.ConversionEvent.goalId]).
-     * @param goalData optional list of transaction-payload entries
-     *   ([com.convert.sdk.core.model.GoalData]). `null` → bare conversion
-     *   hit (no transaction metadata); non-null → the second call that
-     *   carries the transaction body alongside a previous bare call.
+     * @param goalData optional list of payload entries
+     *   ([com.convert.sdk.core.model.GoalData]) — `null` for a bare
+     *   conversion hit, non-null when the caller supplied revenue or
+     *   custom-dimension fields.
      */
     public open fun enqueueConversionEvent(
         visitorId: String,
