@@ -377,13 +377,22 @@ public class ConvertSDK internal constructor(
     /**
      * Creates a [ConvertContext] for the **persisted auto-visitor-id**.
      *
-     * Story 3.1 AC-1: on the first call, generates a fresh UUID v4 via
+     * Story 3.1 AC-1: on the first call, generates a fresh UUID via
      * [java.util.UUID.randomUUID] and persists it to the SDK's
      * SharedPreferences file (`com.convert.sdk.visitor`) under the key
      * [VISITOR_ID_KEY]. On every subsequent call — within the same
      * process or after an app restart — the **same** persisted UUID is
      * returned. The id is lost only on app uninstall or explicit storage
      * clear.
+     *
+     * `randomUUID()` produces a version-4 (randomly generated) UUID per
+     * the Java SE specification —
+     * [Java SE 11 — `java.util.UUID.randomUUID`](https://docs.oracle.com/en/java/docs/api/java.base/java/util/UUID.html#randomUUID()):
+     * "Static factory to retrieve a type 4 (pseudo randomly generated)
+     * UUID. The UUID is generated using a cryptographically strong
+     * pseudo random number generator." This contract is what guarantees
+     * NFR8 (no correlation to user identity); changing the generator
+     * away from `randomUUID()` would void that guarantee.
      *
      * Thread safety: the read-generate-persist sequence is guarded by
      * [visitorIdLock] so two concurrent cold-start calls from different
