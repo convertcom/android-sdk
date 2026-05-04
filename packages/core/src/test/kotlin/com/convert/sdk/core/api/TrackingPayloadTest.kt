@@ -7,18 +7,20 @@ package com.convert.sdk.core.api
 
 import com.convert.sdk.core.config.ConvertConfig
 import com.convert.sdk.core.config.NetworkConfig
+import com.convert.sdk.core.model.BucketingEvent
+import com.convert.sdk.core.model.ConversionEvent
+import com.convert.sdk.core.model.GoalData
+import com.convert.sdk.core.model.GoalDataKey
+import com.convert.sdk.core.model.TrackingEvent
+import com.convert.sdk.core.model.VisitorEvent
 import com.convert.sdk.core.model.generated.ConfigProject
 import com.convert.sdk.core.model.generated.ConfigResponseData
-import com.convert.sdk.core.port.PersistedEvent
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -41,7 +43,7 @@ import org.junit.jupiter.api.Test
  * ### Relationship to `TrackingPayloadBuilderTest`
  *
  * [TrackingPayloadBuilderTest] asserts the builder's GROUPING and
- * SEGMENTS-SNAPSHOT semantics from the PersistedEvent input side. THIS
+ * SEGMENTS-SNAPSHOT semantics from the VisitorEvent input side. THIS
  * file asserts the EVENT-SHAPE contract that flows THROUGH the builder —
  * `eventType: "bucketing"` / `"conversion"` tokens, the `data` sub-object
  * shape, the `goalData[]` sub-array for transaction-style conversions.
@@ -97,85 +99,52 @@ internal class TrackingPayloadTest {
     // region — fixtures
 
     /**
-     * Mirrors `ApiManager.enqueueBucketingEvent` — the exact JsonObject shape
-     * a live SDK produces for a bucketing event.
+     * Story 5.1 sealed-hierarchy refactor: events are typed
+     * [BucketingEvent] / [ConversionEvent] instances, not raw JsonObjects.
+     * [TrackingPayloadBuilder] (Story 5.3) is responsible for emitting the
+     * canonical wire shape — these fixtures provide the inputs; the
+     * assertions below verify the output the builder produces.
      */
-    private fun bucketingEvent(experienceId: String, variationId: String): JsonObject =
-        buildJsonObject {
-            put("eventType", "bucketing")
-            put(
-                "data",
-                buildJsonObject {
-                    put("experienceId", experienceId)
-                    put("variationId", variationId)
-                },
-            )
-        }
+    private fun bucketingEvent(experienceId: String, variationId: String): BucketingEvent =
+        BucketingEvent(experienceId = experienceId, variationId = variationId)
+
+    /** Plain conversion (no goalData) — matches `ApiManager.enqueueConversionEvent` with goalData = null. */
+    private fun conversionEvent(goalId: String): ConversionEvent =
+        ConversionEvent(goalId = goalId)
 
     /**
-     * Mirrors `ApiManager.enqueueConversionEvent` with `goalData = null` —
-     * the plain goal-hit shape.
-     */
-    private fun conversionEvent(goalId: String): JsonObject =
-        buildJsonObject {
-            put("eventType", "conversion")
-            put("data", buildJsonObject { put("goalId", goalId) })
-        }
-
-    /**
-     * Mirrors `ApiManager.enqueueConversionEvent` with non-empty `goalData` —
-     * the transaction shape (amount / productsCount / transactionId folded
-     * into the goalData array). Key names are camelCase per
-     * `GoalDataKey` `@SerialName` declarations.
+     * Transaction-shaped conversion: revenue / productsCount / transactionId
+     * fold into [ConversionEvent.goalData] — there is no separate
+     * `TransactionEvent` type. Keys use the [GoalDataKey] enum which
+     * serialises camelCase via `@SerialName`.
      */
     private fun transactionConversionEvent(
         goalId: String,
         amount: Double,
         productsCount: Int,
         transactionId: String,
-    ): JsonObject =
-        buildJsonObject {
-            put("eventType", "conversion")
-            put(
-                "data",
-                buildJsonObject {
-                    put("goalId", goalId)
-                    put(
-                        "goalData",
-                        buildJsonArray {
-                            add(
-                                buildJsonObject {
-                                    put("key", "amount")
-                                    put("value", JsonPrimitive(amount))
-                                },
-                            )
-                            add(
-                                buildJsonObject {
-                                    put("key", "productsCount")
-                                    put("value", JsonPrimitive(productsCount))
-                                },
-                            )
-                            add(
-                                buildJsonObject {
-                                    put("key", "transactionId")
-                                    put("value", JsonPrimitive(transactionId))
-                                },
-                            )
-                        },
-                    )
-                },
-            )
-        }
+    ): ConversionEvent = ConversionEvent(
+        goalId = goalId,
+        goalData = listOf(
+            GoalData(key = GoalDataKey.AMOUNT, value = JsonPrimitive(amount)),
+            GoalData(key = GoalDataKey.PRODUCTS_COUNT, value = JsonPrimitive(productsCount)),
+            GoalData(key = GoalDataKey.TRANSACTION_ID, value = JsonPrimitive(transactionId)),
+        ),
+    )
 
-    private fun persistedEvent(
+    /**
+     * Wraps a [TrackingEvent] in a [VisitorEvent] with the given visitorId
+     * and an empty segments snapshot. Story 5.3's "Port Contract Amendment"
+     * replaced the previous `PersistedEvent(timestampMs = ...)` shape with
+     * [VisitorEvent] — timestamp metadata no longer travels on the wire.
+     */
+    private fun visitorEvent(
         visitorId: String,
-        event: JsonObject,
-        timestampMs: Long,
-    ): PersistedEvent = PersistedEvent(
+        event: TrackingEvent,
+    ): VisitorEvent = VisitorEvent(
         visitorId = visitorId,
-        segments = emptyMap(),
+        segments = null,
         event = event,
-        timestampMs = timestampMs,
     )
 
     private fun config(): ConvertConfig = ConvertConfig(
@@ -200,7 +169,7 @@ internal class TrackingPayloadTest {
     @Test
     fun `AC-2 top-level payload has the expected keys and visitors are well-formed`() {
         val events = listOf(
-            persistedEvent("v-1", bucketingEvent("exp-1", "var-a"), 1_000L),
+            visitorEvent("v-1", bucketingEvent("exp-1", "var-a")),
         )
 
         val body = TrackingPayloadBuilder.build(events, config(), json)
@@ -239,13 +208,14 @@ internal class TrackingPayloadTest {
      * STORY-VS-IMPL CORRECTION: story draft said `eventType: "viewExp"` with
      * `data.timestamp` — shipped contract is `eventType: "bucketing"` with
      * `data: { experienceId, variationId }` and NO timestamp inside `data`.
-     * Timestamps travel as `PersistedEvent.timestampMs` metadata (used for
-     * dedup only) and are not part of the wire payload's event data.
+     * Per Story 5.1's sealed-hierarchy refactor, [BucketingEvent] has no
+     * timestamp field at all — there is nothing on the wire that carries
+     * a per-event timestamp.
      */
     @Test
     fun `AC-3 bucketing event serializes as eventType bucketing with experienceId and variationId`() {
         val events = listOf(
-            persistedEvent("v-1", bucketingEvent("exp-a", "var-b"), 100L),
+            visitorEvent("v-1", bucketingEvent("exp-a", "var-b")),
         )
 
         val body = TrackingPayloadBuilder.build(events, config(), json)
@@ -272,7 +242,7 @@ internal class TrackingPayloadTest {
     @Test
     fun `AC-4 conversion event serializes as eventType conversion with goalId`() {
         val events = listOf(
-            persistedEvent("v-1", conversionEvent("goal-x"), 200L),
+            visitorEvent("v-1", conversionEvent("goal-x")),
         )
 
         val body = TrackingPayloadBuilder.build(events, config(), json)
@@ -303,7 +273,7 @@ internal class TrackingPayloadTest {
     @Test
     fun `AC-5 transaction conversion event carries goalData array with camelCase keys`() {
         val events = listOf(
-            persistedEvent(
+            visitorEvent(
                 "v-1",
                 transactionConversionEvent(
                     goalId = "purchase",
@@ -311,7 +281,6 @@ internal class TrackingPayloadTest {
                     productsCount = 2,
                     transactionId = "abc",
                 ),
-                300L,
             ),
         )
 
@@ -363,10 +332,10 @@ internal class TrackingPayloadTest {
     @Test
     fun `AC-6 multi-visitor payload groups events by visitorId`() {
         val events = listOf(
-            persistedEvent("v-1", bucketingEvent("exp-1", "var-a"), 100L),
-            persistedEvent("v-2", bucketingEvent("exp-1", "var-b"), 200L),
-            persistedEvent("v-2", conversionEvent("goal-z"), 300L),
-            persistedEvent("v-1", conversionEvent("goal-y"), 400L),
+            visitorEvent("v-1", bucketingEvent("exp-1", "var-a")),
+            visitorEvent("v-2", bucketingEvent("exp-1", "var-b")),
+            visitorEvent("v-2", conversionEvent("goal-z")),
+            visitorEvent("v-1", conversionEvent("goal-y")),
         )
 
         val body = TrackingPayloadBuilder.build(events, config(), json)
