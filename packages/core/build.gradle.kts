@@ -3,12 +3,11 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
-java {
-    toolchain {
-        languageVersion.set(JavaLanguageVersion.of(17))
-    }
-}
-
+// Authoritative JVM toolchain for this module.
+// Per the Kotlin Gradle plugin docs (https://kotlinlang.org/docs/gradle-configure-project.html#gradle-java-toolchains-support),
+// `jvmToolchain(17)` automatically sets `jvmTarget = "17"` for the Kotlin compiler AND
+// `sourceCompatibility/targetCompatibility = VERSION_17` for AGP 8+. Any duplicate
+// declaration via `java { toolchain {} }` produces a Gradle warning and must be omitted.
 kotlin {
     jvmToolchain(17)
     compilerOptions {
