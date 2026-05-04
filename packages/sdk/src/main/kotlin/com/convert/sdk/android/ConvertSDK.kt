@@ -42,6 +42,19 @@ public class ConvertSDK internal constructor(
     private val eventSubscribers: MutableMap<String, MutableList<EventCallback>> = mutableMapOf()
 
     /**
+     * Runtime tracking-enabled flag. Seeded from
+     * [ConvertConfig.network]?.tracking when the SDK is built; the public
+     * setter [setTrackingEnabled] flips it at runtime.
+     *
+     * Story 5.4 wires this flag into the real `ApiManager.setTrackingEnabled`
+     * delegation path; for the Story 1.2 skeleton it lives on this class
+     * so the public API surface is frozen now. The `true` fallback
+     * matches `ConfigDefaults.DEFAULT_TRACKING_ENABLED` (which is
+     * `internal` to the core module and cannot be referenced from here).
+     */
+    private var trackingEnabled: Boolean = config.network?.tracking ?: true
+
+    /**
      * Creates a [ConvertContext] for a freshly minted visitor id.
      *
      * A random UUID stands in for the visitor id until Story 3.1 wires
@@ -131,6 +144,32 @@ public class ConvertSDK internal constructor(
         // TODO(Story 2.4): propagate through the internal event bus
         eventSubscribers[event]?.remove(callback)
         return this
+    }
+
+    /**
+     * Flips the runtime tracking-enabled flag.
+     *
+     * Story 5.4 wires this into `ApiManager.setTrackingEnabled` so the
+     * flag is read on every enqueue. For the Story 1.2 skeleton the flag
+     * is held locally so the public API surface is frozen now and Story
+     * 5.4 only swaps the implementation, not the signature.
+     *
+     * @param enabled `true` to enable outbound tracking, `false` to drop
+     *   subsequent events at the enqueue boundary.
+     */
+    public fun setTrackingEnabled(enabled: Boolean) {
+        // TODO(Story 5.4): delegate to apiManager.setTrackingEnabled(enabled)
+        trackingEnabled = enabled
+    }
+
+    /**
+     * Reports whether outbound tracking is currently enabled.
+     *
+     * @return the current value of the tracking-enabled flag.
+     */
+    public fun isTrackingEnabled(): Boolean {
+        // TODO(Story 5.4): delegate to apiManager.isTrackingEnabled()
+        return trackingEnabled
     }
 
     public companion object {
