@@ -35,6 +35,14 @@
 # full mode will strip these if nothing references them directly, breaking
 # JSON (de)serialization at runtime. Keep both the Companion object and the
 # $serializer class for every @Serializable in com.convert.sdk.core.**.
+#
+# Pattern source — the canonical kotlinx.serialization ProGuard/R8 rules,
+# scoped here to the com.convert.sdk.core.** package (the upstream rules use
+# `class **` patterns; we narrow the scope to avoid affecting consumer code):
+#   https://github.com/Kotlin/kotlinx.serialization/blob/master/rules/common.pro
+# (Verify against the version pinned in gradle/libs.versions.toml on every
+# kotlinx.serialization upgrade — the rule shape is stable since 1.4 but
+# new directives may be added in major releases.)
 -keepclasseswithmembers class com.convert.sdk.core.model.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
