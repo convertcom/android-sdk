@@ -83,7 +83,58 @@ Add three GitHub repository secrets:
 | `GPG_KEY_PASSWORD` | The passphrase you chose when creating the key. |
 | `GPG_KEY_ID` | Optional. The 16-hex-digit long key ID. The vanniktech plugin can derive this from the key itself, so leave it unset unless you maintain multiple signing keys. |
 
-### 4. Repository secrets summary
+### 4. Run the R8 consumer-app verification (one-time, blocks v1.0.0)
+
+AC-7 / AC-11 of Story 1.4 require a runtime check that the
+`consumer-rules.pro` keep directives are sufficient: a Release-mode
+Android app with R8 full mode must be able to construct `ConvertSDK`
+and call its public surface without `ClassNotFoundException` /
+`NoSuchMethodException` from over-aggressive R8 stripping.
+
+This was **deferred during initial implementation** because the dev
+sandbox lacked the Android SDK + emulator tooling. Before the first
+`v1.0.0` Maven Central publish, run this check by hand:
+
+1. `./gradlew :packages:sdk:publishToMavenLocal :packages:core:publishToMavenLocal`
+   — publishes both artifacts at the placeholder version
+   `0.0.0` to `~/.m2/repository/com/convert/`.
+2. Create a throwaway Android app outside this repo (e.g. under
+   `/tmp/consumer-test/`) with:
+   - `repositories { mavenLocal(); google(); mavenCentral() }`
+   - `implementation("com.convert:sdk-android:0.0.0")`
+   - R8 enabled in `release` build type (`isMinifyEnabled = true`,
+     default proguard files plus the consumer rules pulled in via the
+     SDK AAR — no extra rules needed in the consumer's own
+     `proguard-rules.pro`).
+3. Add a one-shot call in `Application.onCreate()`:
+   ```kotlin
+   val sdk = ConvertSDK.builder(this).sdkKey("test-key").build()
+   val ctx = sdk.createContext()
+   ctx.runExperience("any")          // expect: null (no config loaded)
+   ctx.trackConversion("any-goal")   // expect: no-op, no crash
+   ```
+4. Build the Release variant: `./gradlew :app:assembleRelease`. Confirm:
+   - The build completes without R8 errors about missing
+     `com.convert.sdk.*` types or kotlinx.serialization `$serializer`
+     classes.
+   - Installing and launching the APK does not crash with
+     `ClassNotFoundException` for any `com.convert.sdk.*` symbol.
+5. Record the four-point outcome (a) dependency resolves, (b) R8
+   Release build succeeds, (c) `ConvertSDK.builder(...).build()` runs,
+   (d) `runExperience(...)` returns null without crashing — in the
+   story's **Dev Agent Record** section, then proceed with the first
+   release.
+
+If R8 strips a class, broaden the rules in
+`packages/sdk/consumer-rules.pro` (NEVER ask consumer apps to add their
+own keep rules — the SDK's keep rules are its R8 contract). Then re-run
+the check from step 1.
+
+A future Story 1.3 hardening task may codify this as a post-merge CI
+job (build a consumer composite project against `mavenLocal()`); until
+then the manual run is the only verification.
+
+### 5. Repository secrets summary
 
 The full set of secrets the release workflow reads:
 
