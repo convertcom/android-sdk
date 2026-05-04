@@ -12,13 +12,21 @@ plugins {
     alias(libs.plugins.dokka)
 }
 
-// Story 6.1: Dokka source-set tuning. Exclude the auto-generated OpenAPI
-// types — they carry ApiModel-derived descriptions (e.g. "[incremental_number]",
-// "[ISO_datetime]") that are human-language annotations, not Kotlin symbol
-// references. Dokka (V2) tries to link them and emits noisy warnings.
-// Same exclusion as Kover's coverage filter.
+// Story 6.1: Dokka source-set tuning.
+// 1) `jdkVersion.set(17)` aligns Dokka's analyser with the
+//    `jvmToolchain(17)` pinned below (Story 1.1). Without this, Dokka
+//    runs under whatever JDK the Gradle daemon picked, which can diverge
+//    from the Kotlin compiler's target on dev machines that auto-pick a
+//    higher JDK. CI is unaffected (Story 1-3 provisions Temurin 17), but
+//    explicit alignment removes the dev-vs-CI doc drift class. [F-079]
+// 2) Exclude the auto-generated OpenAPI types — they carry ApiModel-derived
+//    descriptions (e.g. "[incremental_number]", "[ISO_datetime]") that are
+//    human-language annotations, not Kotlin symbol references. Dokka (V2)
+//    tries to link them and emits noisy warnings. Same exclusion as Kover's
+//    coverage filter.
 dokka {
     dokkaSourceSets.named("main") {
+        jdkVersion.set(17)
         perPackageOption {
             matchingRegex.set("com\\.convert\\.sdk\\.core\\.model\\.generated(\\..*)?")
             suppress.set(true)

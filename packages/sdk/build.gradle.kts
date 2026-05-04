@@ -21,6 +21,20 @@ plugins {
     alias(libs.plugins.dokka)
 }
 
+// Story 6.1 [F-079]: pin Dokka's analyser to JDK 17 so it matches the
+// `jvmToolchain(17)` configured below (Story 1.1). Without this, Dokka
+// runs under whatever JDK the Gradle daemon picked, which can diverge
+// from the Kotlin compiler's target on dev machines that auto-pick a
+// higher JDK. CI is already on Temurin 17 (Story 1-3) so this is a
+// dev-environment guard. `configureEach` is used because AGP-derived
+// source sets are named after the published variant (e.g. `release`),
+// not `main` as on a Kotlin-JVM module.
+dokka {
+    dokkaSourceSets.configureEach {
+        jdkVersion.set(17)
+    }
+}
+
 android {
     namespace = "com.convert.sdk.android"
     compileSdk = 35
