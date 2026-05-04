@@ -459,11 +459,23 @@ public open class ApiManager(
      * queue, re-serializing the [TrackingEvent] into the internal wire-JSON
      * format.
      *
+     * ### Story 5.4 AC-2 — tracking-flag guard
+     *
+     * The corrected AC-2 requires every queue-adding method to honour the
+     * tracking flag. Without this guard, persisted events from before a
+     * consent revocation would resume flowing into the live queue on
+     * foreground resume. The check runs BEFORE the monitor lock so a
+     * disabled-tracking call has zero contention cost.
+     *
      * @param events events read from [com.convert.sdk.core.port.EventQueue];
      *   may be empty (caller short-circuits on empty, but a no-op is safe).
      */
     public open fun enqueueAll(events: List<com.convert.sdk.core.model.VisitorEvent>) {
         if (events.isEmpty()) return
+        if (!trackingEnabled.get()) {
+            logger.debug("ApiManager.enqueueAll() skipped: tracking disabled", TAG)
+            return
+        }
         synchronized(queueLock) {
             events.forEach { ve ->
                 val internalEvent = toInternalVisitorEvent(ve)

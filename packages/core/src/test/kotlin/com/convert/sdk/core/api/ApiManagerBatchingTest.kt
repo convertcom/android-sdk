@@ -404,53 +404,47 @@ internal class ApiManagerBatchingTest {
     }
 
     /**
-     * Story 5.4 AC-2 — `enqueueAll` (the re-enqueue path used by
-     * [com.convert.sdk.android.ConvertSDK.onNetworkAvailable] /
+     * Story 5.4 AC-2 — `enqueueAll` (the rehydrate path used by
      * [com.convert.sdk.android.ConvertSDK.onProcessStart]) must also
      * honour the tracking flag. Without this guard, persisted events from
-     * before a consent revocation would continue flowing into the queue
-     * on network restore.
+     * before a consent revocation would resume flowing into the queue
+     * on foreground resume.
+     *
+     * The corrected AC-2 names `enqueueAll` explicitly as a queue-adding
+     * method that must check `isTrackingEnabled` at the top.
      */
     @Test
     fun `enqueueAll is a no-op when tracking is disabled`() = runTest {
         val http = FakeHttpClient(statusCode = 200, body = "{}")
         val api = ApiManager(http, CapturingLogger(), configWithProject(tracking = false), json)
+        assertFalse(api.isTrackingEnabled())
 
-        val persisted = com.convert.sdk.core.port.PersistedEvent(
+        val persisted = com.convert.sdk.core.model.VisitorEvent(
             visitorId = "v-1",
-            segments = emptyMap(),
-            event = kotlinx.serialization.json.buildJsonObject {
-                put("eventType", kotlinx.serialization.json.JsonPrimitive("bucketing"))
-                put(
-                    "data",
-                    kotlinx.serialization.json.buildJsonObject {
-                        put("experienceId", kotlinx.serialization.json.JsonPrimitive("e-1"))
-                        put("variationId", kotlinx.serialization.json.JsonPrimitive("var-a"))
-                    },
-                )
-            },
-            timestampMs = 1_700_000_000L,
+            segments = null,
+            event = com.convert.sdk.core.model.BucketingEvent(
+                experienceId = "e-1",
+                variationId = "var-a",
+            ),
         )
 
-        api.enqueueAllForTest(listOf(persisted))
+        api.enqueueAll(listOf(persisted))
 
         // Queue must stay empty — no events accepted while disabled.
         assertEquals(
             0,
             api.snapshotQueueForTest().size,
-            "enqueueAll must short-circuit before taking the queue lock",
+            "enqueueAll must short-circuit when tracking is disabled",
         )
 
         // Re-enable: the same call now accepts events.
         api.setTrackingEnabled(true)
-        api.enqueueAllForTest(listOf(persisted))
+        api.enqueueAll(listOf(persisted))
         assertEquals(
             1,
             api.snapshotQueueForTest().size,
             "enqueueAll must accept events after re-enable",
         )
-
-        api.cancelTimerForTest()
     }
 
     // ------------------------------------------------------------------

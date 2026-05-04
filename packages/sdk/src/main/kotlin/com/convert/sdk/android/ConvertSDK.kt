@@ -647,19 +647,6 @@ public class ConvertSDK internal constructor(
     }
 
     /**
-     * Runtime tracking-enabled flag. Seeded from
-     * [ConvertConfig.network]?.tracking when the SDK is built; the public
-     * setter [setTrackingEnabled] flips it at runtime.
-     *
-     * Story 5.4 wires this flag into the real `ApiManager.setTrackingEnabled`
-     * delegation path; for the Story 1.2 skeleton it lives on this class
-     * so the public API surface is frozen now. The `true` fallback
-     * matches `ConfigDefaults.DEFAULT_TRACKING_ENABLED` (which is
-     * `internal` to the core module and cannot be referenced from here).
-     */
-    private var trackingEnabled: Boolean = config.network?.tracking ?: true
-
-    /**
      * Test-only seam — swaps the SDK's [apiManager] reference with a
      * test fake (typically a subclass that records
      * [ApiManager.enqueueBucketingEvent] invocations). Production code
@@ -934,41 +921,19 @@ public class ConvertSDK internal constructor(
     }
 
     /**
-     * Flips the runtime tracking-enabled flag.
-     *
-     * Story 5.4 wires this into `ApiManager.setTrackingEnabled` so the
-     * flag is read on every enqueue. For the Story 1.2 skeleton the flag
-     * is held locally so the public API surface is frozen now and Story
-     * 5.4 only swaps the implementation, not the signature.
-     *
-     * @param enabled `true` to enable outbound tracking, `false` to drop
-     *   subsequent events at the enqueue boundary.
-     */
-    public fun setTrackingEnabled(enabled: Boolean) {
-        // TODO(Story 5.4): delegate to apiManager.setTrackingEnabled(enabled)
-        trackingEnabled = enabled
-    }
-
-    /**
-     * Reports whether outbound tracking is currently enabled.
-     *
-     * @return the current value of the tracking-enabled flag.
-     */
-    public fun isTrackingEnabled(): Boolean {
-        // TODO(Story 5.4): delegate to apiManager.isTrackingEnabled()
-        return trackingEnabled
-    }
-
-    /**
      * Returns a privacy-safe string representation of this SDK instance.
      *
      * AC-5 / NFR6: [ConvertConfig] is not embedded in the output — even
      * though its own `toString()` already redacts the secret, including
      * the full config would risk exposing URLs, keys, and other sensitive
      * fields. Only the environment and the tracking flag are rendered.
+     *
+     * The tracking-flag value is sourced from [isTrackingEnabled] so the
+     * single ApiManager-owned source of truth (Story 5.4 AC-1) is rendered
+     * — never a stale local copy.
      */
     override fun toString(): String =
-        "ConvertSDK(environment=${config.environment}, trackingEnabled=$trackingEnabled)"
+        "ConvertSDK(environment=${config.environment}, trackingEnabled=${isTrackingEnabled()})"
 
     public companion object {
         private const val TAG: String = "ConvertSDK"
