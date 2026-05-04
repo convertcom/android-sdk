@@ -46,14 +46,22 @@ import java.io.File
  * write and logs a WARN. Worst case: a `.tmp` file remains and gets
  * overwritten on the next successful write; `read` ignores it.
  *
- * ### Corruption recovery (AC-8, NFR13)
+ * ### Corruption recovery (AC-4 / AC-8, NFR13)
  *
- * [read] treats any parse failure as corruption: it logs an ERROR,
- * deletes the broken file, and returns `null`. The SDK then behaves as
- * if the cache never existed. This is important because a partially-
- * written file from a crash or a version mismatch (e.g. a user
- * downgrades the SDK and the old parser can't handle new schema) must
- * not prevent the SDK from functioning once network is restored.
+ * [read] treats any parse failure as corruption: it logs a WARN with
+ * the literal message `"FileConfigCache: corrupted cache file at
+ * ${cacheFile.path}, deleting and recovering"`, deletes the broken
+ * file, and returns `null`. The SDK then behaves as if the cache never
+ * existed. This is important because a partially-written file from a
+ * crash or a version mismatch (e.g. a user downgrades the SDK and the
+ * old parser can't handle new schema) must not prevent the SDK from
+ * functioning once network is restored.
+ *
+ * The WARN level (rather than ERROR) is mandated by NFR13:
+ * *"Corrupted local state must be detected, logged at WARN, and
+ * auto-recovered without crashing"* (architecture.md §Non-Functional
+ * Requirements). Story 2.2 AC-4, applying F-139 option a, adopts the
+ * NFR13 wording verbatim.
  *
  * ### Threading (AC-4, Gotcha 2)
  *
@@ -147,17 +155,23 @@ internal class FileConfigCache(
 
     /**
      * Reads the cached config. Returns:
-     *  - `null` and logs INFO when the file is absent (expected on first
-     *    launch).
-     *  - `null` and logs ERROR + deletes the file when the file exists
-     *    but can't be parsed (corruption recovery — NFR13).
+     *  - `null` and logs INFO with the literal message
+     *    `"FileConfigCache: no cache file found"` when the file is
+     *    absent (expected on first launch — Story 2.2 AC-4).
+     *  - `null` and logs WARN with the literal message
+     *    `"FileConfigCache: corrupted cache file at ${cacheFile.path},
+     *    deleting and recovering"` + deletes the file when the file
+     *    exists but can't be parsed (corruption recovery — NFR13,
+     *    Story 2.2 AC-4 / F-139 option a).
      *  - The parsed [ConfigResponseData] on success.
      */
     @Suppress("TooGenericExceptionCaught", "ReturnCount")
     suspend fun read(): ConfigResponseData? = withContext(Dispatchers.IO) {
         if (!cacheFile.exists()) {
+            // Story 2.2 AC-4 (F-139 option a): exact literal — operators
+            // grep aggregated logs for this string.
             logger.info(
-                message = "FileConfigCache.read: cache file absent at ${cacheFile.path}",
+                message = "FileConfigCache: no cache file found",
                 tag = TAG,
             )
             return@withContext null
@@ -166,6 +180,9 @@ internal class FileConfigCache(
         val raw = try {
             cacheFile.readText()
         } catch (t: Throwable) {
+            // I/O failure (permission denied, mounted-FS gone) is distinct
+            // from JSON corruption — keep at ERROR level. Delete the file
+            // so a subsequent successful fetch can re-seed cleanly.
             logger.error(
                 message = "FileConfigCache.read: failed to read ${cacheFile.path}: ${t.message}",
                 throwable = t,
@@ -175,10 +192,12 @@ internal class FileConfigCache(
             return@withContext null
         }
 
-        // Empty file is corruption-like — treat uniformly with unparseable JSON.
+        // Empty file is corruption-like — treat uniformly with unparseable
+        // JSON per NFR13 (WARN + auto-recover).
         if (raw.isBlank()) {
-            logger.error(
-                message = "FileConfigCache.read: cache file is empty at ${cacheFile.path}; deleting",
+            logger.warn(
+                message = "FileConfigCache: corrupted cache file at ${cacheFile.path}, " +
+                    "deleting and recovering",
                 tag = TAG,
             )
             cacheFile.delete()
@@ -188,8 +207,12 @@ internal class FileConfigCache(
         return@withContext try {
             json.decodeFromString(ConfigResponseData.serializer(), raw)
         } catch (t: Throwable) {
-            logger.error(
-                message = "FileConfigCache.read: failed to parse ${cacheFile.path}: ${t.message}",
+            // Story 2.2 AC-4 (F-139 option a): exact literal mandated by
+            // NFR13 — "Corrupted local state must be detected, logged at
+            // WARN, and auto-recovered without crashing".
+            logger.warn(
+                message = "FileConfigCache: corrupted cache file at ${cacheFile.path}, " +
+                    "deleting and recovering",
                 throwable = t,
                 tag = TAG,
             )

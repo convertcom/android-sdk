@@ -7,7 +7,6 @@ package com.convert.sdk.core.api
 
 import com.convert.sdk.core.config.ApiConfig
 import com.convert.sdk.core.config.ApiEndpoint
-import com.convert.sdk.core.config.ConfigDefaults
 import com.convert.sdk.core.config.ConvertConfig
 import com.convert.sdk.core.config.NetworkConfig
 import com.convert.sdk.core.port.HttpClient
@@ -43,32 +42,69 @@ internal class ApiManagerTest {
     }
 
     @Test
-    fun `fetchConfig builds url with sdkKey path and cacheLevel query`() = runTest {
+    fun `fetchConfig builds exact url with config prefix sdkKey and environment plus cacheLevel query`() = runTest {
+        // Story 2.2 AC-10 (F-006/F-037 option a) — full URL parity.
+        // The audit's class 4.4 rule forbids substring / contains /
+        // startsWith / endsWith on URL assertions; this test asserts
+        // the canonical full URL via assertEquals.
+        //
+        // Expected URL composition:
+        //   - base    = ConfigDefaults.DEFAULT_CONFIG_ENDPOINT trimmed of "/"
+        //   - segment = "/config/"
+        //   - sdkKey  = "sk-abc"
+        //   - query   = "?environment=staging&_conv_low_cache=1"
+        // The corrected story (F-006 option a) inserts `&` between
+        // `environment=...` and `_conv_low_cache=1` (intentional
+        // divergence from JS SDK which omits the separator).
         val http = FakeHttpClient(statusCode = 200, body = "{}")
         val logger = CapturingLogger()
         val config = convertConfig(
             sdkKey = "sk-abc",
             cacheLevel = "low",
+            // environment defaults to "staging" via ConvertConfig.
         )
         val api = ApiManager(http, logger, config, json)
 
         api.fetchConfig()
 
-        // URL must be endpoint + "/" + sdkKey; "low" cache level appends the bypass query.
         assertEquals(1, http.calls.size)
-        val calledUrl = http.calls.first().url
-        assertTrue(
-            calledUrl.startsWith(ConfigDefaults.DEFAULT_CONFIG_ENDPOINT),
-            "url should start with the config endpoint: $calledUrl",
-        )
-        assertTrue(
-            calledUrl.contains("/sk-abc"),
-            "url should include /sk-abc: $calledUrl",
-        )
-        assertTrue(
-            calledUrl.contains("_conv_low_cache=1"),
-            "url should contain _conv_low_cache=1 for low cacheLevel: $calledUrl",
-        )
+        val expectedUrl =
+            "https://cdn-4.convertexperiments.com/api/v1/config/sk-abc" +
+                "?environment=staging&_conv_low_cache=1"
+        assertEquals(expectedUrl, http.calls.first().url)
+    }
+
+    @Test
+    fun `fetchConfig builds exact url without low-cache when cacheLevel default`() = runTest {
+        // Story 2.2 AC-1 / AC-10 — environment param always present (default
+        // "staging" from ConvertConfig); _conv_low_cache=1 omitted when
+        // cacheLevel is anything other than "low". Full-URL parity.
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val logger = CapturingLogger()
+        val config = convertConfig(sdkKey = "sk-1") // no cacheLevel → null
+        val api = ApiManager(http, logger, config, json)
+
+        api.fetchConfig()
+
+        val expectedUrl =
+            "https://cdn-4.convertexperiments.com/api/v1/config/sk-1?environment=staging"
+        assertEquals(expectedUrl, http.calls.single().url)
+    }
+
+    @Test
+    fun `fetchConfig builds exact url with custom environment override`() = runTest {
+        // Story 2.2 AC-1 — environment value flows directly into the
+        // query string. Full-URL parity (no substring assertions).
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val logger = CapturingLogger()
+        val config = convertConfig(sdkKey = "sk-1", environment = "prod")
+        val api = ApiManager(http, logger, config, json)
+
+        api.fetchConfig()
+
+        val expectedUrl =
+            "https://cdn-4.convertexperiments.com/api/v1/config/sk-1?environment=prod"
+        assertEquals(expectedUrl, http.calls.single().url)
     }
 
     @Test
@@ -219,6 +255,9 @@ internal class ApiManagerTest {
 
     @Test
     fun `fetchConfig does not append cacheLevel query when cacheLevel is default`() = runTest {
+        // Story 2.2 AC-1 / AC-10 — explicit "default" cacheLevel produces
+        // the same URL as the omitted-cacheLevel case: only the
+        // environment param is included. Full-URL parity.
         val http = FakeHttpClient(statusCode = 200, body = "{}")
         val logger = CapturingLogger()
         val config = convertConfig(sdkKey = "sk-1", cacheLevel = "default")
@@ -226,15 +265,16 @@ internal class ApiManagerTest {
 
         api.fetchConfig()
 
-        val url = http.calls.single().url
-        assertFalse(
-            url.contains("_conv_low_cache"),
-            "default cacheLevel must NOT include the bypass query: $url",
-        )
+        val expectedUrl =
+            "https://cdn-4.convertexperiments.com/api/v1/config/sk-1?environment=staging"
+        assertEquals(expectedUrl, http.calls.single().url)
     }
 
     @Test
     fun `fetchConfig uses configured endpoint override when provided`() = runTest {
+        // Story 2.2 AC-1 / AC-10 — configured endpoint replaces the default
+        // CDN host but the literal `/config/` path segment and the query
+        // string are unchanged. Full-URL parity.
         val http = FakeHttpClient(statusCode = 200, body = "{}")
         val logger = CapturingLogger()
         val config = convertConfig(
@@ -245,12 +285,9 @@ internal class ApiManagerTest {
 
         api.fetchConfig()
 
-        val url = http.calls.single().url
-        assertTrue(
-            url.startsWith("https://staging-cdn.example.com/api/v1/"),
-            "url should start with configured endpoint: $url",
-        )
-        assertTrue(url.contains("/sk-1"), "url should include /sk-1: $url")
+        val expectedUrl =
+            "https://staging-cdn.example.com/api/v1/config/sk-1?environment=staging"
+        assertEquals(expectedUrl, http.calls.single().url)
     }
 
     @Test
@@ -271,13 +308,15 @@ internal class ApiManagerTest {
 
     /**
      * Builds a [ConvertConfig] with the common fields tests need, defaulting
-     * everything else.
+     * everything else. `environment` defaults to ConvertConfig's own default
+     * (`"staging"`) — pass `environment = "..."` to override.
      */
     private fun convertConfig(
         sdkKey: String? = null,
         sdkKeySecret: String? = null,
         configEndpoint: String? = null,
         cacheLevel: String? = null,
+        environment: String = "staging",
     ): ConvertConfig {
         val api = if (configEndpoint != null) {
             ApiConfig(endpoint = ApiEndpoint(config = configEndpoint, track = null))
@@ -290,6 +329,7 @@ internal class ApiManagerTest {
             sdkKeySecret = sdkKeySecret,
             api = api,
             network = network,
+            environment = environment,
         )
     }
 
