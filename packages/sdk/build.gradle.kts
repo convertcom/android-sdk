@@ -1,11 +1,12 @@
 plugins {
     alias(libs.plugins.android.library)
     // NOTE: org.jetbrains.kotlin.android is intentionally NOT applied here.
-    // AGP 9.0+ ships with built-in Kotlin support and rejects the explicit
-    // plugin with "The 'org.jetbrains.kotlin.android' plugin is no longer
-    // required for Kotlin support since AGP 9.0." (See kotl.in/gradle/agp-built-in-kotlin.)
-    // The kotlin-android catalog alias stays in libs.versions.toml so future
-    // toolchain changes can reintroduce it if needed.
+    // AGP 9.0+ ships with built-in Kotlin support for com.android.library modules
+    // and rejects the explicit plugin with "The 'org.jetbrains.kotlin.android'
+    // plugin is no longer required for Kotlin support since AGP 9.0."
+    // (See kotl.in/gradle/agp-built-in-kotlin.)
+    // The kotlin-android catalog alias has been removed from libs.versions.toml
+    // accordingly — see architecture.md §Verified-Technology-Versions.
     alias(libs.plugins.kotlin.serialization)
 }
 
@@ -17,11 +18,12 @@ android {
         minSdk = 24
         consumerProguardFiles("consumer-rules.pro")
     }
-
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
+    // No compileOptions / kotlinOptions.jvmTarget here — JDK level is set by the
+    // explicit kotlin { jvmToolchain(17) } block below. Per the Kotlin Gradle plugin
+    // docs (https://kotlinlang.org/docs/gradle-configure-project.html#gradle-java-toolchains-support),
+    // jvmToolchain(17) automatically derives jvmTarget AND sourceCompatibility/
+    // targetCompatibility = VERSION_17 for AGP 8+; any duplicate declaration produces
+    // a Gradle warning and must be omitted.
 }
 
 kotlin {
