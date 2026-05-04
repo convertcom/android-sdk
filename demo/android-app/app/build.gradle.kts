@@ -120,12 +120,15 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.0")
     implementation("androidx.activity:activity-compose:1.10.0")
 
-    // Compose BOM — 2024.12.01 is the last BOM line that targets
-    // compileSdk 35. BOMs from 2025.01 onward bundle artifacts that
-    // require compileSdk 36. The Compose compiler plugin (applied above
-    // at Kotlin 2.3.20) governs Kotlin/Compose compiler compatibility;
-    // the BOM only governs runtime artifact versions.
-    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    // Compose BOM — pinned to 2025.04.00 in the demo's own version
+    // catalog (`gradle/libs.versions.toml`) per Story 7.1 AC-2 (F-075 +
+    // F-144 audit remediation). Story Gotcha 2 ties this version to
+    // Kotlin 2.3.20: the Compose compiler plugin (applied above at
+    // Kotlin 2.3.20) governs compiler compatibility while the BOM
+    // governs runtime artifact versions. Catalog reference rather than
+    // an inline string keeps the version definition in one place — the
+    // catalog — for future bumps.
+    implementation(platform(libs.compose.bom))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
