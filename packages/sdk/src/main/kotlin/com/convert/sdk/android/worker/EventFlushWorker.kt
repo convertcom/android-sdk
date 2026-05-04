@@ -181,9 +181,20 @@ internal class EventFlushWorker(
 
         /**
          * Unique work name used by [com.convert.sdk.android.ConvertSDK] when
-         * enqueuing this worker via `enqueueUniqueWork`. `REPLACE` policy on
-         * the enqueue side ensures rapid foreground/background transitions
-         * collapse into a single pending worker rather than accumulating.
+         * enqueuing this worker via `enqueueUniqueWork`.
+         *
+         * **This is a stable SDK constant — once released it must not be changed.**
+         * Changing it leaves orphaned workers in the host app's WorkManager
+         * store that will never be cancelled by [ExistingWorkPolicy.REPLACE].
+         *
+         * `ExistingWorkPolicy.REPLACE` ensures the latest event snapshot is
+         * always flushed (last-enqueue-wins): rapid foreground/background
+         * transitions collapse into a single pending worker rather than
+         * accumulating. [Source: WorkManager ExistingWorkPolicy —
+         * https://developer.android.com/reference/androidx/work/ExistingWorkPolicy]
+         *
+         * Addresses F-126: rationale and AndroidX citation for the unique
+         * work name and REPLACE policy choice.
          */
         internal const val UNIQUE_WORK_NAME: String = "convert-event-flush"
 

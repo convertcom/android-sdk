@@ -946,11 +946,13 @@ public class ConvertSDK internal constructor(
 
         /**
          * Initial delay (seconds) for the [BackoffPolicy.EXPONENTIAL]
-         * retry cadence on [EventFlushWorker] (Story 5.3 AC-6). 30s
-         * clears WorkManager's 10s minimum with headroom and matches the
-         * story's explicit spec.
+         * retry cadence on [EventFlushWorker] (Story 5.3 AC-6).
+         * 10s aligns with the foreground retry base (architecture:
+         * 10s → 20s → 40s), is WorkManager's minimum backoff, and is
+         * cited in the patched spec (F-071 option a). [Source:
+         * https://developer.android.com/reference/androidx/work/WorkRequest.Builder#setBackoffCriteria(androidx.work.BackoffPolicy,%20java.time.Duration)]
          */
-        private const val WORKER_BACKOFF_DELAY_SECONDS: Long = 30L
+        private const val WORKER_BACKOFF_DELAY_SECONDS: Long = 10L
 
         /**
          * Creates a new [Builder].
