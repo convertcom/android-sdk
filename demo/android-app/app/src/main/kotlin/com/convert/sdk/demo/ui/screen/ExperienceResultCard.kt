@@ -1,9 +1,9 @@
 /*
- * Convert Android SDK Demo App — ResultCard
+ * Convert Android SDK Demo App — ExperienceResultCard
  * Copyright (c) 2026 Convert Insights, Inc.
  * License: Apache-2.0
  */
-package com.convert.sdk.demo.ui.component
+package com.convert.sdk.demo.ui.screen
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -31,28 +31,43 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 /**
- * Story 7.3 AC-6 — reusable result/outcome card shared by the
- * Experiences, Features, Conversions, and Offline screens.
+ * Story 7.3 AC-6 — screen-specific result card for the Experiences
+ * screen.
  *
- * The card renders a compact list of `label → value` rows underneath
- * a title and a status icon. Two styles:
+ * The UX spec line 698 mandates that `ResultCard` is **screen-specific**:
+ * "each screen creates result cards from its SDK operation outputs."
+ * This composable lives in the same package as [ExperiencesScreen]
+ * (`ui/screen/`) — not in a shared `ui/component/` directory — to make
+ * the screen-scoped ownership obvious at the package level. Each
+ * sibling screen (Features, Conversions, Offline) implements its own
+ * card composable tailored to its data shape, so each screen can
+ * evolve independently without coupling through a shared API.
  *
- * - **Non-error** (`isError = false`, default): surfaceVariant
- *   background, a tick icon.
- * - **Error** (`isError = true`): errorContainer background, an
- *   error icon; the merged content description is prefixed with
+ * The composable supports the variants the UX spec lists for the
+ * Experiences screen (lines 642–654):
+ *
+ * - **Variation result** (`isError = false`, default): surfaceVariant
+ *   background, a tick icon. Used when the runner produced a bucketed
+ *   variation. Title is typically `"Experience: <key>"`; items render
+ *   `Variation → <variationKey>`.
+ * - **Multi-result**: the screen produces one card per variation when
+ *   "Run Experiences" returns multiple — each rendered with the same
+ *   non-error styling above.
+ * - **Error**: `isError = true`. Uses the errorContainer background
+ *   and an error icon; the merged content description is prefixed with
  *   "Error:" so TalkBack announces the state explicitly (colour alone
  *   is not enough for accessibility).
  *
- * Accessibility (AC-5): the whole card uses
- * `Modifier.semantics(mergeDescendants = true)` with a single
- * `contentDescription` that concatenates the title and every
- * `label: value` pair. TalkBack reads the card as one utterance
- * instead of navigating the user through each child `Text`.
+ * Accessibility (AC-5): the whole card uses `Modifier.semantics`
+ * (with `mergeDescendants = true`) and a single `contentDescription`
+ * that concatenates the title and every `label: value` pair, so
+ * TalkBack reads the card as one utterance instead of navigating the
+ * user through each child `Text` (UX spec line 877: "Use
+ * `Modifier.semantics` to group related content in `ResultCard`
+ * (e.g., variation key + value as one announcement)").
  *
  * @param title the card title. Non-error cards typically use the form
- *   `"Experience: <key>"`; error cards use a full error sentence
- *   (e.g. `"No variation for experience <key>"`).
+ *   `"Experience: <key>"`; error cards use a full error sentence.
  * @param items the rows rendered underneath the title. Each entry's
  *   `first` is the label (e.g. `"Variation"`), `second` is the value
  *   (e.g. `"treatment"`). Values render in monospace so ids/keys read
@@ -65,7 +80,7 @@ import androidx.compose.ui.unit.dp
  *   constraints from the screen composable are respected.
  */
 @Composable
-fun ResultCard(
+fun ExperienceResultCard(
     title: String,
     items: List<Pair<String, String>>,
     isError: Boolean = false,

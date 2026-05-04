@@ -25,7 +25,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.convert.sdk.demo.ui.component.ResultCard
 import com.convert.sdk.demo.viewmodel.ExperienceResult
 import com.convert.sdk.demo.viewmodel.SdkViewModel
 
@@ -40,9 +39,16 @@ import com.convert.sdk.demo.viewmodel.SdkViewModel
  *     "Run Experiences" (calls [SdkViewModel.runAllExperiences]).
  *  3. Either an empty-state text ("Tap a button to run an
  *     experience.") when [SdkViewModel.results] is empty, or a
- *     [LazyColumn] of [ResultCard]s rendered newest-first.
+ *     [LazyColumn] of [ExperienceResultCard]s rendered newest-first.
  *
- * Each [ResultCard] derives its title + items from the
+ * Note (AC-6, F-029/F-081 remediation): the result-card composable
+ * lives in this same `ui/screen` package as a sibling file
+ * ([ExperienceResultCard]) — NOT in a shared `ui/component` directory —
+ * because the UX spec (line 698) requires `ResultCard`s to be
+ * screen-specific. Each sibling Story 7.x screen owns its own card
+ * tailored to its data shape.
+ *
+ * Each [ExperienceResultCard] derives its title + items from the
  * corresponding [ExperienceResult]:
  *  - Non-error: title = `"Experience: <experienceKey>"`, items =
  *    `[("Variation", <variationKey or "(no key)">)]`.
@@ -112,20 +118,20 @@ fun ExperiencesScreen(viewModel: SdkViewModel) {
 
 /**
  * Private helper that maps an [ExperienceResult] to the
- * [ResultCard] shape. Extracted so the public composable stays
- * under detekt's function-size limits and reads top-to-bottom as
- * "layout first, rendering details second".
+ * [ExperienceResultCard] shape. Extracted so the public composable
+ * stays under detekt's function-size limits and reads top-to-bottom
+ * as "layout first, rendering details second".
  */
 @Composable
 private fun ResultCardForResult(result: ExperienceResult) {
     if (result.isError) {
-        ResultCard(
+        ExperienceResultCard(
             title = result.errorMessage ?: "No variation",
             items = listOfNotNull(result.errorHint?.let { "Hint" to it }),
             isError = true,
         )
     } else {
-        ResultCard(
+        ExperienceResultCard(
             title = "Experience: ${result.experienceKey}",
             items = listOf("Variation" to (result.variationKey ?: "(no key)")),
         )

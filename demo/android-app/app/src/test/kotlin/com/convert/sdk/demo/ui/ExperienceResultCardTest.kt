@@ -1,5 +1,5 @@
 /*
- * Convert Android SDK Demo App — ResultCard Compose UI tests (Story 7.3)
+ * Convert Android SDK Demo App — ExperienceResultCard Compose UI tests (Story 7.3)
  * Copyright (c) 2026 Convert Insights, Inc.
  * License: Apache-2.0
  */
@@ -11,7 +11,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
-import com.convert.sdk.demo.ui.component.ResultCard
+import com.convert.sdk.demo.ui.screen.ExperienceResultCard
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -19,13 +19,13 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Story 7.3 AC-6 — Compose UI tests for the shared [ResultCard]
- * component. Runs on Robolectric (same stack 7.2's
- * [EventInspectorSheetTest] uses).
+ * Story 7.3 AC-6 — Compose UI tests for the screen-specific
+ * [ExperienceResultCard] composable. Runs on Robolectric (same stack
+ * 7.2's [EventInspectorSheetTest] uses).
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
-class ResultCardTest {
+class ExperienceResultCardTest {
 
     @get:Rule
     val composeRule = createAndroidComposeRule<ComponentActivity>()
@@ -34,7 +34,7 @@ class ResultCardTest {
     fun `non-error card renders title and all label-value rows`() {
         composeRule.setContent {
             MaterialTheme {
-                ResultCard(
+                ExperienceResultCard(
                     title = "Experience: test-experience",
                     items = listOf(
                         "Variation" to "treatment",
@@ -55,7 +55,7 @@ class ResultCardTest {
     fun `error card renders with error title and hint row`() {
         composeRule.setContent {
             MaterialTheme {
-                ResultCard(
+                ExperienceResultCard(
                     title = "No variation for experience missing-exp",
                     items = listOf("Hint" to "Check audience eligibility"),
                     isError = true,
@@ -72,7 +72,7 @@ class ResultCardTest {
     fun `card has merged content description covering title and items (AC-5)`() {
         composeRule.setContent {
             MaterialTheme {
-                ResultCard(
+                ExperienceResultCard(
                     title = "Experience: test-experience",
                     items = listOf("Variation" to "treatment"),
                 )
@@ -111,7 +111,7 @@ class ResultCardTest {
     fun `error card content description distinguishes the error state for TalkBack`() {
         composeRule.setContent {
             MaterialTheme {
-                ResultCard(
+                ExperienceResultCard(
                     title = "No variation for experience missing-exp",
                     items = listOf("Hint" to "Check audience eligibility"),
                     isError = true,

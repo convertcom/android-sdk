@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Produced by [SdkViewModel.runSingleExperience] / [SdkViewModel.runAllExperiences]
  * and consumed by
- * [com.convert.sdk.demo.ui.component.ResultCard] via the Experiences screen.
+ * [com.convert.sdk.demo.ui.screen.ExperienceResultCard] via the Experiences screen.
  *
  * Two shapes:
  * - **Non-error** (`isError == false`): the visitor was bucketed; [variationKey]
