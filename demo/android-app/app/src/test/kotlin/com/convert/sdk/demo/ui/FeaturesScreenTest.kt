@@ -9,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.convert.sdk.core.model.Feature
@@ -67,9 +68,12 @@ class FeaturesScreenTest {
 
     @Test
     fun `typed variables rendered with correct type annotations`() {
-        // The canonical AC-2 example: four typed variables, one per type
-        // label. The screen must show the name, the formatted value, AND
-        // the [Type] annotation for every variable.
+        // The canonical AC-2 example: four typed variables, one per JS SDK
+        // canonical type label, PLUS a whole-number double surfacing the
+        // F-110 boundary (1.0 must render as [float], not [integer] —
+        // catches any future regression of the strict-first ordering in
+        // typeLabel()). The screen must show the name, the formatted
+        // value, AND the [type] annotation for every variable.
         val runner = FakeFeatureRunner(
             single = feature(
                 key = "test-feature",
@@ -79,6 +83,11 @@ class FeaturesScreenTest {
                     "maxRetries" to JsonPrimitive(3),
                     "showBanner" to JsonPrimitive(true),
                     "discountFactor" to JsonPrimitive(0.15),
+                    // F-110 boundary: a Double whose content has no
+                    // fractional part. If the type detector ever flips
+                    // the longOrNull/doubleOrNull ordering, this fixture
+                    // will fail before any release ships.
+                    "shippingMultiplier" to JsonPrimitive(1.0),
                 ),
             ),
         )
@@ -96,25 +105,42 @@ class FeaturesScreenTest {
         // Card title names the feature.
         composeRule.onNodeWithText("Feature: test-feature").assertIsDisplayed()
 
-        // Every variable renders its name + formatted value + [Type]
+        // Every variable renders its name + formatted value + [type]
         // annotation in three separate Text nodes (per AC-4's two-style
         // requirement — the annotation is labelMedium + outline color,
-        // not folded into the value text).
+        // not folded into the value text). Labels are JS SDK canonical
+        // lowercase (F-030).
         composeRule.onNodeWithText("buttonColor").assertIsDisplayed()
         composeRule.onNodeWithText("\"blue\"").assertIsDisplayed()
-        composeRule.onNodeWithText("[String]").assertIsDisplayed()
+        composeRule.onNodeWithText("[string]").assertIsDisplayed()
 
         composeRule.onNodeWithText("maxRetries").assertIsDisplayed()
         composeRule.onNodeWithText("3").assertIsDisplayed()
-        composeRule.onNodeWithText("[Int]").assertIsDisplayed()
+        composeRule.onNodeWithText("[integer]").assertIsDisplayed()
 
         composeRule.onNodeWithText("showBanner").assertIsDisplayed()
         composeRule.onNodeWithText("true").assertIsDisplayed()
-        composeRule.onNodeWithText("[Boolean]").assertIsDisplayed()
+        composeRule.onNodeWithText("[boolean]").assertIsDisplayed()
 
         composeRule.onNodeWithText("discountFactor").assertIsDisplayed()
         composeRule.onNodeWithText("0.15").assertIsDisplayed()
-        composeRule.onNodeWithText("[Double]").assertIsDisplayed()
+
+        // F-110 boundary assertion — whole-number double MUST render as
+        // [float], not [integer]. The previous fixture only used 0.15
+        // which would pass even when the bug existed.
+        composeRule.onNodeWithText("shippingMultiplier").assertIsDisplayed()
+        composeRule.onNodeWithText("1.0").assertIsDisplayed()
+        // Two [float] annotations now render (0.15 + 1.0). The card uses
+        // mergeDescendants = true (so TalkBack reads it as one
+        // utterance), which hides per-row Text nodes in the default
+        // merged semantics tree. Walk the unmerged tree so each row's
+        // trailing-annotation Text is individually addressable.
+        val floatLabels = composeRule
+            .onAllNodesWithText("[float]", useUnmergedTree = true)
+            .fetchSemanticsNodes()
+        assert(floatLabels.size >= 2) {
+            "expected at least 2 [float] annotations (one per double variable); got ${floatLabels.size}"
+        }
     }
 
     @Test

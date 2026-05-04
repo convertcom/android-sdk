@@ -97,13 +97,13 @@ class FeatureResultsTest {
 
         val byName = r.variables.associateBy { it.name }
         assertEquals("\"blue\"", byName["buttonColor"]?.value)
-        assertEquals("String", byName["buttonColor"]?.typeLabel)
+        assertEquals("string", byName["buttonColor"]?.typeLabel)
         assertEquals("3", byName["maxRetries"]?.value)
-        assertEquals("Int", byName["maxRetries"]?.typeLabel)
+        assertEquals("integer", byName["maxRetries"]?.typeLabel)
         assertEquals("true", byName["showBanner"]?.value)
-        assertEquals("Boolean", byName["showBanner"]?.typeLabel)
+        assertEquals("boolean", byName["showBanner"]?.typeLabel)
         assertEquals("0.15", byName["discountFactor"]?.value)
-        assertEquals("Double", byName["discountFactor"]?.typeLabel)
+        assertEquals("float", byName["discountFactor"]?.typeLabel)
     }
 
     @Test

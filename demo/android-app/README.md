@@ -122,16 +122,19 @@ the visitor is bucketed and you see a green **success** card:
 > **Feature: test-feature**
 > Status: enabled
 > Experience: homepage-banner
-> buttonColor: "blue" [String]
-> maxRetries: 3 [Int]
-> showBanner: true [Boolean]
-> discountFactor: 0.15 [Double]
+> buttonColor: "blue" [string]
+> maxRetries: 3 [integer]
+> showBanner: true [boolean]
+> discountFactor: 0.15 [float]
 
 Each typed variable shows its **name**, its **value** (strings get
 double-quoted; numbers and booleans render unquoted), and its
-**type annotation** — the `[Type]` suffix is rendered in
-`labelMedium` typography with the Material 3 `outline` colour so it
-reads as visually secondary to the value.
+**type annotation** — the `[type]` suffix uses the JS SDK canonical
+lowercase type vocabulary (`string`, `integer`, `float`, `boolean`,
+`json`, `unknown`) so the demo reads with the same names as backend
+config and JS SDK docs, and is rendered in `labelMedium` typography
+with the Material 3 `outline` colour so it reads as visually
+secondary to the value.
 
 If the key is unknown — which is the default when you use the
 placeholder `"demo-sdk-key"` — the `runFeature` call returns `null` and

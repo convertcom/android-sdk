@@ -63,9 +63,9 @@ class FeatureResultTest {
     @Test
     fun `result carrying typed variables preserves them in order`() {
         val variables = listOf(
-            TypedVariable(name = "buttonColor", value = "\"blue\"", typeLabel = "String"),
-            TypedVariable(name = "maxRetries", value = "3", typeLabel = "Int"),
-            TypedVariable(name = "showBanner", value = "true", typeLabel = "Boolean"),
+            TypedVariable(name = "buttonColor", value = "\"blue\"", typeLabel = "string"),
+            TypedVariable(name = "maxRetries", value = "3", typeLabel = "integer"),
+            TypedVariable(name = "showBanner", value = "true", typeLabel = "boolean"),
         )
         val r = FeatureResult(
             id = FeatureResult.nextId(),
@@ -75,7 +75,7 @@ class FeatureResultTest {
         )
         assertEquals(3, r.variables.size)
         assertEquals("buttonColor", r.variables[0].name)
-        assertEquals("Int", r.variables[1].typeLabel)
+        assertEquals("integer", r.variables[1].typeLabel)
     }
 
     @Test

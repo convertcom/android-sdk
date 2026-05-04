@@ -79,12 +79,12 @@ class FeatureResultCardTest {
                         FeatureResultCardItem(
                             label = "buttonColor",
                             value = "\"blue\"",
-                            trailingAnnotation = "[String]",
+                            trailingAnnotation = "[string]",
                         ),
                         FeatureResultCardItem(
                             label = "maxRetries",
                             value = "3",
-                            trailingAnnotation = "[Int]",
+                            trailingAnnotation = "[integer]",
                         ),
                     ),
                 )
@@ -97,13 +97,14 @@ class FeatureResultCardTest {
         composeRule.onNodeWithText("enabled").assertIsDisplayed()
 
         // Rows with annotations render label, value, AND the separate
-        // [Type] annotation text (AC-4's two-style requirement).
+        // [type] annotation text (AC-4's two-style requirement). Labels
+        // are JS SDK canonical lowercase per F-030.
         composeRule.onNodeWithText("buttonColor").assertIsDisplayed()
         composeRule.onNodeWithText("\"blue\"").assertIsDisplayed()
-        composeRule.onNodeWithText("[String]").assertIsDisplayed()
+        composeRule.onNodeWithText("[string]").assertIsDisplayed()
         composeRule.onNodeWithText("maxRetries").assertIsDisplayed()
         composeRule.onNodeWithText("3").assertIsDisplayed()
-        composeRule.onNodeWithText("[Int]").assertIsDisplayed()
+        composeRule.onNodeWithText("[integer]").assertIsDisplayed()
     }
 
     @Test
@@ -116,7 +117,7 @@ class FeatureResultCardTest {
                         FeatureResultCardItem(
                             label = "buttonColor",
                             value = "\"blue\"",
-                            trailingAnnotation = "[String]",
+                            trailingAnnotation = "[string]",
                         ),
                     ),
                 )
@@ -124,10 +125,10 @@ class FeatureResultCardTest {
         }
 
         // TalkBack must hear the annotation — otherwise visually-impaired
-        // developers would not know a variable was a String vs an Int.
+        // developers would not know a variable was a string vs an integer.
         val matches = composeRule
             .onAllNodesWithContentDescription(
-                "buttonColor: \"blue\" [String]",
+                "buttonColor: \"blue\" [string]",
                 substring = true,
                 useUnmergedTree = false,
             )

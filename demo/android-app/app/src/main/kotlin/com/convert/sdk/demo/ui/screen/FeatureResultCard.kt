@@ -44,8 +44,9 @@ import androidx.compose.ui.unit.dp
  *   `"\"blue\""`, `"3"`).
  * @property trailingAnnotation optional secondary annotation shown to
  *   the right of the value in `labelMedium` typography and
- *   `colorScheme.outline` color. For typed variables this is `"[String]"`,
- *   `"[Int]"`, etc. per Story 7.4 AC-4.
+ *   `colorScheme.outline` color. For typed variables this is `"[string]"`,
+ *   `"[integer]"`, etc. — using the JS SDK canonical lowercase type
+ *   vocabulary (F-030 remediation) — per Story 7.4 AC-4.
  */
 public data class FeatureResultCardItem(
     val label: String,
