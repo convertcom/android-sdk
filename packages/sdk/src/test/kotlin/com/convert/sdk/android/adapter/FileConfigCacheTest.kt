@@ -90,10 +90,14 @@ internal class FileConfigCacheTest {
         val read = cache.read()
 
         assertNull("expected null when cache file does not exist", read)
-        // AC-4: absent file logs INFO, not WARN or ERROR.
-        assertTrue(
-            "expected an INFO-level message about absent cache; got $logger",
-            logger.infoMessages().isNotEmpty(),
+        // Story 2.2 AC-4 (F-139 option a) mandates the exact literal
+        // INFO message "FileConfigCache: no cache file found" so log
+        // aggregators can grep across SDK versions reliably.
+        assertEquals(
+            "expected exactly one INFO with the canonical absent-cache message; " +
+                "got ${logger.infoMessages()}",
+            listOf("FileConfigCache: no cache file found"),
+            logger.infoMessages(),
         )
     }
 
@@ -110,10 +114,22 @@ internal class FileConfigCacheTest {
 
         assertNull("corrupt file must return null", read)
         assertFalse("corrupt file must be deleted after read", cacheFile.exists())
-        // AC-8 requires ERROR-level log on corruption.
+        // Story 2.2 AC-4 (F-139 option a) requires WARN-level corruption
+        // logging per NFR13 ("Corrupted local state must be detected,
+        // logged at WARN, and auto-recovered without crashing"). Asserts
+        // the exact literal message so future drift fails the test.
+        val expectedMessage = "FileConfigCache: corrupted cache file at ${cacheFile.path}, " +
+            "deleting and recovering"
+        assertEquals(
+            "expected exactly one WARN with the canonical corruption message; " +
+                "got ${logger.warnMessages()}",
+            listOf(expectedMessage),
+            logger.warnMessages(),
+        )
         assertTrue(
-            "expected an ERROR message on corruption; got ${logger.errorMessages()}",
-            logger.errorMessages().isNotEmpty(),
+            "no ERROR expected on JSON corruption (NFR13 mandates WARN); " +
+                "got ${logger.errorMessages()}",
+            logger.errorMessages().isEmpty(),
         )
     }
 
@@ -211,9 +227,20 @@ internal class FileConfigCacheTest {
         val cache = FileConfigCache(context, logger)
         val read = cache.read()
 
-        // An empty file is corrupt-ish — treat like corruption recovery.
+        // An empty file is corrupt-ish — treat like corruption recovery
+        // per NFR13: WARN with the canonical literal message, delete the
+        // file, return null. F-139 option a applies the same wording for
+        // both empty and unparseable cases so log aggregation is uniform.
         assertNull(read)
         assertFalse("empty file should be deleted after read", cacheFile.exists())
+        val expectedMessage = "FileConfigCache: corrupted cache file at ${cacheFile.path}, " +
+            "deleting and recovering"
+        assertEquals(
+            "expected exactly one WARN with the canonical corruption message; " +
+                "got ${logger.warnMessages()}",
+            listOf(expectedMessage),
+            logger.warnMessages(),
+        )
     }
 
     // --- Helpers ------------------------------------------------------------

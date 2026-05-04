@@ -29,13 +29,30 @@ import kotlinx.serialization.json.Json
  * ### URL construction (AC-1)
  *
  * The request URL is built from:
- *   `{endpoint}/{sdkKey}[?_conv_low_cache=1]`
+ *   `{endpoint}/config/{sdkKey}[?environment={env}[&_conv_low_cache=1]]`
  *
  * where `endpoint` is `config.api.endpoint.config` falling back to
- * [ConfigDefaults.DEFAULT_CONFIG_ENDPOINT]. The `_conv_low_cache=1` query
- * parameter is appended only when `config.network.cacheLevel == "low"` —
- * this bypasses the CDN cache (development only), matching JS SDK
- * `api-manager.ts:302-304`.
+ * [ConfigDefaults.DEFAULT_CONFIG_ENDPOINT]. The literal `/config/` path
+ * segment is mandatory (matches JS SDK `api-manager.ts:300-313` which
+ * routes to `/config/${sdkKey}${query}`). Query-string assembly
+ * (corrected re-implementation of JS SDK `api-manager.ts:302-304`):
+ *  - Start with `?` if either `config.environment` is non-null or
+ *    `config.network.cacheLevel == "low"`; otherwise empty string.
+ *  - If `config.environment` is non-null, append `environment=${env}`.
+ *  - If `config.network.cacheLevel == "low"`, append
+ *    `${if (query.contains('=')) "&" else ""}_conv_low_cache=1`. The
+ *    `_conv_low_cache=1` parameter bypasses the CDN cache (development
+ *    only).
+ *
+ * Note: JS SDK `api-manager.ts:302-304` omits the `&` separator between
+ * params when both are present; the Android SDK corrects this to produce
+ * valid query strings. This deviation is intentional and documented in
+ * Story 2.2 AC-1 (F-006 option a).
+ *
+ * `config.environment` defaults to `"staging"` (see
+ * [com.convert.sdk.core.config.ConvertConfig]) so the `environment=...`
+ * parameter is always present in production traffic; omitting it would
+ * silently route to the CDN's default environment.
  *
  * ### HTTPS enforcement (AC-1, NFR7)
  *
@@ -68,8 +85,19 @@ import kotlinx.serialization.json.Json
  * ### Forward compatibility
  *
  * The supplied [json] instance MUST be configured with
- * `ignoreUnknownKeys = true` and `explicitNulls = false` so that new
- * backend fields don't break old SDK versions (NFR12).
+ * `ignoreUnknownKeys = true; explicitNulls = false` (Story 2.2 AC-2,
+ * F-138 option a):
+ *  - `ignoreUnknownKeys = true` is **required** for forward
+ *    compatibility (NFR12). The kotlinx.serialization default is
+ *    `false`, which would throw on any new backend field old SDK
+ *    versions don't yet know about.
+ *  - `explicitNulls = false` is the kotlinx.serialization default and
+ *    is retained explicitly to document intent: null fields in
+ *    [ConfigResponseData] are omitted from encoded JSON, which keeps
+ *    the cache write path's payload tight (see
+ *    [com.convert.sdk.android.adapter.FileConfigCache]).
+ *
+ * Reference: [kotlinx.serialization Json builder defaults](https://kotlinlang.org/api/kotlinx.serialization/).
  *
  * ### Visibility (Story 2.2)
  *
@@ -177,6 +205,15 @@ public class ApiManager(
      *    never loopback, so this carve-out cannot weaken real-world
      *    security.
      *
+     * Output shape: `{base}/config/{sdkKey}{query}` where `{query}` is
+     * built per AC-1 (F-006 option a):
+     *  - `?` prefix when either `environment` is non-null or
+     *    `cacheLevel == "low"`; otherwise empty.
+     *  - `environment={env}` appended when `config.environment` is set.
+     *  - `_conv_low_cache=1` appended when `cacheLevel == "low"`, with a
+     *    leading `&` if `environment=` was already appended (so the two
+     *    params are joined as `?environment=prod&_conv_low_cache=1`).
+     *
      * Kept to two return statements (detekt `ReturnCount` threshold) by
      * folding the precondition checks into a single early-return, then
      * returning the assembled URL.
@@ -196,16 +233,50 @@ public class ApiManager(
             return null
         }
 
-        // Normalise trailing slash so "endpoint/sdkKey" never produces
-        // "endpoint//sdkKey" or "endpointsdkKey". Append the cache-bypass
-        // query parameter for `cacheLevel == "low"` (development only).
+        // Normalise trailing slash so "endpoint/config/sdkKey" never produces
+        // "endpoint//config/sdkKey" or "endpointconfig/sdkKey".
         val base = endpoint.trimEnd('/')
-        val withKey = "$base/$sdkKey"
-        return if (config.network?.cacheLevel == "low") {
-            "$withKey?_conv_low_cache=1"
-        } else {
-            withKey
+        val query = buildConfigQuery()
+        return "$base/$PATH_CONFIG_SEGMENT/$sdkKey$query"
+    }
+
+    /**
+     * Assembles the query-string portion of the config URL per AC-1
+     * (F-006 option a). Mirrors JS SDK `api-manager.ts:302-304` but
+     * intentionally diverges by inserting an `&` separator between
+     * `environment=...` and `_conv_low_cache=1` to produce valid HTTP
+     * query strings — the JS SDK omits the separator (a known JS quirk
+     * the backend tolerates).
+     *
+     * `config.environment` is always present in production traffic
+     * because [com.convert.sdk.core.config.ConvertConfig.environment]
+     * defaults to `"staging"` (Story 1.2). The conditional on
+     * `environment` is therefore expressed defensively: if a future
+     * change makes the field nullable, this builder still produces a
+     * correct URL (empty query, or low-cache-only).
+     *
+     * Returns the empty string when neither parameter applies (only
+     * possible when both `environment` is empty AND `cacheLevel` is not
+     * `"low"`).
+     */
+    private fun buildConfigQuery(): String {
+        val environment = config.environment
+        val isLowCache = config.network?.cacheLevel == "low"
+        if (environment.isEmpty() && !isLowCache) return ""
+
+        val builder = StringBuilder("?")
+        if (environment.isNotEmpty()) {
+            builder.append("environment=").append(environment)
         }
+        if (isLowCache) {
+            // Insert `&` only when an earlier `key=value` is already in the
+            // query — i.e. when `environment=` was just appended. The
+            // detection uses `'='` so the literal `?` from the prefix is
+            // never mistaken for an existing parameter.
+            if (builder.contains('=')) builder.append('&')
+            builder.append("_conv_low_cache=1")
+        }
+        return builder.toString()
     }
 
     /**
@@ -250,6 +321,14 @@ public class ApiManager(
     public companion object {
         private const val TAG: String = "ApiManager"
         private const val HEADER_AUTHORIZATION: String = "Authorization"
+
+        /**
+         * Mandatory URL path segment between the configured base endpoint
+         * and the `sdkKey`. Matches JS SDK `api-manager.ts:300-313` which
+         * routes to `/config/${sdkKey}${query}`. Story 2.2 AC-1 requires
+         * the literal `/config/` segment in the request URL.
+         */
+        private const val PATH_CONFIG_SEGMENT: String = "config"
 
         /**
          * HTTP 2xx success range — any status outside this range is treated
