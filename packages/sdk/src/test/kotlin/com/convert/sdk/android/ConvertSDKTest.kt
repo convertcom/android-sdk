@@ -34,7 +34,9 @@ import kotlin.system.measureTimeMillis
  * - Builder captures every config option.
  * - build() extracts applicationContext from a non-application Context
  *   (Activity) and never retains the passed ref.
- * - build() returns within 100ms (NFR1 floor is 50ms; test is loose for CI).
+ * - build() returns within NFR1 budget — measured as the median of 5
+ *   back-to-back runs (min + max discarded to absorb Robolectric JVM
+ *   warm-up); median bound is 60ms (50ms NFR1 + 10ms warmup margin).
  * - sdkKeySecret is not in ConvertSDK.toString() or ConvertConfig.toString().
  * - Direct-data mode fires onReady immediately (next tick).
  * - sdk-key mode without cached config does NOT fire onReady (Story 2.2
@@ -111,16 +113,33 @@ internal class ConvertSDKTest {
     }
 
     @Test
-    fun `build returns within the Story 2 1 NFR-1 budget (loose 200ms for CI)`() {
-        // NFR1 is <50ms on device; CI adds variance. Bound at 200ms so the
-        // test is signal, not flake. A regression from ~10ms to 200ms would
-        // still fail.
-        val elapsed = measureTimeMillis {
-            ConvertSDK.builder(appContext)
-                .sdkKey("k")
-                .build()
+    fun `build returns within NFR1 budget (50ms + 10ms warmup, 5-run median)`() {
+        // NFR1 is <50ms on a mid-range device; Robolectric JVM warm-up
+        // inflates the FIRST measurement on a cold JVM, so we take 5
+        // back-to-back samples, discard the min and max (absorbs warm-up
+        // on either tail), and assert the median of the remaining 3 is
+        // under 60ms (NFR1 50ms + 10ms warmup margin per Story 2.1 AC-10
+        // / F-059 remediation).
+        //
+        // A loose 200ms bound (the prior implementation) is FORBIDDEN by
+        // the corrected story — it cannot detect a 4x regression up to
+        // 199ms.
+        val samples = LongArray(SAMPLE_COUNT)
+        for (i in 0 until SAMPLE_COUNT) {
+            samples[i] = measureTimeMillis {
+                ConvertSDK.builder(appContext)
+                    .sdkKey("k")
+                    .build()
+            }
         }
-        assertTrue("build() took ${elapsed}ms (bound: 200ms)", elapsed < 200)
+        val sorted = samples.sortedArray()
+        // Drop sorted[0] (min) and sorted[SAMPLE_COUNT-1] (max); the
+        // median of the remaining three is sorted[2].
+        val median = sorted[SAMPLE_COUNT / 2]
+        assertTrue(
+            "build() median(${sorted.toList()})=${median}ms (bound: ${NFR1_MEDIAN_BOUND_MS}ms)",
+            median < NFR1_MEDIAN_BOUND_MS,
+        )
     }
 
     @Test
@@ -280,5 +299,23 @@ internal class ConvertSDKTest {
         // onReady should not fire (consumer code handles the null return).
         assertNull(sdk.config.sdkKey)
         assertNull(sdk.config.data)
+    }
+
+    private companion object {
+        /**
+         * Number of back-to-back `build()` measurements taken by the NFR1
+         * timing test. With 5 samples we can drop the min and max
+         * (Robolectric JVM warm-up sits in one of those tails) and assert
+         * on the median of the remaining 3.
+         */
+        const val SAMPLE_COUNT: Int = 5
+
+        /**
+         * Median bound for [SAMPLE_COUNT] back-to-back `build()` runs:
+         * NFR1's 50ms ceiling plus a 10ms warm-up margin per Story 2.1
+         * AC-10 / F-059 remediation. Hard bound — a regression that
+         * pushes the median above this fails the test.
+         */
+        const val NFR1_MEDIAN_BOUND_MS: Long = 60L
     }
 }
