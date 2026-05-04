@@ -24,7 +24,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.convert.sdk.demo.ui.component.ResultCard
 import com.convert.sdk.demo.viewmodel.ConversionResult
 import com.convert.sdk.demo.viewmodel.SdkViewModel
 
@@ -38,9 +37,9 @@ import com.convert.sdk.demo.viewmodel.SdkViewModel
  *     `"purchase-goal"` with AMOUNT=10.3 and PRODUCTS_COUNT=2 per AC-1).
  *  3. Either an empty-state text ("Tap Buy to track a conversion.")
  *     when [SdkViewModel.conversionResults] is empty, or a [LazyColumn]
- *     of [ResultCard]s rendered newest-first.
+ *     of [ConversionResultCard]s rendered newest-first.
  *
- * Each [ResultCard] derives its title + items from the corresponding
+ * Each [ConversionResultCard] derives its title + items from the corresponding
  * [ConversionResult]:
  *  - **Non-dedup** (first tap): title = `"Conversion tracked: <goalKey>"`,
  *    items = `[("Amount", <value>), ("ProductsCount", <value>)]`.
@@ -113,16 +112,16 @@ fun ConversionsScreen(viewModel: SdkViewModel) {
 }
 
 /**
- * Private helper that maps a [ConversionResult] to the [ResultCard]
- * shape. Extracted so the public composable stays under detekt's
- * function-size limits and reads top-to-bottom as "layout first,
- * rendering details second".
+ * Private helper that maps a [ConversionResult] to the
+ * [ConversionResultCard] shape. Extracted so the public composable
+ * stays under detekt's function-size limits and reads top-to-bottom as
+ * "layout first, rendering details second".
  */
 @Composable
 private fun ResultCardForConversionResult(result: ConversionResult) {
     when {
         result.isError -> {
-            ResultCard(
+            ConversionResultCard(
                 title = result.errorMessage ?: "Conversion failed",
                 items = listOfNotNull(
                     result.errorHint?.let { "Hint" to it },
@@ -131,7 +130,7 @@ private fun ResultCardForConversionResult(result: ConversionResult) {
             )
         }
         result.isDedup -> {
-            ResultCard(
+            ConversionResultCard(
                 title = "Conversion already tracked (dedup)",
                 items = listOf("Goal" to result.goalKey),
             )
@@ -141,7 +140,7 @@ private fun ResultCardForConversionResult(result: ConversionResult) {
                 result.amount?.let { add("Amount" to it.toString()) }
                 result.productsCount?.let { add("ProductsCount" to it.toString()) }
             }
-            ResultCard(
+            ConversionResultCard(
                 title = "Conversion tracked: ${result.goalKey}",
                 items = items,
             )

@@ -11,8 +11,8 @@ import java.util.concurrent.atomic.AtomicLong
  * A single Conversions-screen outcome (Story 7.5).
  *
  * Produced by [SdkViewModel.trackPurchaseConversion] and consumed by
- * [com.convert.sdk.demo.ui.component.ResultCard] via the Conversions
- * screen.
+ * [com.convert.sdk.demo.ui.screen.ConversionResultCard] via the
+ * Conversions screen.
  *
  * Three shapes — mirroring 7.4's [FeatureResult] style:
  *
@@ -28,8 +28,8 @@ import java.util.concurrent.atomic.AtomicLong
  *  - **Error** (`isError == true`): reserved for future failure modes
  *    (e.g. SDK not ready, configuration missing). Not produced by the
  *    current [SdkViewModel.trackPurchaseConversion] path but included
- *    so the [ResultCard] red-border style is available if a later
- *    story wires one up.
+ *    so the [com.convert.sdk.demo.ui.screen.ConversionResultCard]
+ *    red-border style is available if a later story wires one up.
  *
  * @property id monotonically-increasing unique id. Used as the
  *   `LazyColumn` `items(key = ...)` value to keep Compose stable across
