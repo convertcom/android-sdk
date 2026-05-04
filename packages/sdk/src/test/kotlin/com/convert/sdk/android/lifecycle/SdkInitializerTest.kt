@@ -7,7 +7,6 @@ package com.convert.sdk.android.lifecycle
 
 import androidx.lifecycle.ProcessLifecycleInitializer
 import androidx.test.core.app.ApplicationProvider
-import androidx.work.WorkManagerInitializer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -19,17 +18,23 @@ import org.robolectric.RobolectricTestRunner
  * Story 5.3 AC-8 tests for [SdkInitializer].
  *
  * The initializer's sole purpose is to declare a dependency on
- * [ProcessLifecycleInitializer] and [WorkManagerInitializer] so that App
- * Startup finishes initializing those two framework services BEFORE any
- * SDK code runs. The initializer's `create()` body is a deliberate no-op:
- * the SDK is bootstrapped only when the host app calls
- * `ConvertSDK.builder(context).build()` in `Application.onCreate`.
+ * [ProcessLifecycleInitializer] so that App Startup finishes initializing
+ * that framework service BEFORE any SDK code runs. The initializer's
+ * `create()` body is a deliberate no-op: the SDK is bootstrapped only
+ * when the host app calls `ConvertSDK.builder(context).build()` in
+ * `Application.onCreate`.
+ *
+ * **F-127 correction:** `WorkManagerInitializer` is NOT listed as a
+ * dependency. As of WorkManager 2.6+, that class no longer exists as a
+ * valid App Startup initializer — WorkManager self-initializes via its
+ * own startup mechanism in `work-runtime` 2.11.1. Listing it would cause
+ * a compile error or a runtime initialization failure.
  *
  * Tests assert that:
  *  1. `create(context)` returns [Unit] and does not throw.
  *  2. `dependencies()` lists exactly [ProcessLifecycleInitializer] and
- *     [WorkManagerInitializer] — the two services the SDK needs
- *     initialized before any ConvertSDK.builder() call can run safely.
+ *     nothing else — the only framework service the SDK needs initialized
+ *     before any `ConvertSDK.builder()` call can run safely.
  */
 @RunWith(RobolectricTestRunner::class)
 internal class SdkInitializerTest {
@@ -47,22 +52,19 @@ internal class SdkInitializerTest {
     }
 
     @Test
-    fun `dependencies lists ProcessLifecycleInitializer and WorkManagerInitializer`() {
+    fun `dependencies lists only ProcessLifecycleInitializer`() {
         val initializer = SdkInitializer()
         val deps = initializer.dependencies()
 
         assertEquals(
-            "dependencies() must list both ProcessLifecycleInitializer and WorkManagerInitializer",
-            2,
+            "dependencies() must list exactly one dependency: ProcessLifecycleInitializer " +
+                "(WorkManagerInitializer removed per F-127 — not valid in work-runtime 2.6+)",
+            1,
             deps.size,
         )
         assertTrue(
             "ProcessLifecycleInitializer must be in the dependency list",
             deps.contains(ProcessLifecycleInitializer::class.java),
-        )
-        assertTrue(
-            "WorkManagerInitializer must be in the dependency list",
-            deps.contains(WorkManagerInitializer::class.java),
         )
     }
 }

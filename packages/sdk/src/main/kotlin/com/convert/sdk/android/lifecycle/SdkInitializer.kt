@@ -8,32 +8,32 @@ package com.convert.sdk.android.lifecycle
 import android.content.Context
 import androidx.lifecycle.ProcessLifecycleInitializer
 import androidx.startup.Initializer
-import androidx.work.WorkManagerInitializer
 
 /**
  * App Startup [Initializer] that guarantees
- * [androidx.lifecycle.ProcessLifecycleOwner] and [androidx.work.WorkManager]
- * are initialised before any SDK code runs.
+ * [androidx.lifecycle.ProcessLifecycleOwner] is initialised before any
+ * SDK code runs.
  *
- * ### Role (Story 5.3 AC-8)
+ * ### Role (Story 5.3 AC-8, F-127)
  *
  * Consumers bootstrap the SDK explicitly in their `Application.onCreate`
  * by calling `ConvertSDK.builder(context).build()`. That chain eventually
- * reaches into:
+ * reaches into `ProcessLifecycleOwner.get()` — owned by
+ * [ProcessLifecycleInitializer], which the `androidx.lifecycle-process`
+ * artifact registers with App Startup as a hard dependency.
  *
- *  - `ProcessLifecycleOwner.get()` — owned by
- *    [ProcessLifecycleInitializer], which the `androidx.lifecycle-process`
- *    artifact registers with App Startup as a hard dependency.
- *  - `WorkManager.getInstance(context)` — owned by
- *    [WorkManagerInitializer], which the `androidx.work-runtime` artifact
- *    registers with App Startup.
+ * **WorkManager note (F-127):** As of WorkManager 2.6+,
+ * `WorkManagerInitializer` is NOT the correct App Startup dependency for
+ * the `work-runtime` artifact. WorkManager 2.6+ self-initializes via its
+ * own `WorkManagerInitializationStartup` (or directly, depending on the
+ * build variant); referencing the removed `WorkManagerInitializer` class
+ * causes a compile error or initialization failure at runtime. Verified
+ * against work-runtime 2.11.1 release notes: https://developer.android.com/jetpack/androidx/releases/work
  *
- * Both services normally initialise on their own via App Startup's
- * `InitializationProvider`. The SDK declares this [SdkInitializer] —
- * itself a no-op `create()` — solely so App Startup's dependency-resolver
- * sees a consumer that REQUIRES both to be ready. That prevents a race
- * where an earlier consumer's initialiser reaches `WorkManager.getInstance`
- * before the work-runtime initializer has finished.
+ * `ProcessLifecycleInitializer` (from `androidx.lifecycle:lifecycle-process`)
+ * is the only required dependency — it guarantees `ProcessLifecycleOwner`
+ * is ready. [Source: AndroidX App Startup —
+ * https://developer.android.com/topic/libraries/app-startup]
  *
  * ### Why `create()` is deliberately empty
  *
@@ -63,12 +63,15 @@ internal class SdkInitializer : Initializer<Unit> {
     }
 
     /**
-     * Declares hard dependencies on the `androidx.lifecycle.process` and
-     * `androidx.work.runtime` initializers so App Startup finishes both
-     * before any ConvertSDK consumer code runs.
+     * Declares a hard dependency on [ProcessLifecycleInitializer] so
+     * App Startup finishes it before any ConvertSDK consumer code runs.
+     *
+     * `WorkManagerInitializer` is intentionally excluded (F-127): as of
+     * WorkManager 2.6+ the class no longer exists as a public App Startup
+     * initializer. WorkManager self-initializes in `work-runtime` 2.11.1
+     * without needing a consumer-side dependency declaration.
      */
     override fun dependencies(): List<Class<out Initializer<*>>> = listOf(
         ProcessLifecycleInitializer::class.java,
-        WorkManagerInitializer::class.java,
     )
 }
