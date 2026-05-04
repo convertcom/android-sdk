@@ -21,7 +21,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.convert.sdk.demo.ui.component.ConfigInfoPanel
-import com.convert.sdk.demo.ui.component.ResultCard
 import com.convert.sdk.demo.viewmodel.ConfigState
 import com.convert.sdk.demo.viewmodel.SdkViewModel
 
@@ -38,8 +37,9 @@ import com.convert.sdk.demo.viewmodel.SdkViewModel
  *    required rows (masked SDK key, environment, active
  *    experiences/features with count + keys, formatted
  *    last-fetched timestamp, tracking Yes/No/—).
- *  - [ConfigState.Failed] (AC-7) — an error-styled [ResultCard] with
- *    the `reason` from the latest WARN/ERROR log and the canonical
+ *  - [ConfigState.Failed] (AC-7) — an error-styled [ConfigResultCard]
+ *    with the `reason` from the latest WARN/ERROR log (or the
+ *    10-second timeout sentinel) and the canonical
  *    `"Check network + SDK key"` hint literal.
  *
  * The screen deliberately has no tap targets — it is a read-only
@@ -100,9 +100,8 @@ private fun LoadingBranch() {
 
 @Composable
 private fun FailedBranch(state: ConfigState.Failed) {
-    ResultCard(
+    ConfigResultCard(
         title = state.reason,
         items = listOf("Hint" to state.hint),
-        isError = true,
     )
 }

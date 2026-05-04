@@ -9,6 +9,7 @@ import com.convert.sdk.core.model.LogLevel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -209,11 +210,81 @@ class SdkViewModelConfigStateTest {
         )
         vm.logger.info("initialising")
         vm.logger.debug("trace frame")
-        advanceUntilIdle()
+        // F-145 remediation: a 10s READY-timeout coroutine runs in
+        // viewModelScope. `advanceUntilIdle()` would drain it and trip
+        // ConfigState.Failed via the timeout path — orthogonal to what
+        // this test asserts. Advance only enough virtual time to drain
+        // any synchronous log-handling continuations without crossing
+        // the 10s deadline.
+        advanceTimeBy(100)
 
         assertTrue(
             vm.configState.value is ConfigState.Loading,
             "info/debug logs should not transition state",
+        )
+    }
+
+    @Test
+    fun `no ready event within 10 seconds transitions to Failed via timeout`() = runTest(testDispatcher) {
+        // F-145 remediation: AC-7 — "If config fetch fails AND no cache
+        // available — inferred by absence of READY event within 10
+        // seconds of SDK init — show error ResultCard with failure
+        // reason and suggestion (\"Check network + SDK key\")."
+        val subscriber = FakeEventSubscriber()
+        val provider = FakeConfigSnapshotProvider(
+            snapshot = ConfigSnapshot("", null, emptyList(), emptyList(), null),
+        )
+        val vm = SdkViewModel(
+            eventSubscriber = subscriber,
+            initialNetworkOnline = true,
+            configSnapshotProvider = provider,
+        )
+        // Just before the deadline — still Loading.
+        advanceTimeBy(9_999)
+        assertTrue(
+            vm.configState.value is ConfigState.Loading,
+            "Loading should hold until the 10s deadline elapses",
+        )
+
+        // Cross the 10s mark — the timeout coroutine fires and flips
+        // state to Failed with the canonical hint.
+        advanceTimeBy(2)
+        val state = vm.configState.value
+        assertTrue(state is ConfigState.Failed, "expected Failed after 10s, got $state")
+        val failed = state as ConfigState.Failed
+        assertEquals("Configuration fetch timed out", failed.reason)
+        assertEquals("Check network + SDK key", failed.hint)
+    }
+
+    @Test
+    fun `ready before deadline blocks the timeout transition`() = runTest(testDispatcher) {
+        // F-145 remediation: once Loaded is reached, the timeout's
+        // post-delay update is a no-op (guarded by
+        // `current is ConfigState.Loading`). Asserts that a `ready`
+        // arriving before the 10s deadline keeps the state Loaded even
+        // after the deadline elapses.
+        val subscriber = FakeEventSubscriber()
+        val provider = FakeConfigSnapshotProvider(
+            snapshot = ConfigSnapshot(
+                sdkKey = "k",
+                environment = "prod",
+                experienceKeys = emptyList(),
+                featureKeys = emptyList(),
+                trackingEnabled = true,
+            ),
+        )
+        val vm = SdkViewModel(
+            eventSubscriber = subscriber,
+            initialNetworkOnline = true,
+            configSnapshotProvider = provider,
+        )
+        subscriber.emit("ready", mapOf("environment" to "prod"))
+        // Drive past the 10s deadline.
+        advanceUntilIdle()
+
+        assertTrue(
+            vm.configState.value is ConfigState.Loaded,
+            "ready before deadline must keep Loaded — timeout must be a no-op",
         )
     }
 

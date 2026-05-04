@@ -35,7 +35,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import com.convert.sdk.demo.ui.component.ResultCard
 import com.convert.sdk.demo.viewmodel.ConversionResult
 import com.convert.sdk.demo.viewmodel.ExperienceResult
 import com.convert.sdk.demo.viewmodel.SdkViewModel
@@ -198,23 +197,35 @@ private fun NetworkBanner(online: Boolean) {
 }
 
 /**
- * Maps either result shape to the shared [ResultCard]. Kept private so
- * the public composable stays small and reads top-to-bottom as
- * "layout first, rendering details second" (matches the
- * Experiences/Features/Conversions screen precedent).
+ * Maps either result shape to the corresponding screen-specific card.
+ *
+ * Per the UX spec line 698 + the Story 7.3/7.4/7.5 screen-specific
+ * convention (see [ExperienceResultCard], [ConversionResultCard]),
+ * `ResultCard` is no longer a shared component — each screen owns its
+ * own card composable. The Offline screen renders BOTH experience and
+ * conversion outcomes (one card per `Run Experience` / `Buy` tap), so
+ * it delegates to the existing sibling cards rather than introducing a
+ * third specialised "OfflineResultCard" — the data shapes the Offline
+ * buttons produce are identical to those produced by the Experiences
+ * and Conversions screens, and visual parity across screens is the
+ * point.
+ *
+ * Kept private so the public composable stays small and reads
+ * top-to-bottom as "layout first, rendering details second" (matches
+ * the Experiences/Features/Conversions screen precedent).
  */
 @Composable
 private fun OfflineResultCard(result: Any) {
     when (result) {
         is ExperienceResult -> {
             if (result.isError) {
-                ResultCard(
+                ExperienceResultCard(
                     title = result.errorMessage ?: "No variation",
                     items = listOfNotNull(result.errorHint?.let { "Hint" to it }),
                     isError = true,
                 )
             } else {
-                ResultCard(
+                ExperienceResultCard(
                     title = "Experience: ${result.experienceKey}",
                     items = listOf("Variation" to (result.variationKey ?: "(no key)")),
                 )
@@ -222,12 +233,12 @@ private fun OfflineResultCard(result: Any) {
         }
         is ConversionResult -> {
             when {
-                result.isError -> ResultCard(
+                result.isError -> ConversionResultCard(
                     title = result.errorMessage ?: "Conversion failed",
                     items = listOfNotNull(result.errorHint?.let { "Hint" to it }),
                     isError = true,
                 )
-                result.isDedup -> ResultCard(
+                result.isDedup -> ConversionResultCard(
                     title = "Conversion already tracked (dedup)",
                     items = listOf("Goal" to result.goalKey),
                 )
@@ -236,7 +247,7 @@ private fun OfflineResultCard(result: Any) {
                         result.amount?.let { add("Amount" to it.toString()) }
                         result.productsCount?.let { add("ProductsCount" to it.toString()) }
                     }
-                    ResultCard(
+                    ConversionResultCard(
                         title = "Conversion tracked: ${result.goalKey}",
                         items = items,
                     )

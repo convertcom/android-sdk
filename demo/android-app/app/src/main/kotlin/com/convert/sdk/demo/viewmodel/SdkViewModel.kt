@@ -6,6 +6,7 @@
 package com.convert.sdk.demo.viewmodel
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.convert.sdk.core.event.SystemEvents
 import com.convert.sdk.core.model.Feature
 import com.convert.sdk.core.model.GoalData
@@ -14,10 +15,13 @@ import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.Variation
 import com.convert.sdk.core.port.Logger
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
 /**
  * Story 7.1 AC-9 / Story 7.2 — shared ViewModel that aggregates SDK
@@ -152,12 +156,22 @@ class SdkViewModel(
      *  - [ConfigState.Loading] → [ConfigState.Loaded] on the first
      *    `ready` event (or any subsequent `config.updated`).
      *  - [ConfigState.Loading] → [ConfigState.Failed] when a WARN or
-     *    ERROR log accumulates BEFORE any `ready` fire — per
+     *    ERROR log accumulates BEFORE any `ready` fires — per
      *    Story 7.6 Gotcha 3, the UI infers the error from the log
      *    stream because the SDK does not expose a typed error event.
+     *  - [ConfigState.Loading] → [ConfigState.Failed] when no `ready`
+     *    has fired within [READY_TIMEOUT_MILLIS] of ViewModel
+     *    construction (Story 7.6 AC-7, F-145 remediation): a silent
+     *    network hang would otherwise leave the spinner running
+     *    forever. The timeout sentinel reason is used because no log
+     *    message is available; the same canonical
+     *    [CONFIG_FAILURE_HINT] is supplied.
      *  - Once [ConfigState.Loaded] is reached, subsequent WARN/ERROR
-     *    logs do NOT downgrade state. The demo already has a usable
-     *    config in memory; a stale-refresh WARN is not a regression.
+     *    logs do NOT downgrade state and the timeout has no effect
+     *    (the timer's transition is no-op'd by the
+     *    `current is ConfigState.Loading` guard). The demo already has
+     *    a usable config in memory; a stale-refresh WARN is not a
+     *    regression.
      */
     val configState: StateFlow<ConfigState> = _configState.asStateFlow()
 
@@ -210,6 +224,21 @@ class SdkViewModel(
 
     private val subscriptionTokens: MutableList<AutoCloseable> = mutableListOf()
 
+    /**
+     * Story 7.6 AC-7 (F-145 remediation) — coroutine that flips
+     * [configState] to [ConfigState.Failed] if no `ready` event arrives
+     * within [READY_TIMEOUT_MILLIS] of ViewModel construction. Cancelled
+     * eagerly in [onCleared] so a backgrounded then-recreated ViewModel
+     * does not leak the timer.
+     *
+     * Cancellation when `ready` arrives is unnecessary — once the state
+     * has transitioned to [ConfigState.Loaded] the post-delay update is
+     * a no-op (guarded by `current is ConfigState.Loading`). Letting the
+     * job run to completion keeps the wiring symmetric and avoids a
+     * separate "first ready arrived" guard.
+     */
+    private val readyTimeoutJob: Job
+
     init {
         // Subscribe to the five system events named in AC-9. We keep
         // the AutoCloseable tokens alive for the lifetime of the
@@ -220,6 +249,25 @@ class SdkViewModel(
                 onSdkEvent(event, payload)
             }
             subscriptionTokens += token
+        }
+
+        // Story 7.6 AC-7 (F-145) — start the 10-second deadline. If the
+        // SDK never fires `ready` and never logs a WARN/ERROR (silent
+        // network hang) the Config screen would otherwise spin forever.
+        // Tests drive `Dispatchers.Main` via a TestDispatcher so this
+        // launch is observable through `advanceTimeBy(...)`.
+        readyTimeoutJob = viewModelScope.launch {
+            delay(READY_TIMEOUT_MILLIS)
+            _configState.update { current ->
+                if (current is ConfigState.Loading) {
+                    ConfigState.Failed(
+                        reason = CONFIG_FETCH_TIMEOUT_REASON,
+                        hint = CONFIG_FAILURE_HINT,
+                    )
+                } else {
+                    current
+                }
+            }
         }
     }
 
@@ -655,6 +703,10 @@ class SdkViewModel(
         super.onCleared()
         subscriptionTokens.forEach { runCatching { it.close() } }
         subscriptionTokens.clear()
+        // viewModelScope is cancelled automatically on onCleared, so the
+        // explicit cancel below is belt-and-braces for clarity. Safe to
+        // call after the scope has already finished.
+        readyTimeoutJob.cancel()
     }
 
     private companion object {
@@ -702,6 +754,30 @@ class SdkViewModel(
          * UX-copy refresh can find and replace it in one place.
          */
         const val CONFIG_FAILURE_HINT: String = "Check network + SDK key"
+
+        /**
+         * Story 7.6 AC-7 (F-145 remediation) — deadline for the SDK's
+         * first `ready` event after ViewModel construction. The corrected
+         * AC-7 specifies 10 seconds (option (a) in the F-145 audit
+         * finding): a reasonable upper bound for a demo context, matching
+         * OkHttp's default read timeout. After this point the absence of
+         * a `ready` event AND the absence of any WARN/ERROR log is
+         * treated as a silent failure — the Config screen flips to the
+         * Failed branch with [CONFIG_FETCH_TIMEOUT_REASON] so the
+         * developer is not left staring at a perpetual spinner.
+         */
+        const val READY_TIMEOUT_MILLIS: Long = 10_000L
+
+        /**
+         * Story 7.6 AC-7 (F-145 remediation) — the failure-reason
+         * sentinel used when the [READY_TIMEOUT_MILLIS] deadline elapses
+         * with no `ready` event AND no WARN/ERROR log to derive a real
+         * reason from. Surfaces in the [ConfigState.Failed.reason]
+         * field, which the Config screen renders as the
+         * [com.convert.sdk.demo.ui.screen.ConfigResultCard] title.
+         */
+        const val CONFIG_FETCH_TIMEOUT_REASON: String =
+            "Configuration fetch timed out"
     }
 }
 
