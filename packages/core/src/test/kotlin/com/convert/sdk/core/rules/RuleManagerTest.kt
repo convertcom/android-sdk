@@ -61,24 +61,27 @@ internal class RuleManagerTest {
     private fun attrs(vararg pairs: Pair<String, JsonElement>): Map<String, JsonElement> =
         mapOf(*pairs)
 
-    // --- AC-1: Empty / null rules return true ----------------------------
+    // --- AC-1: Empty / null rules return false (rule not valid) — F-024 ---
 
     @Test
-    fun `evaluate returns true for null audience rules (no constraints)`() {
+    fun `evaluate returns false for null audience rules (rule not valid)`() {
+        // F-024: JS SDK rule-manager.ts:116-153 treats absent/empty OR as
+        // INVALID — log WARN + return false. Empty rule set is NOT "no
+        // constraints"; cross-SDK parity demands false here.
         val result = managerWith().evaluate(null as RuleObjectAudience?, emptyMap())
-        assertTrue(result)
+        assertFalse(result)
     }
 
     @Test
-    fun `evaluate returns true for empty OR block`() {
+    fun `evaluate returns false for empty OR block (rule not valid)`() {
         val rules = decodeAudienceRules("""{"OR": []}""")
-        assertTrue(managerWith().evaluate(rules, emptyMap()))
+        assertFalse(managerWith().evaluate(rules, emptyMap()))
     }
 
     @Test
-    fun `evaluate returns true when rules OR field is null`() {
+    fun `evaluate returns false when rules OR field is null (rule not valid)`() {
         val rules = decodeAudienceRules("""{}""")
-        assertTrue(managerWith().evaluate(rules, emptyMap()))
+        assertFalse(managerWith().evaluate(rules, emptyMap()))
     }
 
     // --- AC-1: Single OR/AND/OR_WHEN with equals ------------------------
@@ -181,10 +184,15 @@ internal class RuleManagerTest {
         assertTrue(result)
     }
 
-    // --- AC-3: keysCaseSensitive = false ---------------------------------
+    // --- AC-3 / F-108: keys_case_sensitive — JS-SDK falsy-coalesce quirk ---
 
     @Test
-    fun `keys case insensitive lookup matches mixed case attribute key`() {
+    fun `case insensitive — keys_case_sensitive false coalesces to true`() {
+        // F-108 (test 1 of 2): mirrors JS SDK rule-manager.ts:57-58
+        // `config?.rules?.keys_case_sensitive || DEFAULT_KEYS_CASE_SENSITIVE`
+        // — any falsy value, including explicit `false`, coalesces back to
+        // `true`. So passing `false` via config has NO effect; the lookup
+        // remains case-sensitive and the mixed-case attribute is not found.
         val rules = decodeAudienceRules(
             """
             {"OR":[{"AND":[{"OR_WHEN":[
@@ -193,7 +201,31 @@ internal class RuleManagerTest {
             """.trimIndent(),
         )
         val mgr = managerWith(keysCaseSensitive = false)
+        val result = mgr.evaluate(rules, attrs("PLAN" to JsonPrimitive("premium")))
+        // Quirk: false → true → case-sensitive lookup → "PLAN" != "Plan" → false
+        assertFalse(result)
+    }
+
+    @Test
+    fun `case insensitive — equals with keys_case_sensitive injected false bypassing coalesce`() {
+        // F-108 (test 2 of 2): the JS-SDK quirk makes the case-insensitive
+        // code path unreachable through normal config construction. To
+        // verify the underlying logic still works (and to keep cross-SDK
+        // parity in the unlikely event the JS SDK fixes its quirk), the
+        // RuleManager exposes an `internal` `keysCaseSensitiveOverride`
+        // seam that bypasses the coalesce. Production code never touches
+        // it; tests use it to drive the case-insensitive branch directly.
+        val rules = decodeAudienceRules(
+            """
+            {"OR":[{"AND":[{"OR_WHEN":[
+              {"rule_type":"generic_key_value","matching":{"match_type":"equals","negated":false},"key":"Plan","value":"premium"}
+            ]}]}]}
+            """.trimIndent(),
+        )
+        val mgr = managerWith()
+        mgr.keysCaseSensitiveOverride = false
         val result = mgr.evaluate(rules, attrs("PLAN" to JsonPrimitive("PREMIUM")))
+        // Override bypasses coalesce → case-insensitive lookup → "PLAN" matches "Plan" → true
         assertTrue(result)
     }
 
@@ -331,9 +363,10 @@ internal class RuleManagerTest {
     }
 
     @Test
-    fun `location rules overload returns true for null rules`() {
+    fun `location rules overload returns false for null rules (rule not valid)`() {
+        // F-024: same invalid-rule-set semantics as the audience overload.
         val result = managerWith().evaluate(null as RuleObject?, emptyMap())
-        assertTrue(result)
+        assertFalse(result)
     }
 
     // --- Complex combined structure -------------------------------------

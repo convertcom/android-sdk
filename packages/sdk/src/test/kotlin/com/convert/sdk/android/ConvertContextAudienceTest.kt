@@ -324,12 +324,24 @@ internal class ConvertContextAudienceTest {
     // --- Rules with keysCaseSensitive config knob ------------------------
 
     @Test
-    fun `runExperience honours rules keys_case_sensitive false`() {
+    fun `runExperience rules keys_case_sensitive false coalesces to true (JS SDK quirk - F-108)`() {
+        // F-108: JS SDK rule-manager.ts:57-58 does
+        // `config?.rules?.keys_case_sensitive || DEFAULT_KEYS_CASE_SENSITIVE`
+        // which coerces any falsy value (including explicit `false`) back
+        // to `true`. The Android RuleManager mirrors this quirk verbatim
+        // for cross-SDK parity. Therefore passing `rulesKeysCaseSensitive(false)`
+        // through the public builder has NO effect — the lookup remains
+        // case-sensitive, "PLAN" (attr) ≠ "plan" (rule key), audience
+        // fails, runExperience returns null.
+        //
+        // The case-insensitive code path itself is exercised by
+        // RuleManagerTest's `case insensitive: equals with
+        // keys_case_sensitive injected false (bypassing coalesce)` test
+        // via the internal `keysCaseSensitiveOverride` seam.
         val config = testConfig(
             audienceIds = listOf("aud-premium"),
             allAudiences = listOf(planPremiumAudience),
         )
-        // Key on attribute is PLAN (uppercase), rule key is "plan"
         val sdk = ConvertSDK.builder(appContext)
             .data(config)
             .rulesKeysCaseSensitive(false)
@@ -340,7 +352,8 @@ internal class ConvertContextAudienceTest {
 
         val result = ctx.runExperience("welcome")
 
-        assertNotNull(result)
+        // Quirk: false → true → case-sensitive → no audience match → null
+        assertNull(result)
     }
 
     @Suppress("unused")

@@ -25,9 +25,10 @@ import kotlinx.serialization.json.contentOrNull
  * Mirrors the algorithm in `@convertcom/js-sdk-rules/rule-manager.ts`:
  *
  *  - **Top-level `OR`** — the rule set matches if *any* AND branch
- *    evaluates to `true`. Empty / missing `OR` array → "no constraints"
- *    → returns `true` (matches JS SDK's "empty rule set = eligible"
- *    behaviour; the Android story AC-1 codifies it).
+ *    evaluates to `true`. **Empty / missing `OR` property → log WARN
+ *    (`RuleManager.isRuleMatched(): rule not valid`) and return `false`**
+ *    (matches JS SDK `rule-manager.ts:116-153`: an absent / empty `OR`
+ *    is treated as an INVALID rule, not as "no constraints"; F-024).
  *  - **Second-level `AND`** — the AND branch matches if *every* OR_WHEN
  *    block evaluates to `true`. A single failing OR_WHEN short-circuits
  *    the branch to `false`.
@@ -56,11 +57,20 @@ import kotlinx.serialization.json.contentOrNull
  *
  * ### Case sensitivity (AC-3)
  *
- * When `config.rules?.keysCaseSensitive == false`, the attribute-map
- * lookup lowercases both the rule's `key` and each attribute key. The
- * comparison operators themselves (lowercasing on the `value` side)
- * are handled inside [Comparisons] for every string operator;
- * [RuleManager] does not touch the value side.
+ * Mirrors the JS SDK's `keys_case_sensitive` quirk verbatim: the
+ * constructor does `config?.rules?.keys_case_sensitive || true` (see
+ * `rule-manager.ts:57-58`), which means **any falsy value — including
+ * an explicit `false` — coalesces to `true`**. The Android port uses
+ * `takeIf { it == true } ?: true` so `false` and `null` both resolve
+ * to `true` (case-sensitive lookup). This is a known JS SDK quirk;
+ * we mirror it for cross-SDK parity rather than fixing it.
+ *
+ * When the resolved flag is `false` (effectively never via config —
+ * see [keysCaseSensitiveOverride] for the test-only injection seam),
+ * the attribute-map lookup lowercases both the rule's `key` and each
+ * attribute key. The comparison operators themselves (lowercasing on
+ * the `value` side) are handled inside [Comparisons] for every string
+ * operator; [RuleManager] does not touch the value side.
  *
  * ### Negation (AC-4)
  *
@@ -85,7 +95,10 @@ public class RuleManager(
     /**
      * Evaluates an audience rule tree ([RuleObjectAudience]).
      *
-     * @param rules the deserialised rule tree; `null` or empty → `true`.
+     * @param rules the deserialised rule tree; `null` or an empty / absent
+     *   `OR` array logs WARN (`RuleManager.isRuleMatched(): rule not valid`)
+     *   and returns `false`, mirroring JS SDK `rule-manager.ts:116-153`
+     *   (F-024 — empty rule sets are INVALID, not "no constraints").
      * @param attributes the visitor's attribute map (or any other
      *   key/value data the rule tree expects — location properties,
      *   custom segments, etc.).
@@ -94,7 +107,10 @@ public class RuleManager(
      */
     public fun evaluate(rules: RuleObjectAudience?, attributes: Map<String, JsonElement>): Boolean {
         val orGroups = rules?.OR
-        if (orGroups.isNullOrEmpty()) return true
+        if (orGroups.isNullOrEmpty()) {
+            warnRuleNotValid()
+            return false
+        }
         return orGroups.any { orGroup ->
             evaluateAndBlock(orGroup.AND, attributes)
         }
@@ -106,13 +122,32 @@ public class RuleManager(
      * location rule trees use different inner generated classes
      * ([com.convert.sdk.core.model.generated.RuleObjectORInner] →
      * [com.convert.sdk.core.model.generated.RuleObjectORInnerANDInner]).
+     *
+     * `null` or empty / absent `OR` → WARN + `false`, same as the
+     * audience overload (F-024).
      */
     public fun evaluate(rules: RuleObject?, attributes: Map<String, JsonElement>): Boolean {
         val orGroups = rules?.OR
-        if (orGroups.isNullOrEmpty()) return true
+        if (orGroups.isNullOrEmpty()) {
+            warnRuleNotValid()
+            return false
+        }
         return orGroups.any { orGroup ->
             evaluateLocationAndBlock(orGroup.AND, attributes)
         }
+    }
+
+    /**
+     * Emits the JS-SDK-parity WARN for an invalid rule set (no `OR`
+     * property or an empty `OR` array). Phrasing mirrors JS SDK
+     * `rule-manager.ts:147-151`'s `ERROR_MESSAGES.RULE_NOT_VALID` log
+     * line exactly so cross-SDK log scraping stays uniform.
+     */
+    private fun warnRuleNotValid() {
+        logger.warn(
+            message = "RuleManager.isRuleMatched(): rule not valid (missing or empty OR property)",
+            tag = TAG,
+        )
     }
 
     /**
@@ -236,10 +271,44 @@ public class RuleManager(
     }
 
     /**
-     * Looks up an attribute by [ruleKey], honouring the
-     * `keysCaseSensitive` setting. When `false`, both the rule key and
-     * the map keys are lowercased. Returns `null` when the rule key is
-     * itself missing (defensive — shouldn't happen for well-formed
+     * Test-only injection seam (F-108): when non-`null`, this value
+     * **bypasses** the JS-SDK falsy-coalesce on
+     * `config.rules?.keysCaseSensitive` and is used directly as the
+     * resolved flag. Production code never sets this — it exists solely
+     * so unit tests can reach the case-insensitive lookup path that the
+     * coalesce makes unreachable through normal config construction
+     * (the JS SDK's `|| DEFAULT_KEYS_CASE_SENSITIVE` quirk turns any
+     * falsy config value, including an explicit `false`, back into
+     * `true`).
+     *
+     * `internal` visibility keeps it out of the published `sdk-core`
+     * surface; only test code in the same module can poke at it.
+     */
+    @Suppress("VariableNaming")
+    internal var keysCaseSensitiveOverride: Boolean? = null
+
+    /**
+     * Resolves the effective `keys_case_sensitive` flag. Mirrors the JS
+     * SDK quirk at `rule-manager.ts:57-58` verbatim: any falsy value
+     * (including an explicit `false`) coalesces back to `true`. The
+     * `takeIf { it == true }` chain captures the JS `||` truthiness
+     * check — only an explicit `true` survives; `false` and `null`
+     * both land on `true`.
+     *
+     * The [keysCaseSensitiveOverride] test-only seam, when non-`null`,
+     * preempts the coalesce so unit tests can exercise the otherwise
+     * unreachable case-insensitive branch.
+     */
+    private fun resolvedKeysCaseSensitive(): Boolean =
+        keysCaseSensitiveOverride
+            ?: (config.rules?.keysCaseSensitive?.takeIf { it == true } ?: true)
+
+    /**
+     * Looks up an attribute by [ruleKey], honouring the resolved
+     * `keysCaseSensitive` flag (see [resolvedKeysCaseSensitive] for the
+     * JS-SDK falsy-coalesce semantics). When `false`, both the rule key
+     * and the map keys are lowercased. Returns `null` when the rule key
+     * is itself missing (defensive — shouldn't happen for well-formed
      * rules) or when no attribute matches.
      */
     private fun lookupAttribute(
@@ -247,8 +316,7 @@ public class RuleManager(
         ruleKey: String?,
     ): JsonElement? {
         if (ruleKey == null) return null
-        val caseSensitive = config.rules?.keysCaseSensitive ?: true
-        return if (caseSensitive) {
+        return if (resolvedKeysCaseSensitive()) {
             attributes[ruleKey]
         } else {
             val target = ruleKey.lowercase()
