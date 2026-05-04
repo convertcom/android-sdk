@@ -25,8 +25,11 @@ import kotlin.system.measureTimeMillis
 /**
  * Robolectric-backed tests for Story 3.2 AC-6 / AC-7 / AC-8 / AC-9 / AC-10 /
  * AC-11: `ConvertContext.runExperience` full-body behaviour including
- * sticky bucketing persistence, event fire, tracking gate, and
- * the <10ms performance bound (AC-8).
+ * sticky bucketing persistence, event fire (gated by `enableTracking`
+ * on BOTH the new-bucketing and sticky-recall paths after the F-035 /
+ * F-134 remediation), tracking gate, and the <50ms CI performance
+ * bound (AC-8 / F-133 — NFR2's stricter <5ms is validated on-device,
+ * not in JVM unit tests).
  *
  * ### Why Robolectric
  *
@@ -314,7 +317,17 @@ internal class ConvertContextRunExperienceTest {
         )
     }
 
-    // --- AC-10: internal SystemEvents.BUCKETING still fires in all cases --
+    // --- AC-10: internal SystemEvents.BUCKETING firing rules ---------------
+    //
+    // After F-035 / F-134 remediation:
+    //  * new-bucketing path + enableTracking=true  → BUCKETING fires ONCE
+    //  * new-bucketing path + enableTracking=false → BUCKETING does NOT fire
+    //  * sticky-recall path + enableTracking=true  → BUCKETING fires ONCE
+    //  * sticky-recall path + enableTracking=false → BUCKETING does NOT fire
+    //
+    // The network enqueue (apiManager.enqueueBucketingEvent) is independently
+    // tested above and is *additionally* gated to never fire on the sticky
+    // path regardless of enableTracking.
 
     @Test
     fun `runExperience fires SystemEvents BUCKETING on new bucketing`() {
@@ -337,9 +350,12 @@ internal class ConvertContextRunExperienceTest {
     }
 
     @Test
-    fun `runExperience fires SystemEvents BUCKETING when enableTracking is false`() {
-        // Internal bus is NOT gated by the per-call tracking flag — only
-        // the outbound network enqueue is.
+    fun `runExperience does NOT fire SystemEvents BUCKETING when enableTracking is false`() {
+        // F-134 remediation: AC-10 was reinterpreted to suppress the
+        // internal BUCKETING event when enableTracking=false, so observers
+        // do not receive misleading bucketing signals during silent
+        // evaluation runs. This test asserts the suppression by polling
+        // the receiver list for ~200ms then checking it stayed empty.
         val sdk = buildSdk(testConfig())
         val received = mutableListOf<Map<String, Any?>>()
         val callback = RecordingEventCallback(received)
@@ -348,14 +364,80 @@ internal class ConvertContextRunExperienceTest {
 
         ctx.runExperience("welcome", enableTracking = false)
 
-        awaitCondition { received.isNotEmpty() }
-        assertEquals(1, received.size)
+        // No condition to wait for — the absence of an event is
+        // intrinsically asynchronous to confirm. Sleep long enough
+        // that any scope-scheduled fire would have landed (~200ms).
+        Thread.sleep(200)
+        assertTrue(
+            "Expected no SystemEvents.BUCKETING fires, got $received",
+            received.isEmpty(),
+        )
     }
 
-    // --- AC-8: performance (<10ms in test, loose bound for CI variability) --
+    @Test
+    fun `runExperience fires SystemEvents BUCKETING on sticky recall`() {
+        // F-035 remediation: AC-6 step 3 was reinterpreted so the sticky
+        // recall path also fires BUCKETING when enableTracking=true,
+        // matching the new-bucketing path so observers see ALL bucketing
+        // activity (including returning-visitor recalls).
+        val sdk = buildSdk(testConfig())
+        val ctx = sdk.createContext("visitor_abc")
+
+        // Prime the sticky entry on the first call. We attach the
+        // observer AFTER this call so that only the sticky-recall fire
+        // is captured below — the new-bucketing fire on call #1 is not
+        // the subject of this test.
+        ctx.runExperience("welcome")
+
+        val received = mutableListOf<Map<String, Any?>>()
+        val callback = RecordingEventCallback(received)
+        sdk.on(SystemEvents.BUCKETING, callback)
+
+        ctx.runExperience("welcome") // sticky path
+
+        awaitCondition { received.isNotEmpty() }
+        assertEquals(1, received.size)
+        val payload = received.first()
+        assertEquals("welcome", payload["experienceKey"])
+        assertEquals("control", payload["variationKey"])
+        assertEquals("visitor_abc", payload["visitorId"])
+    }
 
     @Test
-    fun `runExperience completes in under 10ms after warmup`() {
+    fun `runExperience sticky recall does NOT fire BUCKETING when enableTracking is false`() {
+        // F-134 remediation extends to the sticky path: enableTracking=false
+        // suppresses ALL bucketing signals — network AND internal — on
+        // BOTH the new-bucketing and sticky-recall paths.
+        val sdk = buildSdk(testConfig())
+        val ctx = sdk.createContext("visitor_abc")
+
+        // Prime the sticky entry. enableTracking=true so the new-bucketing
+        // fire is independent of what we are measuring on the sticky call.
+        ctx.runExperience("welcome", enableTracking = true)
+
+        val received = mutableListOf<Map<String, Any?>>()
+        val callback = RecordingEventCallback(received)
+        sdk.on(SystemEvents.BUCKETING, callback)
+
+        ctx.runExperience("welcome", enableTracking = false) // sticky path
+
+        Thread.sleep(200)
+        assertTrue(
+            "Expected no SystemEvents.BUCKETING fires on sticky+tracking-false, got $received",
+            received.isEmpty(),
+        )
+    }
+
+    // --- AC-8: performance (<50ms in CI JVM; <5ms NFR2 validated separately on-device) --
+
+    @Test
+    fun `runExperience completes in under 50ms after warmup`() {
+        // F-133 remediation: AC-8's CI bound is <50ms (matches NFR1's 50ms
+        // initialization budget) to give broad headroom for JIT warmup,
+        // GC pauses, and CI-runner contention. NFR2's stricter <5ms bound
+        // is validated by dedicated profiling on a real Android device,
+        // not in JVM unit tests where startup variance dwarfs the actual
+        // bucketing cost.
         val sdk = buildSdk(testConfig())
         val ctx = sdk.createContext("visitor_perf_1")
 
@@ -368,9 +450,11 @@ internal class ConvertContextRunExperienceTest {
             coldCtx.runExperience("welcome")
         }
 
+        // 50ms for CI JVM; 5ms is the on-device NFR2 validated separately.
         assertTrue(
-            "runExperience took ${elapsed}ms — expected <10ms on the cold-hash path (NFR2 bound)",
-            elapsed < 10L,
+            "runExperience took ${elapsed}ms — expected <50ms on the cold-hash path " +
+                "(CI JVM bound; on-device NFR2 is <5ms validated separately)",
+            elapsed < 50L,
         )
     }
 

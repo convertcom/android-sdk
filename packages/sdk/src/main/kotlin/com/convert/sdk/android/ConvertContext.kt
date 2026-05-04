@@ -102,10 +102,16 @@ public class ConvertContext internal constructor(
      *  3. **Sticky bucketing (AC-6 step 3, AC-7).** If the visitor's
      *     [com.convert.sdk.core.model.StoreData.bucketing] map already
      *     holds an entry for [experienceKey], look up the matching
-     *     variation by id within the experience's variations list and
-     *     return it verbatim — no bucketing, no enqueue, no
-     *     [SystemEvents.BUCKETING] fire. This is the "returning visitor"
-     *     path that NFR2's <5ms bound relies on (sticky lookup is O(1)).
+     *     variation by id within the experience's variations list, fire
+     *     [SystemEvents.BUCKETING] when [enableTracking] is `true` (the
+     *     internal observation event mirrors the new-bucketing path so
+     *     debug observers see ALL bucketing activity — Story 3.2 AC-6
+     *     step 3 with the F-035 remediation), and return the resolved
+     *     variation. Sticky never enqueues a network bucketing event
+     *     (matches Story 3.2 AC-7) and never fires when
+     *     [enableTracking] is `false` (Story 3.2 AC-10 with the F-134
+     *     remediation). This is the "returning visitor" path that
+     *     NFR2's <5ms bound relies on (sticky lookup is O(1)).
      *  4. **Rule evaluation (AC-6 step 4).** Story 3.4 lands the real
      *     audience/location gate. For this story we assume the visitor
      *     passes all gates — the caller gets the bucketed variation.
@@ -126,9 +132,13 @@ public class ConvertContext internal constructor(
      *     The real payload construction is Story 5.1 — the current stub
      *     is a no-op.
      *  8. **Internal event fire (AC-6 step 6, AC-10).** Fire
-     *     [SystemEvents.BUCKETING] **regardless** of [enableTracking] —
-     *     the internal bus drives observer callbacks for debugging and
-     *     in-process features; only the network-bound tracking is gated.
+     *     [SystemEvents.BUCKETING] **only when [enableTracking] is
+     *     `true`** — the internal bus is also gated by the per-call
+     *     tracking flag so observers do not receive misleading
+     *     bucketing signals during silent evaluation runs (Story 3.2
+     *     AC-10 with the F-134 remediation: setting
+     *     `enableTracking = false` suppresses both the network enqueue
+     *     AND the internal event fire).
      *
      * ### Never throws
      *
@@ -175,8 +185,12 @@ public class ConvertContext internal constructor(
             return null
         }
 
-        // Step 3 — sticky lookup.
-        resolveSticky(sdk, experience, experienceKey)?.let { return it }
+        // Step 3 — sticky lookup. Fires SystemEvents.BUCKETING when
+        // enableTracking is true (F-035: sticky parity with new-bucketing
+        // path so observers see ALL bucketing activity); never enqueues a
+        // network event on the sticky path (AC-7); never fires anything
+        // when enableTracking is false (F-134).
+        resolveSticky(sdk, experience, experienceKey, enableTracking)?.let { return it }
 
         // Steps 4-8 — rule-eval (Story 3.4), bucketing, persist, enqueue, fire.
         return allocateAndRecord(sdk, experience, experienceKey, enableTracking)
@@ -184,17 +198,35 @@ public class ConvertContext internal constructor(
 
     /**
      * Tries to resolve the visitor's sticky bucket for [experienceKey]. When
-     * the sticky id still matches a variation in the current config,
-     * returns the public [Variation]; otherwise returns `null` so the
-     * caller re-buckets.
+     * the sticky id still matches a variation in the current config, fires
+     * [SystemEvents.BUCKETING] (gated by [enableTracking]) and returns the
+     * public [Variation]; otherwise returns `null` so the caller re-buckets.
+     *
+     * ### F-035 / F-134 remediation
+     *
+     * Story 3.2 AC-6 step 3 (post-remediation) requires the internal
+     * BUCKETING event to fire on sticky recall **exactly as for the
+     * new-bucketing path**, so debug observers see all bucketing
+     * activity. AC-10 (post-remediation) requires that ALL bucketing
+     * signals — network enqueue AND internal event — are suppressed
+     * when [enableTracking] is `false`. The combination: fire on the
+     * sticky path **iff** [enableTracking] is `true`.
+     *
+     * Note that the sticky path NEVER calls
+     * [com.convert.sdk.core.api.ApiManager.enqueueBucketingEvent] —
+     * sticky bucketing is by definition a returning visitor and the
+     * outbound view-experience event was already enqueued on the
+     * original bucketing call (Story 3.2 AC-7).
      *
      * Extracted from [runExperience] so the main method stays under
      * detekt's `LongMethod` ceiling.
      */
+    @Suppress("ReturnCount")
     private fun resolveSticky(
         sdk: ConvertSDK,
         experience: ConfigExperience,
         experienceKey: String,
+        enableTracking: Boolean,
     ): Variation? {
         val stored = sdk.dataManager.getStoreData(visitorId).bucketing?.get(experienceKey)
             ?: return null
@@ -205,11 +237,23 @@ public class ConvertContext internal constructor(
                     "config for experience '$experienceKey'; re-bucketing",
                 tag = TAG,
             )
+            // Caller will re-bucket on the next step.
+            return null
+        }
+        if (enableTracking) {
+            sdk.eventManager.fire(
+                event = SystemEvents.BUCKETING,
+                data = mapOf(
+                    "experienceKey" to experienceKey,
+                    "variationKey" to variation.key,
+                    "visitorId" to visitorId,
+                ),
+            )
         }
         // Sticky path does not re-compute the hash, so the bucketingAllocation
         // value is unknown — pass null to match the JS SDK's sticky branch
         // (`bucketingAllocation` is only populated on the fresh-bucket path).
-        return variation?.let { toPublicVariation(experience, it, bucketingAllocationValue = null) }
+        return toPublicVariation(experience, variation, bucketingAllocationValue = null)
     }
 
     /**
@@ -257,25 +301,27 @@ public class ConvertContext internal constructor(
             variationId = allocation.variationId,
         )
 
-        // Outbound tracking — gated by per-call flag; Story 5.4 also gates
-        // by the SDK-level tracking toggle on ApiManager.
+        // Outbound tracking AND internal event bus — both gated by the
+        // per-call flag (F-134 remediation: AC-10 suppresses the internal
+        // BUCKETING fire when enableTracking is false so observers do not
+        // receive misleading bucketing signals during silent runs).
+        // Story 5.4 also gates the network enqueue by the SDK-level
+        // tracking toggle on ApiManager.
         if (enableTracking) {
             sdk.apiManager?.enqueueBucketingEvent(
                 visitorId = visitorId,
                 experienceId = experience.id.orEmpty(),
                 variationId = allocation.variationId,
             )
+            sdk.eventManager.fire(
+                event = SystemEvents.BUCKETING,
+                data = mapOf(
+                    "experienceKey" to experienceKey,
+                    "variationKey" to variation.key,
+                    "visitorId" to visitorId,
+                ),
+            )
         }
-
-        // Internal event bus — always fires, regardless of enableTracking.
-        sdk.eventManager.fire(
-            event = SystemEvents.BUCKETING,
-            data = mapOf(
-                "experienceKey" to experienceKey,
-                "variationKey" to variation.key,
-                "visitorId" to visitorId,
-            ),
-        )
         return toPublicVariation(
             experience = experience,
             variation = variation,
