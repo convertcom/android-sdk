@@ -294,8 +294,12 @@ internal class ApiManagerBatchingTest {
         advanceUntilIdle()
         assertEquals(1, fires.size)
         val payload = fires.single()
-        assertEquals(2, payload["batchSize"])
-        assertEquals(200, payload["statusCode"])
+        // AC-6: payload must match JS SDK api-manager.ts:232-237: { reason, result, visitors }
+        assertEquals("release", payload["reason"])
+        assertEquals(200, payload["result"])
+        @Suppress("UNCHECKED_CAST")
+        val visitors = payload["visitors"] as List<Map<String, Any?>>
+        assertEquals(2, visitors.size) // two visitors: v-1 and v-2
     }
 
     @Test
