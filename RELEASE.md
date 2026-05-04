@@ -154,16 +154,34 @@ Releases are fully automatic. The process:
 
 ## Previewing a Release: Dry Run
 
-`yarn release:dry-run` runs semantic-release in dry-run mode against
-whatever branch you're currently on. It will:
-- Analyze commits.
+`yarn release:dry-run` runs semantic-release in dry-run mode. It will:
+- Analyze commits since the last tag.
 - Decide the next version.
 - Show the rendered release notes.
 - **Not** bump `libs.versions.toml`, **not** publish, **not** tag.
 
+semantic-release checks the current branch against the `branches` entry
+in `release.config.mjs` (currently `['main']`). On `main`, the dry-run
+prints the next-version plan. On any other branch, it exits with:
+
+```
+ERROR This test run was not triggered in a known release branch.
+```
+
+That message is **expected** — it confirms the config parses correctly.
+To exercise a full dry-run on a feature branch, temporarily add the
+branch name to `release.config.mjs`'s `branches` array, run the dry-run,
+then revert the change before committing.
+
 ```bash
-git checkout feature/my-branch
+# On main:
+git checkout main
 yarn release:dry-run
+
+# On a feature branch (full dry-run):
+# 1. Edit release.config.mjs → branches: ['main', 'feature/my-branch']
+# 2. yarn release:dry-run
+# 3. git checkout release.config.mjs   # discard the temporary edit
 ```
 
 Requires the branch to exist on `origin` (semantic-release needs `git
@@ -223,4 +241,4 @@ block a version from resolving, but the artifact remains in the archive.
 | `Namespace com.convert not found` | Namespace claim not approved yet. | Check the claim status at <https://central.sonatype.com> → Namespaces. |
 | `Missing signature` from Central | Public key not uploaded to a keyserver. | Re-run `gpg --armor --export … \| curl -T - https://keys.openpgp.org`, confirm via the email link. |
 | `release.yml` didn't run after a merge to main | CI failed, or the commit was a non-release type. Check the Actions tab: Release workflow only appears as "Queued" if CI succeeded. | If CI failed, fix the CI issue. If the commit was `chore:` or `docs:`, that's expected — no release was warranted. |
-| `yarn release:dry-run` errors with "The release branches are invalid" | Branch is local-only. | `git push --set-upstream origin <branch>` first. |
+| `yarn release:dry-run` errors with "This test run was not triggered in a known release branch" | Expected on any branch except `main`. | To force a full dry-run on a feature branch, temporarily add the branch name to `release.config.mjs`'s `branches` array (revert before committing). On `main`, this error means the local branch is not pushed to `origin` — `git push --set-upstream origin main` first. |

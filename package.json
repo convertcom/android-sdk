@@ -5,7 +5,7 @@
   "description": "Release automation tooling for the Convert Android SDK (semantic-release + vanniktech maven-publish).",
   "scripts": {
     "release": "semantic-release",
-    "release:dry-run": "semantic-release --dry-run --no-ci --branches=\"$(git rev-parse --abbrev-ref HEAD)\""
+    "release:dry-run": "semantic-release --dry-run --no-ci"
   },
   "devDependencies": {
     "@semantic-release/changelog": "^6.0.0",
