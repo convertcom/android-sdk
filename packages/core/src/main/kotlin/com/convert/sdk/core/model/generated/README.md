@@ -86,10 +86,19 @@ edited files will be caught at PR time.
 - **Manual sync only.** An automated workflow (backend CI opens a PR in
   android-sdk with the regenerated types) is out of scope for MVP and is
   tracked as a future enhancement.
-- **Generator version pinned.** `openapi-generator-cli` is pinned to
-  7.10.0 in `backend/apiDoc/serving/openapitools.json`. Upgrading the
-  generator may require revisiting `patchKotlinGeneratorBugs.js` if
-  previously-buggy cases get fixed (or new ones appear).
+- **Generator version pinned.** `openapi-generator-cli` is pinned in
+  `backend/apiDoc/serving/openapitools.json`. Per Story 1.5 AC-1
+  (corrected), the target pin is `7.13.0` — the current version in the
+  backend's `openapitools.json` on default branches. Verify the latest
+  stable at `https://github.com/OpenAPITools/openapi-generator/releases`
+  during implementation and update if a newer stable version is
+  available. The generated `.kt` files currently committed to this
+  directory were produced by `7.10.0` on the unmerged backend branch
+  `api-docs/auttomate-android-config-types`; when the backend tooling
+  re-lands on `main` aligned with the corrected story, regenerate from
+  `7.13.0` and re-sync. Upgrading the generator may require revisiting
+  `patchKotlinGeneratorBugs.js` — five `7.10.0`-era bugs are patched
+  there; some may be fixed in `7.13.0` and others may newly appear.
 - **Spec validation bypassed for generation.** `skipValidateSpec: true`
   is set in `openapitools.json` because the generator's strict validator
   produces false positives on Serving's `visitor-data` path parameters.
