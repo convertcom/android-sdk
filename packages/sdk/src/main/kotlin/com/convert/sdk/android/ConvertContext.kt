@@ -51,7 +51,10 @@ import kotlinx.serialization.json.JsonPrimitive
  * No PII (NFR8). `visitorId` is a UUID v4 (auto-generated via
  * [java.util.UUID.randomUUID] when [ConvertSDK.createContext] is called
  * without args) or a caller-supplied opaque identifier — never a name,
- * email, or other personal datum.
+ * email, or other personal datum. The `randomUUID()` method is
+ * specified to return a version-4 (random) UUID — see
+ * [Java SE 11 — `java.util.UUID.randomUUID`](https://docs.oracle.com/en/java/docs/api/java.base/java/util/UUID.html#randomUUID())
+ * — which is what backs the no-correlation guarantee.
  *
  * @property visitorId stable visitor identifier supplied at construction
  *   time by [ConvertSDK.createContext].
