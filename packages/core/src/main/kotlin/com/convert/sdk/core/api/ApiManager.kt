@@ -504,16 +504,26 @@ public open class ApiManager(
     /**
      * Builds the visitors array from a snapshot for the API_QUEUE_RELEASED
      * event payload. Matches JS SDK `api-manager.ts:232-237` where
-     * `payload.visitors` is passed directly. Returns a list of visitor
-     * maps for the event data.
+     * `payload.visitors` is passed directly — the JS SDK consumer receives
+     * the structured visitor list (each entry: `{visitorId, segments?,
+     * events: [{eventType, data}]}`), not stringified JSON.
+     *
+     * Per-event payloads are kept as the underlying [JsonObject]
+     * representation so downstream observers (Story 7.2's
+     * `SdkViewModel.events` resolver) can read each event's `eventType`
+     * and `data` fields without having to re-parse a JSON string.
      */
     private fun buildVisitorsArray(snapshot: List<VisitorEvent>): List<Map<String, Any?>> {
         val grouped: Map<String, List<VisitorEvent>> = snapshot.groupBy { it.visitorId }
         return grouped.map { (visitorId, events) ->
-            mapOf(
-                "visitorId" to visitorId,
-                "events" to events.map { it.event.toString() },
-            )
+            val lastSegments = events.last().segments
+            buildMap<String, Any?> {
+                put("visitorId", visitorId)
+                if (lastSegments.isNotEmpty()) {
+                    put("segments", lastSegments)
+                }
+                put("events", events.map { it.event })
+            }
         }
     }
 
