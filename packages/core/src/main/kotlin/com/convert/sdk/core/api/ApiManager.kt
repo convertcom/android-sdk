@@ -418,7 +418,7 @@ public open class ApiManager(
      *   carries a [com.convert.sdk.core.model.TrackingEvent] that is
      *   re-serialized into the ApiManager's internal wire-JSON format.
      */
-    internal fun reenqueuePersisted(events: List<com.convert.sdk.core.model.VisitorEvent>) {
+    public open fun reenqueuePersisted(events: List<com.convert.sdk.core.model.VisitorEvent>) {
         if (events.isEmpty()) return
         synchronized(queueLock) {
             // Build a dedup set from the live queue's TrackingEvent payloads.

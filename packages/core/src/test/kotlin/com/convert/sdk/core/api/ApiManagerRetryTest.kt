@@ -20,6 +20,7 @@ import com.convert.sdk.core.port.Logger
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -193,10 +194,11 @@ internal class ApiManagerRetryTest {
         runCurrent()
         assertEquals(4, http.attempts, "third retry at 40s")
 
-        advanceUntilIdle()
-        assertEquals(1, queue.persisted.size, "must persist after 3 retries exhausted")
-
+        // Cancel the timer BEFORE advanceUntilIdle so the infinite loop
+        // does not appear as an uncompleted coroutine to the test runner.
         api.cancelTimerForTest()
+        advanceUntilIdle() // drain the persist launch
+        assertEquals(1, queue.persisted.size, "must persist after 3 retries exhausted")
     }
 
     // ---------------------------------------------------------------
