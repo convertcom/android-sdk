@@ -27,8 +27,17 @@ android {
     // a Gradle warning and must be omitted.
 }
 
+// Vendor is pinned to Eclipse Adoptium (Temurin) so Gradle's toolchain resolver does NOT
+// pick a different JDK provider than the one CI installs via `actions/setup-java@v4`
+// with `distribution: temurin`. Without `vendor.set(...)` the resolver may auto-download
+// any matching `languageVersion = 17` JDK (Zulu, Microsoft, GraalVM, …), causing CI host
+// JDK and Gradle build JDK to diverge. See:
+// https://docs.gradle.org/current/userguide/toolchains.html#sec:vendors
 kotlin {
-    jvmToolchain(17)
+    jvmToolchain {
+        languageVersion.set(JavaLanguageVersion.of(17))
+        vendor.set(JvmVendorSpec.ADOPTIUM)
+    }
 }
 
 dependencies {
