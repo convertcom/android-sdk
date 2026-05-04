@@ -7,6 +7,7 @@ package com.convert.sdk.core.api
 
 import com.convert.sdk.core.config.ApiConfig
 import com.convert.sdk.core.config.ApiEndpoint
+import com.convert.sdk.core.config.ConfigDefaults
 import com.convert.sdk.core.config.ConvertConfig
 import com.convert.sdk.core.config.NetworkConfig
 import com.convert.sdk.core.port.HttpClient
