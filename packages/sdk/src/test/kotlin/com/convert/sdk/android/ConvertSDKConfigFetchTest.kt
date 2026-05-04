@@ -90,12 +90,16 @@ internal class ConvertSDKConfigFetchTest {
             latch.await(3, TimeUnit.SECONDS),
         )
 
-        // The request must have hit the server with the sdkKey in the path.
+        // Story 2.2 AC-1 / AC-10 — the request path must be the canonical
+        // shape: `/api/v1/config/{sdkKey}?environment={env}`. Asserts the
+        // exact full path string (no substring assertions on URL parity)
+        // per the audit's class 4.4 test-shape rule.
         val recorded = server.takeRequest(500, TimeUnit.MILLISECONDS)
         assertNotNull("mockwebserver should have seen a request", recorded)
-        assertTrue(
-            "request path should include sdkKey: ${recorded?.path}",
-            recorded!!.path!!.contains("/sk-success"),
+        assertEquals(
+            "request path must be the exact canonical config path",
+            "/api/v1/config/sk-success?environment=staging",
+            recorded!!.path,
         )
 
         // Cache should have been written in the fire-and-forget scope.launch.
