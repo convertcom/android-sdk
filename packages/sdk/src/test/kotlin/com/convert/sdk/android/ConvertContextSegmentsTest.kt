@@ -188,6 +188,18 @@ internal class ConvertContextSegmentsTest {
     }
 
     // --- AC-3 — segments are included in bucketing event payload -----------
+    //
+    // F-111 remediation note: AC-7 also requires a serialized-JSON
+    // assertion — build a `TrackingEvent` batch via
+    // `TrackingPayloadBuilder.build(events)`, parse with
+    // `Json.parseToJsonElement`, and assert that `visitors[0].segments`
+    // carries the expected key-value pairs. That builder is a Story 5.3
+    // deliverable that does not exist at the time of this story; the JSON
+    // schema assertion lives in Story 5.6's `TrackingPayloadTest`
+    // (AC-2 — top-level schema). The mock-inspection assertions below
+    // verify the in-memory contract (segments reach the ApiManager call
+    // site with the merged shape); structural JSON verification is owned
+    // by 5.6 and must not be re-litigated here once 5.3/5.6 land.
 
     @Test
     fun `segments are included in bucketing event payload`() {
