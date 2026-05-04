@@ -13,12 +13,16 @@ on:
 
 # `contents: write` — semantic-release needs to push the release commit
 #   and create the `vX.Y.Z` tag.
-# `packages: write` — allows the plugin to publish to GitHub Packages if
-#   we ever add that as a secondary target (harmless if only used for
-#   Maven Central today).
+#
+# packages: write is INTENTIONALLY OMITTED — the Android SDK publishes to
+# Maven Central only (via the vanniktech plugin). GitHub Packages / GHCR
+# is not a target. Adding `packages: write` would widen the blast radius
+# of a compromised GITHUB_TOKEN with no functional benefit (least-privilege
+# principle). If a GHCR mirror is ever added, re-introduce it then with
+# an inline citation to the architecture decision. Matches the PHP SDK's
+# release.yml permissions block exactly. (Story 1.4 / AC-1 — F-121.)
 permissions:
   contents: write
-  packages: write
 
 # Serialize releases. If two pushes land on main in quick succession, the
 # second workflow_run waits for the first to finish before starting — we
