@@ -149,13 +149,28 @@ internal class OkHttpClientAdapter(
         }
 
     internal companion object {
-        /** Total per-call timeout in seconds (DNS + connect + request + response body). */
+        /**
+         * Total per-call timeout in seconds (DNS + connect + request +
+         * response body). 30s matches the implicit overall budget of the
+         * JS SDK's `fetch` calls (no explicit timeout there) so a slow
+         * config endpoint observed identically across SDKs.
+         */
         const val DEFAULT_CALL_TIMEOUT_SECONDS: Long = 30
 
-        /** TCP connect timeout in seconds. */
+        /**
+         * TCP connect timeout in seconds. 10s follows standard Android
+         * networking guidance for mobile connections.
+         * [Source: Android network best practices —
+         *   https://developer.android.com/training/basics/network-ops/]
+         */
         const val DEFAULT_CONNECT_TIMEOUT_SECONDS: Long = 10
 
-        /** Socket read timeout in seconds. */
+        /**
+         * Socket read timeout in seconds. 15s gives the config CDN a
+         * generous window past OkHttp's 10s default to absorb
+         * intermittent radio stalls without exceeding the 30s call
+         * budget.
+         */
         const val DEFAULT_READ_TIMEOUT_SECONDS: Long = 15
 
         private const val HEADER_CONTENT_TYPE: String = "Content-Type"
