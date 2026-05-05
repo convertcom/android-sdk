@@ -305,6 +305,7 @@ internal class ApiManagerBatchingTest {
         // AC-6 (F-012 / F-089): per-event payloads must be structured (so Story 7.2
         // can resolve QUEUED → DELIVERED by reading eventType + data) — NOT stringified.
         val v1Entry = visitors.first { it["visitorId"] == "v-1" }
+
         @Suppress("UNCHECKED_CAST")
         val v1Events = v1Entry["events"] as List<JsonObject>
         assertEquals(1, v1Events.size)
