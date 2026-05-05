@@ -254,11 +254,11 @@ class DemoApplication : Application() {
      *
      * The demo cannot read `sdk.dataManager` directly (the property is
      * `internal` to the SDK module) but it can infer the two lists the
-     * panel requires by asking a per-visitor [ConvertContext] for its
-     * eligible experience and feature sets — these are the
-     * `runExperiences()` / `runFeatures()` calls the other screens
-     * already exercise. Each `Variation` carries its `experienceKey`;
-     * each `Feature` carries its `key`.
+     * panel requires by asking the per-visitor [ConvertContext] for
+     * its eligible experience and feature sets — `runExperiences()` /
+     * `runFeatures()`, the same calls the other screens drive. Each
+     * `Variation` carries its `experienceKey`; each `Feature` carries
+     * its `key`.
      *
      * Honest naming: "Active" in the panel means "eligible for the
      * current visitor". A visitor outside an experience's audience
@@ -267,29 +267,31 @@ class DemoApplication : Application() {
      *
      * `trackingEnabled` comes from the SDK's public
      * [com.convert.sdk.android.ConvertSDK.isTrackingEnabled] accessor.
-     * The `null` branch (API manager not yet wired) renders as `"—"`
-     * in [ConfigInfoPanel].
+     * The `null` branch (API manager not yet wired, or the SDK
+     * deferred has not landed yet) renders as `"—"` in
+     * [ConfigInfoPanel].
      *
-     * Same `ConvertSdkInitializedBeforeUse` suppression rationale as
-     * the other factories — DI-container-style lookup fires only
-     * after [MainActivity.onCreate], which follows
-     * [Application.onCreate].
+     * Synchronous-by-contract: the [ConfigSnapshotProvider] docstring
+     * says `snapshot()` is called on the SDK's event-dispatch thread
+     * and must not block. The implementation therefore reads
+     * [sdkDeferred] and [contextDeferred] only when they are already
+     * complete; missing values fall back to empty lists / `null`,
+     * matching the "cannot produce a meaningful snapshot" path the
+     * contract anticipates for early calls before the first config
+     * fetch lands.
      */
-    @Suppress("ConvertSdkInitializedBeforeUse")
-    fun configSnapshotProvider(): ConfigSnapshotProvider = object : ConfigSnapshotProvider {
-        private val context: ConvertContext by lazy { sdk.createContext() }
-
-        override fun snapshot(): ConfigSnapshot {
-            val experiences = runCatching { context.runExperiences() }.getOrDefault(emptyList())
-            val features = runCatching { context.runFeatures() }.getOrDefault(emptyList())
-            val tracking = runCatching { sdk.isTrackingEnabled() }.getOrNull()
-            return ConfigSnapshot(
-                sdkKey = BuildConfig.convertSdkKey,
-                environment = null,
-                experienceKeys = experiences.mapNotNull { it.experienceKey },
-                featureKeys = features.mapNotNull { it.key },
-                trackingEnabled = tracking,
-            )
-        }
+    fun configSnapshotProvider(): ConfigSnapshotProvider = ConfigSnapshotProvider {
+        val sdk = if (sdkDeferred.isCompleted) sdkDeferred.getCompleted() else null
+        val context = if (contextDeferred.isCompleted) contextDeferred.getCompleted() else null
+        val experiences = context?.let { runCatching { it.runExperiences() }.getOrDefault(emptyList()) } ?: emptyList()
+        val features = context?.let { runCatching { it.runFeatures() }.getOrDefault(emptyList()) } ?: emptyList()
+        val tracking = sdk?.let { runCatching { it.isTrackingEnabled() }.getOrNull() }
+        ConfigSnapshot(
+            sdkKey = BuildConfig.convertSdkKey,
+            environment = null,
+            experienceKeys = experiences.mapNotNull { it.experienceKey },
+            featureKeys = features.mapNotNull { it.key },
+            trackingEnabled = tracking,
+        )
     }
 }
