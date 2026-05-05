@@ -385,8 +385,10 @@ public class ConvertSDK internal constructor(
      * clear.
      *
      * `randomUUID()` produces a version-4 (randomly generated) UUID per
-     * the Java SE specification —
-     * [Java SE 11 — `java.util.UUID.randomUUID`](https://docs.oracle.com/en/java/docs/api/java.base/java/util/UUID.html#randomUUID()):
+     * the Java SE specification — see the Java SE 11 reference for
+     * `java.util.UUID.randomUUID`:
+     * https://docs.oracle.com/en/java/docs/api/java.base/java/util/UUID.html#randomUUID()
+     *
      * "Static factory to retrieve a type 4 (pseudo randomly generated)
      * UUID. The UUID is generated using a cryptographically strong
      * pseudo random number generator." This contract is what guarantees
