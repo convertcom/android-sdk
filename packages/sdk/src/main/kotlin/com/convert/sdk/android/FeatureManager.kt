@@ -10,6 +10,7 @@ import com.convert.sdk.core.model.FeatureStatus
 import com.convert.sdk.core.model.generated.ConfigExperience
 import com.convert.sdk.core.model.generated.ConfigFeature
 import com.convert.sdk.core.model.generated.ExperienceChangeFullStackFeatureBaseAllOfData
+import com.convert.sdk.core.model.generated.ExperienceChangeFullStackFeatureServing
 import com.convert.sdk.core.model.generated.ExperienceChangeServing
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
 import com.convert.sdk.core.port.Logger
@@ -143,7 +144,7 @@ internal class FeatureManager(
             if (!experienceExposesFeature(experience, featureId)) continue
             val variation = context.runExperience(expKey, enableTracking) ?: continue
             val change = findFeatureChange(experience, variation.id, featureId) ?: continue
-            return buildEnabledFeature(declared, experience, change.data)
+            return buildEnabledFeature(declared, experience, change.`data`)
         }
 
         // Declared but nothing bucketed → DISABLED (AC-8, JS SDK parity).
@@ -203,7 +204,7 @@ internal class FeatureManager(
         experience: ConfigExperience,
         variationId: String?,
         featureId: String?,
-    ): ExperienceChangeServing? {
+    ): ExperienceChangeFullStackFeatureServing? {
         // Defensive guards mirror experienceExposesFeature — caller-side
         // nullability lines up with wire shape. Collapsing these guards
         // into chained safe calls would obscure the three independent
@@ -212,7 +213,7 @@ internal class FeatureManager(
         val variation = experience.variations?.firstOrNull { it.id == variationId } ?: return null
         return variation.changes?.firstOrNull { change ->
             isFullStackFeatureMatch(change, featureId)
-        }
+        } as? ExperienceChangeFullStackFeatureServing
     }
 
     /**
@@ -220,19 +221,17 @@ internal class FeatureManager(
      * whose `data.featureId` (Int) matches [featureId] (String). The
      * backend emits `featureId` as an integer in the wire format but the
      * declared feature's `id` is a string — both carry the same numeric
-     * value, so we normalise via `toString`.
+     * value, so we normalise via `toString`. F-165 made
+     * `ExperienceChangeServing` a sealed interface; pattern-match on
+     * the concrete `fullStackFeature` variant rather than reading a
+     * `type` discriminator field that no longer exists.
      */
-    @Suppress("ReturnCount")
     private fun isFullStackFeatureMatch(
         change: ExperienceChangeServing,
         featureId: String,
     ): Boolean {
-        // Three independent "not a match" outcomes (wrong type, null
-        // data, id mismatch) read more clearly as early returns than
-        // as a chained boolean expression.
-        if (change.type != FULLSTACK_FEATURE_TYPE) return false
-        val data = change.data ?: return false
-        return data.featureId?.toString() == featureId
+        val featureChange = change as? ExperienceChangeFullStackFeatureServing ?: return false
+        return featureChange.data?.featureId?.toString() == featureId
     }
 
     /**

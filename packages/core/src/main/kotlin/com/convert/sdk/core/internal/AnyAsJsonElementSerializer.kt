@@ -5,8 +5,6 @@
  */
 package com.convert.sdk.core.internal
 
-import com.convert.sdk.core.model.generated.ExperienceChangeFullStackFeatureBaseAllOfData
-import com.convert.sdk.core.model.generated.ExperienceChangeServing
 import com.convert.sdk.core.rules.rawRuleSerializersModule
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.descriptors.PrimitiveKind
@@ -20,14 +18,9 @@ import kotlinx.serialization.json.JsonEncoder
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.contextual
 import kotlinx.serialization.modules.plus
-import kotlinx.serialization.modules.polymorphic
 import java.math.BigDecimal
 
 /**
@@ -84,79 +77,29 @@ public object AnyAsJsonElementSerializer : KSerializer<Any> {
 }
 
 /**
- * Concrete implementation of [ExperienceChangeServing] that backs the
- * catch-all polymorphic deserialiser. Wraps the raw [JsonObject] so
- * callers can read `id`, `type`, and — when the change is a
- * `fullStackFeature` — the `data` object carrying `featureId` and
- * `variablesData`.
+ * F-165 (2026-05-05) replaced the previous `RawExperienceChangeServing`
+ * catch-all wrapper + `RawExperienceChangeServingSerializer` polymorphic
+ * `defaultDeserializer` registration. The wrapper existed because the
+ * generator emitted `ExperienceChangeServing` as a non-sealed interface
+ * whose variants did not declare `: ExperienceChangeServing` — making
+ * kotlinx-serialization unable to decode `List<ExperienceChangeServing>`.
  *
- * The generated [ExperienceChangeServing] interface is `interface` (not
- * `sealed interface`) and the OpenAPI-generated concrete types
- * ([com.convert.sdk.core.model.generated.ExperienceChangeFullStackFeatureServing]
- * et al.) do NOT declare `: ExperienceChangeServing`. That leaves
- * kotlinx-serialization unable to decode the `List<ExperienceChangeServing>`
- * field on [com.convert.sdk.core.model.generated.ExperienceVariationConfig]
- * — any config carrying `changes` would fail at decode time without a
- * polymorphic module.
+ * After F-165, the post-process script (`patchKotlinGeneratorBugs.js`
+ * Rule 7 in the backend repo) rewrites every one-to-one `oneOf+discriminator`
+ * schema to `@Serializable @JsonClassDiscriminator("type") sealed interface`
+ * with each variant carrying `@SerialName(...)` and implementing the
+ * sealed parent. kotlinx-serialization auto-derives the polymorphic
+ * serializer for sealed hierarchies — the runtime catch-all is no longer
+ * needed for known discriminator values, and a sealed interface cannot
+ * be implemented from a different package anyway (Kotlin enforces this).
  *
- * This holder bridges that gap: it captures the raw JSON and exposes the
- * fields the SDK actually needs (type, data). Story 4.1 (feature resolution)
- * is the first story that reads `changes` — future stories that need
- * richer change semantics (DOM changes, custom code, etc.) can extend
- * the holder rather than re-generating types.
- *
- * @property raw the raw JSON object the wire payload arrived as; kept
- *   intact so callers needing unusual fields can read them directly.
+ * Forward-compat trade-off: a future spec change that adds a new
+ * `ExperienceChangeServing` variant on the wire BEFORE the SDK regenerates
+ * its types will throw at decode time on that unknown discriminator.
+ * The mitigation is to regenerate types whenever the spec changes
+ * (Story 1.5's regen flow) — same expectation that already applies to
+ * every other typed config field.
  */
-internal class RawExperienceChangeServing(
-    val raw: JsonObject,
-) : ExperienceChangeServing {
-
-    override val id: Int? = raw["id"]?.jsonPrimitive?.intOrNull
-
-    override val type: String? = raw["type"]?.jsonPrimitive?.contentOrNull
-
-    /**
-     * Parsed `data` sub-object when this is a `fullStackFeature` change.
-     * Null when the change is a non-feature type or the `data` field is
-     * absent / malformed.
-     *
-     * The full-stack-feature data carries `featureId` (Int) and
-     * `variablesData` (the raw JsonElement of variable name → value).
-     * We lazily decode the sub-object rather than eagerly — many
-     * changes in a config will never be read, so avoiding the decode
-     * until a consumer asks keeps the load path cheap.
-     */
-    override val data: ExperienceChangeFullStackFeatureBaseAllOfData? by lazy {
-        val dataObj = raw["data"] as? JsonObject ?: return@lazy null
-        val featureId = dataObj["feature_id"]?.jsonPrimitive?.intOrNull
-        val variablesData = dataObj["variables_data"]
-        ExperienceChangeFullStackFeatureBaseAllOfData(
-            featureId = featureId,
-            variablesData = variablesData,
-        )
-    }
-}
-
-/**
- * Catch-all [KSerializer] for [ExperienceChangeServing]. Decodes any
- * [JsonObject] into a [RawExperienceChangeServing]; encodes back to the
- * raw JSON so round-tripping the config through
- * [com.convert.sdk.android.adapter.FileConfigCache] preserves every
- * field.
- */
-internal object RawExperienceChangeServingSerializer : KSerializer<ExperienceChangeServing> {
-
-    override val descriptor: SerialDescriptor = JsonObject.serializer().descriptor
-
-    override fun deserialize(decoder: Decoder): ExperienceChangeServing =
-        RawExperienceChangeServing(JsonObject.serializer().deserialize(decoder))
-
-    override fun serialize(encoder: Encoder, value: ExperienceChangeServing) {
-        val raw = (value as? RawExperienceChangeServing)?.raw ?: buildJsonObject {}
-        JsonObject.serializer().serialize(encoder, raw)
-    }
-}
 
 /**
  * [KSerializer] for [java.math.BigDecimal]. Reads a JSON number (or
@@ -214,7 +157,4 @@ internal object BigDecimalSerializer : KSerializer<BigDecimal> {
 public val sharedSerializersModule: SerializersModule = SerializersModule {
     contextual(Any::class, AnyAsJsonElementSerializer)
     contextual(BigDecimal::class, BigDecimalSerializer)
-    polymorphic(ExperienceChangeServing::class) {
-        defaultDeserializer { RawExperienceChangeServingSerializer }
-    }
 } + rawRuleSerializersModule
