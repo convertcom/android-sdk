@@ -130,10 +130,13 @@ public object TrackingPayloadBuilder {
     private fun buildEventJson(ve: VisitorEvent): JsonObject = when (val te = ve.event) {
         is BucketingEvent -> buildJsonObject {
             put(KEY_EVENT_TYPE, EVENT_TYPE_BUCKETING)
-            put(KEY_DATA, buildJsonObject {
-                put(KEY_EXPERIENCE_ID, te.experienceId)
-                put(KEY_VARIATION_ID, te.variationId)
-            })
+            put(
+                KEY_DATA,
+                buildJsonObject {
+                    put(KEY_EXPERIENCE_ID, te.experienceId)
+                    put(KEY_VARIATION_ID, te.variationId)
+                },
+            )
         }
         is ConversionEvent -> buildJsonObject {
             put(KEY_EVENT_TYPE, EVENT_TYPE_CONVERSION)
