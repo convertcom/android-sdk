@@ -444,10 +444,13 @@ public open class ApiManager(
         val eventJson: JsonObject = when (val te = ve.event) {
             is BucketingEvent -> buildJsonObject {
                 put(KEY_EVENT_TYPE, EVENT_TYPE_BUCKETING)
-                put(KEY_DATA, buildJsonObject {
-                    put(KEY_EXPERIENCE_ID, te.experienceId)
-                    put(KEY_VARIATION_ID, te.variationId)
-                })
+                put(
+                    KEY_DATA,
+                    buildJsonObject {
+                        put(KEY_EXPERIENCE_ID, te.experienceId)
+                        put(KEY_VARIATION_ID, te.variationId)
+                    },
+                )
             }
             is ConversionEvent -> buildJsonObject {
                 put(KEY_EVENT_TYPE, EVENT_TYPE_CONVERSION)
@@ -618,7 +621,7 @@ public open class ApiManager(
                 )
             }
             scope?.launch { q.persist(persisted) }
-                ?: requeueFront(snapshot)  // scope-less path: keep on in-memory queue
+                ?: requeueFront(snapshot) // scope-less path: keep on in-memory queue
         } else {
             requeueFront(snapshot)
         }

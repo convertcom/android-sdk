@@ -10,7 +10,6 @@ import com.convert.sdk.core.config.ApiEndpoint
 import com.convert.sdk.core.config.ConvertConfig
 import com.convert.sdk.core.config.EventsConfig
 import com.convert.sdk.core.model.BucketingEvent
-import com.convert.sdk.core.model.TrackingEvent
 import com.convert.sdk.core.model.VisitorEvent
 import com.convert.sdk.core.model.generated.ConfigProject
 import com.convert.sdk.core.model.generated.ConfigResponseData
