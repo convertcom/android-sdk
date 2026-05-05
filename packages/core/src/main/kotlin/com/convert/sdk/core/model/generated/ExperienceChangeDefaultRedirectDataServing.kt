@@ -29,6 +29,7 @@ import kotlinx.serialization.Contextual
  * @param type 
  * @param `data` 
  */
+@kotlinx.serialization.SerialName("defaultRedirect")
 @Serializable
 
 data class ExperienceChangeDefaultRedirectDataServing (
@@ -37,23 +38,17 @@ data class ExperienceChangeDefaultRedirectDataServing (
     @SerialName(value = "id")
     val id: kotlin.Int? = null,
 
-    @SerialName(value = "type")
-    val type: kotlin.String? = null,
 
     @SerialName(value = "data")
     val `data`: ExperienceChangeDefaultRedirectDataBaseAllOfData? = null
 
-) {
+) : ExperienceChangeServing {
 
     /**
      * 
      *
      * Values: DEFAULT_REDIRECT
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "defaultRedirect") DEFAULT_REDIRECT("defaultRedirect");
-    }
 
 }
 

@@ -29,6 +29,7 @@ import kotlinx.serialization.Contextual
  * @param type 
  * @param `data` 
  */
+@kotlinx.serialization.SerialName("defaultCodeMultipage")
 @Serializable
 
 data class ExperienceChangeDefaultCodeMultipageDataServing (
@@ -37,23 +38,17 @@ data class ExperienceChangeDefaultCodeMultipageDataServing (
     @SerialName(value = "id")
     val id: kotlin.Int? = null,
 
-    @SerialName(value = "type")
-    val type: kotlin.String? = null,
 
     @SerialName(value = "data")
     val `data`: ExperienceChangeDefaultCodeMultipageDataBaseAllOfData? = null
 
-) {
+) : ExperienceChangeServing {
 
     /**
      * 
      *
      * Values: DEFAULT_CODE_MULTIPAGE
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "defaultCodeMultipage") DEFAULT_CODE_MULTIPAGE("defaultCodeMultipage");
-    }
 
 }
 

@@ -30,12 +30,11 @@ import kotlinx.serialization.Contextual
  * @param min 
  * @param max 
  */
+@kotlinx.serialization.SerialName("percentile")
 @Serializable
 
 data class NumericOutlierPercentile (
 
-    @SerialName(value = "detection_type")
-    val detectionType: NumericOutlierPercentile.DetectionType,
 
     @SerialName(value = "min")
     val min: NumericOutlierPercentileAllOfMin? = null,
@@ -43,17 +42,13 @@ data class NumericOutlierPercentile (
     @SerialName(value = "max")
     val max: NumericOutlierPercentileAllOfMax? = null
 
-) {
+) : NumericOutlier {
 
     /**
      * 
      *
      * Values: PERCENTILE
      */
-    @Serializable
-    enum class DetectionType(val value: kotlin.String) {
-        @SerialName(value = "percentile") PERCENTILE("percentile");
-    }
 
 }
 

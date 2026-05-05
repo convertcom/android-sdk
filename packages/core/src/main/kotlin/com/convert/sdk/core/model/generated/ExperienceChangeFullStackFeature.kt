@@ -30,6 +30,7 @@ import kotlinx.serialization.Contextual
  * @param `data` 
  * @param concurrencyKey A server-generated hash that represents the object's state at the time of retrieval. When included in an update request, the operation will only succeed if the object hasn't been modified since this key was obtained. If another update has occurred in the meantime, the request will fail with a conflict error, requiring you to fetch the latest version and retry your update with the new concurrency_key. This implements optimistic concurrency control to prevent lost updates in concurrent scenarios.
  */
+@kotlinx.serialization.SerialName("fullStackFeature")
 @Serializable
 
 data class ExperienceChangeFullStackFeature (
@@ -38,8 +39,6 @@ data class ExperienceChangeFullStackFeature (
     @SerialName(value = "id")
     val id: kotlin.Int? = null,
 
-    @SerialName(value = "type")
-    val type: kotlin.String? = null,
 
     @SerialName(value = "data")
     val `data`: ExperienceChangeFullStackFeatureBaseAllOfData? = null,
@@ -48,17 +47,13 @@ data class ExperienceChangeFullStackFeature (
     @SerialName(value = "concurrency_key")
     val concurrencyKey: kotlin.String? = null
 
-) {
+) : ExperienceChange {
 
     /**
      * 
      *
      * Values: FULL_STACK_FEATURE
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "fullStackFeature") FULL_STACK_FEATURE("fullStackFeature");
-    }
 
 }
 

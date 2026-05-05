@@ -29,6 +29,7 @@ import kotlinx.serialization.Contextual
  * @param type 
  * @param `data` 
  */
+@kotlinx.serialization.SerialName("richStructure")
 @Serializable
 
 data class ExperienceChangeRichStructureDataServing (
@@ -37,23 +38,17 @@ data class ExperienceChangeRichStructureDataServing (
     @SerialName(value = "id")
     val id: kotlin.Int? = null,
 
-    @SerialName(value = "type")
-    val type: kotlin.String? = null,
 
     @Contextual @SerialName(value = "data")
     val `data`: ExperienceChangeRichStructureDataBaseAllOfData? = null
 
-) {
+) : ExperienceChangeServing {
 
     /**
      * 
      *
      * Values: RICH_STRUCTURE
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "richStructure") RICH_STRUCTURE("richStructure");
-    }
 
 }
 

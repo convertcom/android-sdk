@@ -26,24 +26,16 @@ import kotlinx.serialization.Contextual
  *
  * @param detectionType 
  */
+@kotlinx.serialization.SerialName("none")
 @Serializable
 
-data class NumericOutlierNone (
-
-    @SerialName(value = "detection_type")
-    val detectionType: NumericOutlierNone.DetectionType
-
-) {
+class NumericOutlierNone () : NumericOutlier {
 
     /**
      * 
      *
      * Values: NONE
      */
-    @Serializable
-    enum class DetectionType(val value: kotlin.String) {
-        @SerialName(value = "none") NONE("none");
-    }
 
 }
 

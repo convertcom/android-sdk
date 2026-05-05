@@ -35,29 +35,8 @@ import kotlinx.serialization.Contextual
  * @param type 
  * @param `data` 
  */
-interface ExperienceChangeServing {
-
-    /* The unique numerical identifier for this specific change. */
-    @SerialName(value = "id")
-    val id: kotlin.Int?
-    @SerialName(value = "type")
-    val type: kotlin.String?
-    @SerialName(value = "data")
-    val `data`: ExperienceChangeFullStackFeatureBaseAllOfData?
-    /**
-     * 
-     *
-     * Values: DEFAULT_CODE,DEFAULT_CODE_MULTIPAGE,DEFAULT_REDIRECT,CUSTOM_CODE,RICH_STRUCTURE,FULL_STACK_FEATURE
-     */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "defaultCode") DEFAULT_CODE("defaultCode"),
-        @SerialName(value = "defaultCodeMultipage") DEFAULT_CODE_MULTIPAGE("defaultCodeMultipage"),
-        @SerialName(value = "defaultRedirect") DEFAULT_REDIRECT("defaultRedirect"),
-        @SerialName(value = "customCode") CUSTOM_CODE("customCode"),
-        @SerialName(value = "richStructure") RICH_STRUCTURE("richStructure"),
-        @SerialName(value = "fullStackFeature") FULL_STACK_FEATURE("fullStackFeature");
-    }
-
-}
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+@kotlinx.serialization.Serializable
+@kotlinx.serialization.json.JsonClassDiscriminator("type")
+sealed interface ExperienceChangeServing
 

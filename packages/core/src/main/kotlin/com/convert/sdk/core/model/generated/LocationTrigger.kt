@@ -34,31 +34,8 @@ import kotlinx.serialization.Contextual
  * @param events Events for LocationTriggerDomElement
  * @param js Describes the js callback that will be executed in order to fire the experience.  It is called with two arguments: - `activate` - a function that should be called when the experience should be activated - `options` - an object with the following properties:   - `locationId` - id of the location that is being activated   - `isActive` - boolean flag that indicates if the location is active Example: ``` function(activate, options) {   if (options.isActive) {     setTimeout(function() {       /_* it activates the experiences 1 second after the       location trigger is initialized - at the load of the tracking script *_/       activate();     }, 1000);   } } ``` 
  */
-interface LocationTrigger {
-
-    @SerialName(value = "type")
-    val type: kotlin.String
-    /* Describes html selector */
-    @SerialName(value = "selector")
-    val selector: kotlin.String
-    /* Events for LocationTriggerDomElement */
-    @SerialName(value = "events")
-    val events: kotlin.collections.List<@Contextual LocationDomTriggerEvents>
-    /* Describes the js callback that will be executed in order to fire the experience.  It is called with two arguments: - `activate` - a function that should be called when the experience should be activated - `options` - an object with the following properties:   - `locationId` - id of the location that is being activated   - `isActive` - boolean flag that indicates if the location is active Example: ``` function(activate, options) {   if (options.isActive) {     setTimeout(function() {       /_* it activates the experiences 1 second after the       location trigger is initialized - at the load of the tracking script *_/       activate();     }, 1000);   } } ```  */
-    @SerialName(value = "js")
-    val js: kotlin.String
-    /**
-     * 
-     *
-     * Values: DOM_ELEMENT,CALLBACK,MANUAL,UPON_RUN
-     */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "dom_element") DOM_ELEMENT("dom_element"),
-        @SerialName(value = "callback") CALLBACK("callback"),
-        @SerialName(value = "manual") MANUAL("manual"),
-        @SerialName(value = "upon_run") UPON_RUN("upon_run");
-    }
-
-}
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+@kotlinx.serialization.Serializable
+@kotlinx.serialization.json.JsonClassDiscriminator("type")
+sealed interface LocationTrigger
 

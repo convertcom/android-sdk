@@ -32,6 +32,7 @@ import kotlinx.serialization.Contextual
  * @param propertyId ID of the ga4 property where data will be sent. Used internally for API calls to GoogleAnalytics
  * @param audiences List of GA audiences created for each of this experience's variations
  */
+@kotlinx.serialization.SerialName("ga4")
 @Serializable
 
 data class ExperienceIntegrationGA4 (
@@ -43,8 +44,6 @@ data class ExperienceIntegrationGA4 (
     @SerialName(value = "enabled")
     val enabled: kotlin.Boolean? = null,
 
-    @SerialName(value = "type")
-    val type: kotlin.String? = null,
 
     /* The GA4 Measurement ID (e.g., \"G-XXXXXXXXXX\") for the data stream where Convert experiment data will be sent. */
     @SerialName(value = "measurementId")
@@ -58,17 +57,13 @@ data class ExperienceIntegrationGA4 (
     @SerialName(value = "audiences")
     val audiences: kotlin.collections.Map<kotlin.String, kotlin.String>? = null
 
-) {
+) : ExperienceIntegrationGoogleAnalytics {
 
     /**
      * 
      *
      * Values: GA4
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "ga4") GA4("ga4");
-    }
 
 }
 

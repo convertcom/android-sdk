@@ -26,24 +26,16 @@ import kotlinx.serialization.Contextual
  *
  * @param type 
  */
+@kotlinx.serialization.SerialName("manual")
 @Serializable
 
-data class LocationTriggerManual (
-
-    @SerialName(value = "type")
-    val type: kotlin.String
-
-) {
+class LocationTriggerManual () : LocationTrigger {
 
     /**
      * 
      *
      * Values: MANUAL
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "manual") MANUAL("manual");
-    }
 
 }
 

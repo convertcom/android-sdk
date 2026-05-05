@@ -30,6 +30,7 @@ import kotlinx.serialization.Contextual
  * @param measurementId The GA4 Measurement ID (e.g., \"G-XXXXXXXXXX\") for the data stream where Convert experiment data will be sent.
  * @param noWaitPageview Boolean indicating whether to wait for the page view event to complete before sending other events.
  */
+@kotlinx.serialization.SerialName("ga4")
 @Serializable
 
 data class ProjectIntegrationGA4 (
@@ -42,8 +43,6 @@ data class ProjectIntegrationGA4 (
     @SerialName(value = "auto_revenue_tracking")
     val autoRevenueTracking: kotlin.Boolean? = null,
 
-    @SerialName(value = "type")
-    val type: kotlin.String? = null,
 
     /* The GA4 Measurement ID (e.g., \"G-XXXXXXXXXX\") for the data stream where Convert experiment data will be sent. */
     @SerialName(value = "measurementId")
@@ -53,17 +52,13 @@ data class ProjectIntegrationGA4 (
     @SerialName(value = "no_wait_pageview")
     val noWaitPageview: kotlin.Boolean? = null
 
-) {
+) : GASettings {
 
     /**
      * 
      *
      * Values: GA4
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "ga4") GA4("ga4");
-    }
 
 }
 

@@ -28,12 +28,11 @@ import kotlinx.serialization.Contextual
  * @param min Minimum value for the outlier detection, under which, the value is considered an outlier
  * @param max Maximum value for the outlier detection, over which, the value is considered an outlier
  */
+@kotlinx.serialization.SerialName("min_max")
 @Serializable
 
 data class NumericOutlierMinMax (
 
-    @SerialName(value = "detection_type")
-    val detectionType: NumericOutlierMinMax.DetectionType,
 
     /* Minimum value for the outlier detection, under which, the value is considered an outlier */
     @Contextual @SerialName(value = "min")
@@ -43,17 +42,13 @@ data class NumericOutlierMinMax (
     @Contextual @SerialName(value = "max")
     val max: java.math.BigDecimal? = null
 
-) {
+) : NumericOutlier {
 
     /**
      * 
      *
      * Values: MIN_MAX
      */
-    @Serializable
-    enum class DetectionType(val value: kotlin.String) {
-        @SerialName(value = "min_max") MIN_MAX("min_max");
-    }
 
 }
 

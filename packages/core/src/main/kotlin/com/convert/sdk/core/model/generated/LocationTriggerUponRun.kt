@@ -26,24 +26,16 @@ import kotlinx.serialization.Contextual
  *
  * @param type 
  */
+@kotlinx.serialization.SerialName("upon_run")
 @Serializable
 
-data class LocationTriggerUponRun (
-
-    @SerialName(value = "type")
-    val type: kotlin.String
-
-) {
+class LocationTriggerUponRun () : LocationTrigger {
 
     /**
      * 
      *
      * Values: UPON_RUN
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "upon_run") UPON_RUN("upon_run");
-    }
 
 }
 

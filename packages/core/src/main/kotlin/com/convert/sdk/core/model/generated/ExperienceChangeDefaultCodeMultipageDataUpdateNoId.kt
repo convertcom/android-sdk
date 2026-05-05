@@ -29,12 +29,11 @@ import kotlinx.serialization.Contextual
  * @param `data` 
  * @param concurrencyKey A server-generated hash that represents the object's state at the time of retrieval. When included in an update request, the operation will only succeed if the object hasn't been modified since this key was obtained. If another update has occurred in the meantime, the request will fail with a conflict error, requiring you to fetch the latest version and retry your update with the new concurrency_key. This implements optimistic concurrency control to prevent lost updates in concurrent scenarios.
  */
+@kotlinx.serialization.SerialName("defaultCodeMultipage")
 @Serializable
 
 data class ExperienceChangeDefaultCodeMultipageDataUpdateNoId (
 
-    @SerialName(value = "type")
-    val type: kotlin.String,
 
     @SerialName(value = "data")
     val `data`: ExperienceChangeDefaultCodeMultipageDataBaseAllOfData,
@@ -43,17 +42,13 @@ data class ExperienceChangeDefaultCodeMultipageDataUpdateNoId (
     @SerialName(value = "concurrency_key")
     val concurrencyKey: kotlin.String? = null
 
-) {
+) : ExperienceChangeUpdateNoId {
 
     /**
      * 
      *
      * Values: DEFAULT_CODE_MULTIPAGE
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "defaultCodeMultipage") DEFAULT_CODE_MULTIPAGE("defaultCodeMultipage");
-    }
 
 }
 

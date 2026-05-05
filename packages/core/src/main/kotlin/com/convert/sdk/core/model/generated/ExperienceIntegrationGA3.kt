@@ -31,6 +31,7 @@ import kotlinx.serialization.Contextual
  * @param propertyUA The Universal Analytics Property ID (e.g., \"UA-XXXXXXXX-Y\") to which Convert experiment data will be sent.
  * @param customDimension Custom dimension where experience data should be sent to.
  */
+@kotlinx.serialization.SerialName("ga3")
 @Serializable
 
 data class ExperienceIntegrationGA3 (
@@ -42,8 +43,6 @@ data class ExperienceIntegrationGA3 (
     @SerialName(value = "enabled")
     val enabled: kotlin.Boolean? = null,
 
-    @SerialName(value = "type")
-    val type: kotlin.String? = null,
 
     /* The Universal Analytics Property ID (e.g., \"UA-XXXXXXXX-Y\") to which Convert experiment data will be sent. */
     @SerialName(value = "property_UA")
@@ -53,17 +52,13 @@ data class ExperienceIntegrationGA3 (
     @SerialName(value = "custom_dimension")
     val customDimension: kotlin.String? = null
 
-) {
+) : ExperienceIntegrationGoogleAnalytics, ExperienceIntegrationGAServing {
 
     /**
      * 
      *
      * Values: GA3
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "ga3") GA3("ga3");
-    }
 
 }
 

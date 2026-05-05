@@ -27,28 +27,23 @@ import kotlinx.serialization.Contextual
  * @param type 
  * @param js Describes the js callback that will be executed in order to fire the experience.  It is called with two arguments: - `activate` - a function that should be called when the experience should be activated - `options` - an object with the following properties:   - `locationId` - id of the location that is being activated   - `isActive` - boolean flag that indicates if the location is active Example: ``` function(activate, options) {   if (options.isActive) {     setTimeout(function() {       /_* it activates the experiences 1 second after the       location trigger is initialized - at the load of the tracking script *_/       activate();     }, 1000);   } } ``` 
  */
+@kotlinx.serialization.SerialName("callback")
 @Serializable
 
 data class LocationTriggerCallback (
 
-    @SerialName(value = "type")
-    val type: kotlin.String,
 
     /* Describes the js callback that will be executed in order to fire the experience.  It is called with two arguments: - `activate` - a function that should be called when the experience should be activated - `options` - an object with the following properties:   - `locationId` - id of the location that is being activated   - `isActive` - boolean flag that indicates if the location is active Example: ``` function(activate, options) {   if (options.isActive) {     setTimeout(function() {       /_* it activates the experiences 1 second after the       location trigger is initialized - at the load of the tracking script *_/       activate();     }, 1000);   } } ```  */
     @SerialName(value = "js")
     val js: kotlin.String
 
-) {
+) : LocationTrigger {
 
     /**
      * 
      *
      * Values: CALLBACK
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "callback") CALLBACK("callback");
-    }
 
 }
 

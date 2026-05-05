@@ -29,6 +29,7 @@ import kotlinx.serialization.Contextual
  * @param type 
  * @param `data` 
  */
+@kotlinx.serialization.SerialName("fullStackFeature")
 @Serializable
 
 data class ExperienceChangeFullStackFeatureServing (
@@ -37,23 +38,17 @@ data class ExperienceChangeFullStackFeatureServing (
     @SerialName(value = "id")
     val id: kotlin.Int? = null,
 
-    @SerialName(value = "type")
-    val type: kotlin.String? = null,
 
     @SerialName(value = "data")
     val `data`: ExperienceChangeFullStackFeatureBaseAllOfData? = null
 
-) {
+) : ExperienceChangeServing {
 
     /**
      * 
      *
      * Values: FULL_STACK_FEATURE
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "fullStackFeature") FULL_STACK_FEATURE("fullStackFeature");
-    }
 
 }
 

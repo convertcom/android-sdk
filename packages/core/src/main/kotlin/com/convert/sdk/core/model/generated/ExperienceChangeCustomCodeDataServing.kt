@@ -29,6 +29,7 @@ import kotlinx.serialization.Contextual
  * @param type 
  * @param `data` 
  */
+@kotlinx.serialization.SerialName("customCode")
 @Serializable
 
 data class ExperienceChangeCustomCodeDataServing (
@@ -37,23 +38,17 @@ data class ExperienceChangeCustomCodeDataServing (
     @SerialName(value = "id")
     val id: kotlin.Int? = null,
 
-    @SerialName(value = "type")
-    val type: kotlin.String? = null,
 
     @SerialName(value = "data")
     val `data`: ExperienceChangeCustomCodeDataBaseAllOfData? = null
 
-) {
+) : ExperienceChangeServing {
 
     /**
      * 
      *
      * Values: CUSTOM_CODE
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "customCode") CUSTOM_CODE("customCode");
-    }
 
 }
 

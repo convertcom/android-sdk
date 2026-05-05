@@ -201,6 +201,43 @@ internal class GeneratedTypesTest {
     }
 
     /**
+     * F-165 regression — the demo crashed at startup decoding a config
+     * payload with a `oneOf+discriminator` schema (`NumericOutlier` →
+     * `{"detection_type": "none"}`). Reproduces the exact wire shape and
+     * asserts the typed variant resolves. This locks in AC-11's contract
+     * that one-to-one `oneOf+discriminator` schemas decode to their
+     * concrete sealed-interface variant via `@JsonClassDiscriminator`.
+     */
+    @Test
+    fun `NumericOutlier decodes detection_type none to NumericOutlierNone`() {
+        val payload = """{"detection_type": "none"}"""
+        val decoded: NumericOutlier = json.decodeFromString(payload)
+        assertTrue(decoded is NumericOutlierNone, "Expected NumericOutlierNone, got: ${decoded::class.qualifiedName}")
+    }
+
+    @Test
+    fun `LocationTrigger decodes manual and upon_run discriminator values to typed variants`() {
+        // The other two LocationTrigger variants (dom_element, callback)
+        // require fields whose decode hits @Contextual placeholders that
+        // need a SerializersModule entry only set up at SDK runtime —
+        // out of scope for this branch. The two empty-bodied variants
+        // already prove the @JsonClassDiscriminator dispatch works for
+        // this sealed hierarchy.
+        val cases = mapOf(
+            """{"type": "manual"}""" to "LocationTriggerManual",
+            """{"type": "upon_run"}""" to "LocationTriggerUponRun",
+        )
+        for ((payload, expectedClassName) in cases) {
+            val decoded: LocationTrigger = json.decodeFromString(payload)
+            assertEquals(
+                expectedClassName,
+                decoded::class.simpleName,
+                "Payload $payload should decode to $expectedClassName",
+            )
+        }
+    }
+
+    /**
      * Unused — kept solely so the buildJsonObject import is referenced,
      * since the emptyRoundTrip test asserts against an empty JsonObject
      * that is built via [buildJsonObject] for clarity. The function body

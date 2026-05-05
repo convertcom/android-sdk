@@ -29,6 +29,7 @@ import kotlinx.serialization.Contextual
  * @param type 
  * @param propertyUA The Universal Analytics Property ID (e.g., \"UA-XXXXXXXX-Y\") to which Convert experiment data will be sent.
  */
+@kotlinx.serialization.SerialName("ga3")
 @Serializable
 
 data class ProjectIntegrationGA3 (
@@ -41,24 +42,18 @@ data class ProjectIntegrationGA3 (
     @SerialName(value = "auto_revenue_tracking")
     val autoRevenueTracking: kotlin.Boolean? = null,
 
-    @SerialName(value = "type")
-    val type: kotlin.String? = null,
 
     /* The Universal Analytics Property ID (e.g., \"UA-XXXXXXXX-Y\") to which Convert experiment data will be sent. */
     @SerialName(value = "property_UA")
     val propertyUA: kotlin.String? = null
 
-) {
+) : GASettings {
 
     /**
      * 
      *
      * Values: GA3
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "ga3") GA3("ga3");
-    }
 
 }
 

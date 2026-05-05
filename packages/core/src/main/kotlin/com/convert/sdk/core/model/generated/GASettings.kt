@@ -33,35 +33,8 @@ import kotlinx.serialization.Contextual
  * @param measurementId The GA4 Measurement ID (e.g., \"G-XXXXXXXXXX\") for the data stream where Convert experiment data will be sent.
  * @param noWaitPageview Boolean indicating whether to wait for the page view event to complete before sending other events.
  */
-interface GASettings {
-
-    /* If true, integration with Google Analytics is enabled for this project or experience, allowing experiment data to be sent to GA. */
-    @SerialName(value = "enabled")
-    val enabled: kotlin.Boolean?
-    /* Attempt to pull revenue data from Google Analytics Revenue Tracking code. */
-    @SerialName(value = "auto_revenue_tracking")
-    val autoRevenueTracking: kotlin.Boolean?
-    @SerialName(value = "type")
-    val type: kotlin.String?
-    /* The Universal Analytics Property ID (e.g., \"UA-XXXXXXXX-Y\") to which Convert experiment data will be sent. */
-    @SerialName(value = "property_UA")
-    val propertyUA: kotlin.String?
-    /* The GA4 Measurement ID (e.g., \"G-XXXXXXXXXX\") for the data stream where Convert experiment data will be sent. */
-    @SerialName(value = "measurementId")
-    val measurementId: kotlin.String?
-    /* Boolean indicating whether to wait for the page view event to complete before sending other events. */
-    @SerialName(value = "no_wait_pageview")
-    val noWaitPageview: kotlin.Boolean?
-    /**
-     * 
-     *
-     * Values: GA3,GA4
-     */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "ga3") GA3("ga3"),
-        @SerialName(value = "ga4") GA4("ga4");
-    }
-
-}
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+@kotlinx.serialization.Serializable
+@kotlinx.serialization.json.JsonClassDiscriminator("type")
+sealed interface GASettings
 

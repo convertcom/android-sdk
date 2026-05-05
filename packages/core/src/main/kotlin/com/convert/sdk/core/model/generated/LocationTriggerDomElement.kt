@@ -29,12 +29,11 @@ import kotlinx.serialization.Contextual
  * @param selector Describes html selector
  * @param events Events for LocationTriggerDomElement
  */
+@kotlinx.serialization.SerialName("dom_element")
 @Serializable
 
 data class LocationTriggerDomElement (
 
-    @SerialName(value = "type")
-    val type: kotlin.String,
 
     /* Describes html selector */
     @SerialName(value = "selector")
@@ -44,17 +43,13 @@ data class LocationTriggerDomElement (
     @SerialName(value = "events")
     val events: kotlin.collections.List<@Contextual LocationDomTriggerEvents>
 
-) {
+) : LocationTrigger {
 
     /**
      * 
      *
      * Values: DOM_ELEMENT
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "dom_element") DOM_ELEMENT("dom_element");
-    }
 
 }
 

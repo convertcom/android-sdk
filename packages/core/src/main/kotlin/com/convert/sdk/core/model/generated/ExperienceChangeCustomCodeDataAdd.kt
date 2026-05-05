@@ -28,12 +28,11 @@ import kotlinx.serialization.Contextual
  * @param `data` 
  * @param id The unique numerical identifier for this specific change.
  */
+@kotlinx.serialization.SerialName("customCode")
 @Serializable
 
 data class ExperienceChangeCustomCodeDataAdd (
 
-    @SerialName(value = "type")
-    val type: kotlin.String,
 
     @Contextual @SerialName(value = "data")
     val `data`: kotlin.Any?,
@@ -42,17 +41,13 @@ data class ExperienceChangeCustomCodeDataAdd (
     @SerialName(value = "id")
     val id: kotlin.Int? = null
 
-) {
+) : ExperienceChangeAdd {
 
     /**
      * 
      *
      * Values: CUSTOM_CODE
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "customCode") CUSTOM_CODE("customCode");
-    }
 
 }
 

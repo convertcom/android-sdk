@@ -30,6 +30,7 @@ import kotlinx.serialization.Contextual
  * @param type 
  * @param measurementId The GA4 Measurement ID (e.g., \"G-XXXXXXXXXX\") for the data stream where Convert experiment data will be sent.
  */
+@kotlinx.serialization.SerialName("ga4")
 @Serializable
 
 data class ExperienceIntegrationGA4Base (
@@ -41,24 +42,18 @@ data class ExperienceIntegrationGA4Base (
     @SerialName(value = "enabled")
     val enabled: kotlin.Boolean? = null,
 
-    @SerialName(value = "type")
-    val type: kotlin.String? = null,
 
     /* The GA4 Measurement ID (e.g., \"G-XXXXXXXXXX\") for the data stream where Convert experiment data will be sent. */
     @SerialName(value = "measurementId")
     val measurementId: kotlin.String? = null
 
-) {
+) : ExperienceIntegrationGAServing {
 
     /**
      * 
      *
      * Values: GA4
      */
-    @Serializable
-    enum class Type(val value: kotlin.String) {
-        @SerialName(value = "ga4") GA4("ga4");
-    }
 
 }
 

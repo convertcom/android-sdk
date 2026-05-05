@@ -33,23 +33,8 @@ import kotlinx.serialization.Contextual
  * @param min 
  * @param max 
  */
-interface NumericOutlier {
-
-    @SerialName(value = "detection_type")
-    val detectionType: NumericOutlier.DetectionType
-    @SerialName(value = "min")
-    val min: NumericOutlierPercentileAllOfMin?
-    @SerialName(value = "max")
-    val max: NumericOutlierPercentileAllOfMax?
-    /**
-     * 
-     *
-     * Values: PERCENTILE
-     */
-    @Serializable
-    enum class DetectionType(val value: kotlin.String) {
-        @SerialName(value = "percentile") PERCENTILE("percentile");
-    }
-
-}
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+@kotlinx.serialization.Serializable
+@kotlinx.serialization.json.JsonClassDiscriminator("detection_type")
+sealed interface NumericOutlier
 
