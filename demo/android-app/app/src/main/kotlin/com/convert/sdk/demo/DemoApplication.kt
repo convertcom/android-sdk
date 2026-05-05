@@ -21,6 +21,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 
 /**
  * Story 7.1 AC-3 (F-166) — Application subclass that initialises the
@@ -206,30 +207,29 @@ class DemoApplication : Application() {
     }
 
     /**
-     * Story 7.5 — builds a [ConversionTracker] that delegates to a
-     * per-visitor [ConvertContext] obtained from the no-arg
-     * [ConvertSDK.createContext]. The context is cached on first use so
-     * repeated button taps hit the same sticky bucket (and the SDK's
-     * per-visitor dedup guard per Story 4.3 AC-6 applies).
+     * Story 7.5 — builds a [ConversionTracker] that delegates to the
+     * pre-warmed per-visitor [ConvertContext] from [contextDeferred].
      *
-     * Same `ConvertSdkInitializedBeforeUse` suppression rationale as
-     * [experienceRunner] / [featureRunner] — DI-container-style lookup
-     * that can only fire after [MainActivity.onCreate], which follows
-     * [Application.onCreate].
+     * Unlike the experience / feature runners, [trackConversion]
+     * returns [Unit] — there is no "null when not ready" escape hatch
+     * in the contract. Dropping a tap because the SDK has not landed
+     * yet would be silently lossy, so the tracker fires the call
+     * inside `applicationScope.launch { contextDeferred.await(); … }`:
+     * the launch returns immediately (no main-thread block), the
+     * coroutine waits for the context, then issues the
+     * [ConvertContext.trackConversion] call on [Dispatchers.Default].
+     * Calls dispatched before the context is ready are buffered in
+     * the coroutine queue and replayed in order once it lands.
      *
-     * NOTE: we deliberately DO NOT share the cached context with
-     * [experienceRunner] / [featureRunner] through a single factory-level
-     * field. Each runner lazily obtains its own [ConvertContext] on
-     * first use — both no-arg calls to [ConvertSDK.createContext] return
-     * the same auto-persisted visitor id, so the downstream bucketing +
-     * dedup decisions stay stable across runners.
+     * Per-visitor dedup (Story 4.3 AC-6) lives inside the SDK and is
+     * unaffected — both runners and this tracker observe the same
+     * sticky [ConvertContext] via [contextDeferred].
      */
-    @Suppress("ConvertSdkInitializedBeforeUse")
     fun conversionTracker(): ConversionTracker = object : ConversionTracker {
-        private val context: ConvertContext by lazy { sdk.createContext() }
-
         override fun trackConversion(goalKey: String, goalData: List<GoalData>) {
-            context.trackConversion(goalKey = goalKey, goalData = goalData)
+            applicationScope.launch {
+                contextDeferred.await().trackConversion(goalKey = goalKey, goalData = goalData)
+            }
         }
     }
 }
