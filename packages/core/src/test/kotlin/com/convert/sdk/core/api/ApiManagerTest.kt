@@ -60,8 +60,8 @@ internal class ApiManagerTest {
         val logger = CapturingLogger()
         val config = convertConfig(
             sdkKey = "sk-abc",
-            cacheLevel = "low",
             // environment defaults to "staging" via ConvertConfig.
+            network = TestNetworkConfig(cacheLevel = "low"),
         )
         val api = ApiManager(http, logger, config, json)
 
@@ -146,7 +146,7 @@ internal class ApiManagerTest {
         val logger = CapturingLogger()
         val config = convertConfig(
             sdkKey = "sk-1",
-            configEndpoint = "http://insecure.example.com/api/v1/",
+            network = TestNetworkConfig(configEndpoint = "http://insecure.example.com/api/v1/"),
         )
         val api = ApiManager(http, logger, config, json)
 
@@ -260,7 +260,7 @@ internal class ApiManagerTest {
         // environment param is included. Full-URL parity.
         val http = FakeHttpClient(statusCode = 200, body = "{}")
         val logger = CapturingLogger()
-        val config = convertConfig(sdkKey = "sk-1", cacheLevel = "default")
+        val config = convertConfig(sdkKey = "sk-1", network = TestNetworkConfig(cacheLevel = "default"))
         val api = ApiManager(http, logger, config, json)
 
         api.fetchConfig()
@@ -279,7 +279,7 @@ internal class ApiManagerTest {
         val logger = CapturingLogger()
         val config = convertConfig(
             sdkKey = "sk-1",
-            configEndpoint = "https://staging-cdn.example.com/api/v1/",
+            network = TestNetworkConfig(configEndpoint = "https://staging-cdn.example.com/api/v1/"),
         )
         val api = ApiManager(http, logger, config, json)
 
@@ -311,24 +311,32 @@ internal class ApiManagerTest {
      * everything else. `environment` defaults to ConvertConfig's own default
      * (`"staging"`) — pass `environment = "..."` to override.
      */
+    private data class TestNetworkConfig(
+        val configEndpoint: String? = null,
+        val cacheLevel: String? = null,
+    )
+
     private fun convertConfig(
         sdkKey: String? = null,
         sdkKeySecret: String? = null,
-        configEndpoint: String? = null,
-        cacheLevel: String? = null,
         environment: String = "staging",
+        network: TestNetworkConfig? = null,
     ): ConvertConfig {
-        val api = if (configEndpoint != null) {
-            ApiConfig(endpoint = ApiEndpoint(config = configEndpoint, track = null))
+        val api = if (network?.configEndpoint != null) {
+            ApiConfig(endpoint = ApiEndpoint(config = network.configEndpoint, track = null))
         } else {
             null
         }
-        val network = if (cacheLevel != null) NetworkConfig(cacheLevel = cacheLevel) else null
+        val networkConfig = if (network?.cacheLevel != null) {
+            NetworkConfig(cacheLevel = network.cacheLevel)
+        } else {
+            null
+        }
         return ConvertConfig(
             sdkKey = sdkKey,
             sdkKeySecret = sdkKeySecret,
             api = api,
-            network = network,
+            network = networkConfig,
             environment = environment,
         )
     }
