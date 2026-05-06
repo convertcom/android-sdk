@@ -6,6 +6,9 @@
 package com.convert.sdk.core.rules
 
 import com.convert.sdk.core.config.ConvertConfig
+import com.convert.sdk.core.model.generated.RuleElementAudienceUnknown
+import com.convert.sdk.core.model.generated.RuleElementNoUrlUnknown
+import com.convert.sdk.core.model.generated.RuleElementUnknown
 import com.convert.sdk.core.model.generated.RuleObject
 import com.convert.sdk.core.model.generated.RuleObjectAudience
 import com.convert.sdk.core.port.Logger
@@ -195,6 +198,17 @@ public class RuleManager(
      */
     private fun asRawObject(element: Any?, audience: Boolean): JsonObject? {
         return when (element) {
+            // F-169: the SDK's shared Json instance now composes
+            // `+ generatedPolymorphicSerializersModule` (replacing the
+            // hand-written `+ rawRuleSerializersModule`), so wire-decoded
+            // rule elements arrive as the generator-emitted
+            // `<Name>Unknown` sentinels. The `RawRuleElement*` cases
+            // remain for tests and any code path that constructs the
+            // hand-written shim directly (e.g., `Json { serializersModule
+            // = rawRuleSerializersModule }` in `RuleManagerTest`).
+            is RuleElementAudienceUnknown -> element.raw
+            is RuleElementUnknown -> element.raw
+            is RuleElementNoUrlUnknown -> element.raw
             is RawRuleElementAudience -> element.raw
             is RawRuleElement -> element.raw
             is RawRuleElementNoUrl -> element.raw

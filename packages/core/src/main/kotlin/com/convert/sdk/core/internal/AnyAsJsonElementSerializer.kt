@@ -5,7 +5,7 @@
  */
 package com.convert.sdk.core.internal
 
-import com.convert.sdk.core.rules.rawRuleSerializersModule
+import com.convert.sdk.core.model.generated.generatedPolymorphicSerializersModule
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
@@ -145,16 +145,26 @@ internal object BigDecimalSerializer : KSerializer<BigDecimal> {
 /**
  * SerializersModule registering [AnyAsJsonElementSerializer] as the
  * contextual serializer for [Any], [BigDecimalSerializer] for
- * [BigDecimal], the [ExperienceChangeServing] catch-all polymorphic
- * deserialiser, and the [rawRuleSerializersModule] so all rule-element
- * and feature-variable fields decode consistently.
+ * [BigDecimal], and the generator-emitted [generatedPolymorphicSerializersModule]
+ * — registering a polymorphic-default-deserializer (sentinel fallback)
+ * for every `oneOf+discriminator` schema in the bundled Convert
+ * serving OpenAPI spec, with runtime resilience to wire payloads that
+ * elide or carry unknown discriminator values (F-165, F-169).
  *
  * Installed on the SDK's shared [kotlinx.serialization.json.Json]
  * instance (see `ConvertSDK.buildSharedJson`). Any module consuming
- * this `Json` automatically gets feature-variable decoding + raw-rule
- * deserialisation + variation-change decoding.
+ * this `Json` automatically gets feature-variable decoding +
+ * polymorphic resilience + variation-change decoding.
+ *
+ * Replaces the prior `+ rawRuleSerializersModule` composition: the
+ * three rule-family registrations (`RuleElement`, `RuleElementNoUrl`,
+ * `RuleElementAudience`) are functionally subsumed by the aggregate's
+ * `<Name>Unknown` sentinels (each carries the wire payload as a raw
+ * `JsonObject` — same shape RuleManager already reads via
+ * `(rule as <Name>Unknown).raw["rule_type"]`). `rawRuleSerializersModule`
+ * is `@Deprecated` and removed in the next minor.
  */
 public val sharedSerializersModule: SerializersModule = SerializersModule {
     contextual(Any::class, AnyAsJsonElementSerializer)
     contextual(BigDecimal::class, BigDecimalSerializer)
-} + rawRuleSerializersModule
+} + generatedPolymorphicSerializersModule
