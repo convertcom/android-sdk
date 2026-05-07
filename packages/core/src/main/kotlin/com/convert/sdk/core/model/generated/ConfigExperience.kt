@@ -85,7 +85,7 @@ data class ConfigExperience (
     @SerialName(value = "multipage_pages")
     val multipagePages: kotlin.collections.List<kotlinx.serialization.json.JsonElement>? = null,
 
-    @Contextual @SerialName(value = "status")
+    @Serializable(with = ExperienceStatusesNullableSerializer::class) @SerialName(value = "status")
     val status: ExperienceStatuses? = null,
 
     /* Global Experience's JavaScript that will run for this experience before its changes are applied  */
@@ -96,7 +96,7 @@ data class ConfigExperience (
     @SerialName(value = "global_css")
     val globalCss: kotlin.String? = null,
 
-    @Contextual @SerialName(value = "type")
+    @Serializable(with = ExperienceTypesNullableSerializer::class) @SerialName(value = "type")
     val type: ExperienceTypes? = null,
 
     /* Experience's version number */

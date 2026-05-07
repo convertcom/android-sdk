@@ -32,10 +32,10 @@ import kotlinx.serialization.Contextual
 
 data class ConfigExperienceSettingsMatchingOptions (
 
-    @Contextual @SerialName(value = "audiences")
+    @Serializable(with = GenericListMatchingOptionsNullableSerializer::class) @SerialName(value = "audiences")
     val audiences: GenericListMatchingOptions? = GenericListMatchingOptions.ANY,
 
-    @Contextual @SerialName(value = "locations")
+    @Serializable(with = GenericListMatchingOptionsNullableSerializer::class) @SerialName(value = "locations")
     val locations: GenericListMatchingOptions? = GenericListMatchingOptions.ANY
 
 ) {

@@ -36,7 +36,7 @@ data class OsMatchRuleAllOfMatching (
     @SerialName(value = "negated")
     val negated: kotlin.Boolean? = null,
 
-    @Contextual @SerialName(value = "match_type")
+    @Serializable(with = ChoiceMatchingOptionsNullableSerializer::class) @SerialName(value = "match_type")
     val matchType: ChoiceMatchingOptions? = null
 
 ) {

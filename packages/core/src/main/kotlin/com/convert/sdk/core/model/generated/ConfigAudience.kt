@@ -48,7 +48,7 @@ data class ConfigAudience (
     @SerialName(value = "name")
     val name: kotlin.String? = null,
 
-    @Contextual @SerialName(value = "type")
+    @Serializable(with = ConfigAudienceTypesNullableSerializer::class) @SerialName(value = "type")
     val type: ConfigAudienceTypes? = null,
 
     @SerialName(value = "rules")

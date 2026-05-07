@@ -36,7 +36,7 @@ data class CookieMatchRuleAllOfMatching (
     @SerialName(value = "negated")
     val negated: kotlin.Boolean? = null,
 
-    @Contextual @SerialName(value = "match_type")
+    @Serializable(with = CookieMatchingOptionsNullableSerializer::class) @SerialName(value = "match_type")
     val matchType: CookieMatchingOptions? = null
 
 ) {

@@ -36,7 +36,7 @@ data class DayOfWeekMatchRuleAllOfMatching (
     @SerialName(value = "negated")
     val negated: kotlin.Boolean? = null,
 
-    @Contextual @SerialName(value = "match_type")
+    @Serializable(with = NumericMatchingOptionsNullableSerializer::class) @SerialName(value = "match_type")
     val matchType: NumericMatchingOptions? = null
 
 ) {

@@ -36,7 +36,7 @@ data class GenericSetMatchRuleAllOfMatching (
     @SerialName(value = "negated")
     val negated: kotlin.Boolean? = null,
 
-    @Contextual @SerialName(value = "match_type")
+    @Serializable(with = SetMatchingOptionsNullableSerializer::class) @SerialName(value = "match_type")
     val matchType: SetMatchingOptions? = null
 
 ) {

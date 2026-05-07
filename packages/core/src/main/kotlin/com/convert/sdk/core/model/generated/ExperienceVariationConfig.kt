@@ -53,7 +53,7 @@ data class ExperienceVariationConfig (
     @Contextual @SerialName(value = "traffic_allocation")
     val trafficAllocation: java.math.BigDecimal? = null,
 
-    @Contextual @SerialName(value = "status")
+    @Serializable(with = VariationStatusesNullableSerializer::class) @SerialName(value = "status")
     val status: VariationStatuses? = null,
 
     /* List of changes that this variation is exposing. */
