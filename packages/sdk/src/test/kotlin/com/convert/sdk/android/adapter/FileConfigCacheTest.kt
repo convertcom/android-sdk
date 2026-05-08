@@ -7,9 +7,13 @@ package com.convert.sdk.android.adapter
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.convert.sdk.core.internal.bigDecimalSerializersModule
+import com.convert.sdk.core.model.generated.ConfigProject
+import com.convert.sdk.core.model.generated.ConfigProjectSettings
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.port.Logger
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -21,6 +25,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
+import java.math.BigDecimal
 
 /**
  * Story 2.2 AC-10 tests for [FileConfigCache].
@@ -38,6 +43,24 @@ import java.io.File
  */
 @RunWith(RobolectricTestRunner::class)
 internal class FileConfigCacheTest {
+
+    /**
+     * Story 2.2 AC-12 (F-172): every test that constructs a
+     * [FileConfigCache] MUST pass a [Json] whose `serializersModule`
+     * registers [bigDecimalSerializersModule] (or any aggregate that
+     * subsumes it). Using a private `Json {}` without that module would
+     * mask the production wire path and let the F-172 defect class
+     * regress silently — encoding `ConfigResponseData` with a non-null
+     * `@Contextual java.math.BigDecimal?` field would throw
+     * `SerializationException: Serializer for class 'BigDecimal' is
+     * not found`. This shared instance mirrors the SDK Builder's
+     * `sharedJson` block.
+     */
+    private val json: Json = Json {
+        ignoreUnknownKeys = true
+        explicitNulls = false
+        serializersModule = bigDecimalSerializersModule
+    }
 
     private lateinit var context: Context
     private lateinit var cacheDir: File
@@ -72,7 +95,7 @@ internal class FileConfigCacheTest {
 
     @Test
     fun `write and read round-trips valid config`() = runTest {
-        val cache = FileConfigCache(context, Logger.NoOp)
+        val cache = FileConfigCache(context, Logger.NoOp, json)
         val config = ConfigResponseData(accountId = "acct-42")
 
         cache.write(config)
@@ -82,10 +105,54 @@ internal class FileConfigCacheTest {
         assertEquals("acct-42", read?.accountId)
     }
 
+    /**
+     * Story 2.2 AC-12 (F-172) — round-trip a `ConfigResponseData` whose
+     * project settings carry a non-null `@Contextual java.math.BigDecimal?`
+     * field. Without the SDK shared `Json` (which registers
+     * [bigDecimalSerializersModule]) this test would throw
+     * `kotlinx.serialization.SerializationException: Serializer for
+     * class 'BigDecimal' is not found` from
+     * [FileConfigCache.write] — exactly the runtime failure recorded in
+     * the F-172 post-mortem on the 2026-05-07 demo run.
+     *
+     * `compareTo` (rather than `equals`) is used for the BigDecimal
+     * assertion because [BigDecimal.equals] discriminates on scale —
+     * `BigDecimal("12.345")` is NOT equal to `BigDecimal("12.3450")`
+     * under `equals` even though both represent the same number.
+     */
+    @Test
+    @Suppress("DEPRECATION")
+    fun `write and read round-trips config containing BigDecimal-valued ConfigProjectSettings field`() = runTest {
+        val cache = FileConfigCache(context, Logger.NoOp, json)
+        val expected = BigDecimal("12.345")
+        val config = ConfigResponseData(
+            accountId = "acct-bigdec",
+            project = ConfigProject(
+                settings = ConfigProjectSettings(minOrderValue = expected),
+            ),
+        )
+
+        cache.write(config)
+        val read = cache.read()
+
+        assertNotNull("round-tripped config must not be null", read)
+        val readMin = read?.project?.settings?.minOrderValue
+        assertNotNull(
+            "round-tripped minOrderValue must not be null; got config=$read",
+            readMin,
+        )
+        assertEquals(
+            "round-tripped BigDecimal must be numerically equal " +
+                "(compareTo == 0); expected=$expected, got=$readMin",
+            0,
+            readMin!!.compareTo(expected),
+        )
+    }
+
     @Test
     fun `read returns null when file absent`() = runTest {
         val logger = CapturingLogger()
-        val cache = FileConfigCache(context, logger)
+        val cache = FileConfigCache(context, logger, json)
 
         val read = cache.read()
 
@@ -109,7 +176,7 @@ internal class FileConfigCacheTest {
         assertTrue("pre-seed: cacheFile must exist", cacheFile.exists())
 
         val logger = CapturingLogger()
-        val cache = FileConfigCache(context, logger)
+        val cache = FileConfigCache(context, logger, json)
         val read = cache.read()
 
         assertNull("corrupt file must return null", read)
@@ -137,7 +204,7 @@ internal class FileConfigCacheTest {
     fun `write creates parent directory if missing`() = runTest {
         assertFalse("pre-condition: cacheDir must not exist", cacheDir.exists())
 
-        val cache = FileConfigCache(context, Logger.NoOp)
+        val cache = FileConfigCache(context, Logger.NoOp, json)
         cache.write(ConfigResponseData(accountId = "x"))
 
         assertTrue("cacheDir should exist after write", cacheDir.exists())
@@ -150,7 +217,7 @@ internal class FileConfigCacheTest {
         cacheFile.writeText("""{"account_id":"x"}""")
         assertTrue(cacheFile.exists())
 
-        val cache = FileConfigCache(context, Logger.NoOp)
+        val cache = FileConfigCache(context, Logger.NoOp, json)
         cache.delete()
 
         assertFalse("cacheFile should not exist after delete()", cacheFile.exists())
@@ -160,7 +227,7 @@ internal class FileConfigCacheTest {
     fun `delete is a no-op when file is absent`() = runTest {
         assertFalse(cacheFile.exists())
 
-        val cache = FileConfigCache(context, Logger.NoOp)
+        val cache = FileConfigCache(context, Logger.NoOp, json)
         // Should not throw.
         cache.delete()
 
@@ -169,7 +236,7 @@ internal class FileConfigCacheTest {
 
     @Test
     fun `atomic write leaves no stale tmp file on success`() = runTest {
-        val cache = FileConfigCache(context, Logger.NoOp)
+        val cache = FileConfigCache(context, Logger.NoOp, json)
 
         cache.write(ConfigResponseData(accountId = "acct-99"))
 
@@ -179,7 +246,7 @@ internal class FileConfigCacheTest {
 
     @Test
     fun `write overwrites prior config`() = runTest {
-        val cache = FileConfigCache(context, Logger.NoOp)
+        val cache = FileConfigCache(context, Logger.NoOp, json)
 
         cache.write(ConfigResponseData(accountId = "first"))
         cache.write(ConfigResponseData(accountId = "second"))
@@ -196,7 +263,7 @@ internal class FileConfigCacheTest {
             // we wrote is what we see: if someone ever refactors write() to
             // accept the request config by mistake, this test would catch
             // the unexpected content via the missing accountId check.
-            val cache = FileConfigCache(context, Logger.NoOp)
+            val cache = FileConfigCache(context, Logger.NoOp, json)
             val config = ConfigResponseData(accountId = "acct-canary")
 
             cache.write(config)
@@ -224,7 +291,7 @@ internal class FileConfigCacheTest {
         cacheFile.writeText("")
 
         val logger = CapturingLogger()
-        val cache = FileConfigCache(context, logger)
+        val cache = FileConfigCache(context, logger, json)
         val read = cache.read()
 
         // An empty file is corrupt-ish — treat like corruption recovery

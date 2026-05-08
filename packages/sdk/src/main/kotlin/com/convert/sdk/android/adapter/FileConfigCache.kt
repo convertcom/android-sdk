@@ -79,35 +79,48 @@ import java.io.File
  * `sdkKey` or `sdkKeySecret`. Tests assert that authorization-shaped
  * substrings are absent from the written bytes.
  *
- * ### Serialization
+ * ### Serialization (Story 2.2 AC-12, F-172)
  *
- * The [json] instance must match the one used by [com.convert.sdk.core.api.ApiManager]
- * (`ignoreUnknownKeys = true`, `explicitNulls = false`) so that a config
- * the fetcher parsed successfully can always be round-tripped through
- * the cache without losing unknown fields or complaining about nullable
- * absent ones. For Story 2.2 we instantiate a private Json with these
- * flags; the Builder wiring (SDK-3) provides a shared instance in a
- * follow-up.
+ * The [json] instance is INJECTED by [com.convert.sdk.android.ConvertSDK.Builder.build]
+ * — the shared `sharedJson` constructed there registers
+ * [com.convert.sdk.core.internal.bigDecimalSerializersModule]
+ * (`serializersModule = bigDecimalSerializersModule`) so that the
+ * encode path below does not throw
+ * `kotlinx.serialization.SerializationException: Serializer for class
+ * 'BigDecimal' is not found` when [ConfigResponseData] carries a
+ * non-null `@Contextual java.math.BigDecimal?` field (e.g.
+ * [com.convert.sdk.core.model.generated.ConfigProjectSettings.minOrderValue],
+ * `maxOrderValue`).
+ *
+ * `FileConfigCache` MUST NOT instantiate its own [Json] — Story 2.2
+ * AC-12 records the F-172 post-mortem (verbatim 2026-05-07 demo run on
+ * staging account 10035569 / project 10034190) and forbids the private
+ * Json pattern that masked the missing serializer module from the
+ * encode path. Tests that construct `FileConfigCache` MUST pass a
+ * [Json] whose `serializersModule` includes
+ * [com.convert.sdk.core.internal.bigDecimalSerializersModule] (or an
+ * aggregate that subsumes it).
  *
  * @property context application context — used only for `filesDir`.
  *   The cache never retains any reference past the enclosing
  *   [withContext] coroutine and never touches UI resources.
  * @property logger sink for INFO/ERROR/WARN messages. Callers can pass
  *   [Logger.NoOp] in tests that don't care about log output.
+ * @property json shared [Json] instance from
+ *   [com.convert.sdk.android.ConvertSDK.Builder.build]'s `sharedJson`
+ *   block. MUST register
+ *   [com.convert.sdk.core.internal.bigDecimalSerializersModule] (or
+ *   any aggregate that subsumes it) — see Story 2.2 AC-12 / F-172.
  */
 internal class FileConfigCache(
     private val context: Context,
     private val logger: Logger,
+    private val json: Json,
 ) {
 
     private val cacheDir: File = File(context.filesDir, CACHE_DIRNAME)
     private val cacheFile: File = File(cacheDir, CACHE_FILENAME)
     private val tmpFile: File = File(cacheDir, CACHE_FILENAME_TMP)
-
-    private val json: Json = Json {
-        ignoreUnknownKeys = true
-        explicitNulls = false
-    }
 
     /**
      * Writes [config] to disk atomically. Creates the parent directory if

@@ -23,6 +23,7 @@ import com.convert.sdk.core.config.RulesConfig
 import com.convert.sdk.core.data.DataManager
 import com.convert.sdk.core.event.EventManager
 import com.convert.sdk.core.event.SystemEvents
+import com.convert.sdk.core.internal.bigDecimalSerializersModule
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.port.DataStore
@@ -626,9 +627,20 @@ public class ConvertSDK internal constructor(
             // shared Json instance has `ignoreUnknownKeys = true` +
             // `explicitNulls = false` so that the fetch and the cache see
             // the same set of fields (NFR12: forward-compatible schemas).
+            //
+            // Story 2.2 AC-12 (F-172): the shared Json must register
+            // [bigDecimalSerializersModule] so that the encode path on
+            // FileConfigCache.write does not throw
+            // `kotlinx.serialization.SerializationException: Serializer
+            // for class 'BigDecimal' is not found` when ConfigResponseData
+            // carries a non-null `@Contextual java.math.BigDecimal?` field
+            // (e.g. ConfigProjectSettings.minOrderValue / maxOrderValue).
+            // FileConfigCache MUST receive this Json by injection — it
+            // must NOT instantiate its own.
             val sharedJson = Json {
                 ignoreUnknownKeys = true
                 explicitNulls = false
+                serializersModule = bigDecimalSerializersModule
             }
             val apiManager = ApiManager(
                 httpClient = httpClient,
@@ -639,6 +651,7 @@ public class ConvertSDK internal constructor(
             val fileConfigCache = FileConfigCache(
                 context = appContext,
                 logger = logger,
+                json = sharedJson,
             )
 
             val sdk = ConvertSDK(
