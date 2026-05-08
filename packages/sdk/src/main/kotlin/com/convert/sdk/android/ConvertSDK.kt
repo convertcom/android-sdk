@@ -44,7 +44,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.modules.plus
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
@@ -946,7 +945,7 @@ public class ConvertSDK internal constructor(
             // DataManager's per-visitor StoreData serialisation (Story 3.1).
             // Construction is in [buildSharedJson] (file-scope helper, kept
             // under detekt's LongMethod ceiling). The helper registers
-            // [bigDecimalSerializersModule] so the encode path in
+            // [sharedSerializersModule] so the encode path in
             // FileConfigCache.write does not throw the F-172
             // SerializationException on @Contextual BigDecimal fields —
             // see Story 2.2 AC-12.
@@ -1259,7 +1258,7 @@ private const val BUILDER_TAG: String = "ConvertSDK.Builder"
 private fun buildSharedJson(): Json = Json {
     ignoreUnknownKeys = true
     explicitNulls = false
-    // Story 2.2 AC-12 (F-172): [bigDecimalSerializersModule] registers the
+    // Story 2.2 AC-12 (F-172): [sharedSerializersModule] registers the
     // BigDecimal contextual serializer so FileConfigCache.write can encode
     // ConfigResponseData without throwing on @Contextual
     // java.math.BigDecimal fields (notably
@@ -1283,7 +1282,7 @@ private fun buildSharedJson(): Json = Json {
     // — notably ExperienceChangeFullStackFeatureBaseAllOfData.variablesData
     // — deserialize to JsonElement; FeatureManager depends on that for
     // typed variable extraction). The aggregate subsumes the F-172
-    // bigDecimalSerializersModule from Story 2.2 AC-12.
+    // sharedSerializersModule from Story 2.2 AC-12.
     serializersModule = sharedSerializersModule
 }
 
