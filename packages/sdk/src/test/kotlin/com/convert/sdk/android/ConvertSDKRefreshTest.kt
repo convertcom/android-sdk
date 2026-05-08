@@ -13,6 +13,7 @@ import com.convert.sdk.core.config.ConvertConfig
 import com.convert.sdk.core.data.DataManager
 import com.convert.sdk.core.event.EventManager
 import com.convert.sdk.core.event.SystemEvents
+import com.convert.sdk.core.internal.bigDecimalSerializersModule
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.port.HttpClient
 import com.convert.sdk.core.port.Logger
@@ -63,6 +64,7 @@ internal class ConvertSDKRefreshTest {
     private val json: Json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
+        serializersModule = bigDecimalSerializersModule
     }
 
     /** Real refresh interval used by every test — small enough to keep
@@ -104,7 +106,7 @@ internal class ConvertSDKRefreshTest {
             if (preSeedData) it.setData(ConfigResponseData())
         }
         val apiManager = ApiManager(http, logger, config, json)
-        val cache = FileConfigCache(appContext, logger)
+        val cache = FileConfigCache(appContext, logger, json)
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val sdk = ConvertSDK(
             config = config,
