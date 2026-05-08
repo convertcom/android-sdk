@@ -86,11 +86,13 @@ fun ExperiencesScreen(viewModel: SdkViewModel) {
         ) {
             Button(
                 onClick = { viewModel.runSingleExperience(DEFAULT_EXPERIENCE_KEY) },
+                modifier = Modifier.weight(1f),
             ) {
                 Text("Run Experience")
             }
             OutlinedButton(
                 onClick = { viewModel.runAllExperiences() },
+                modifier = Modifier.weight(1f),
             ) {
                 Text("Run Experiences")
             }
