@@ -110,10 +110,16 @@ fun OfflineScreen(viewModel: SdkViewModel) {
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Button(onClick = { viewModel.runSingleExperience(DEFAULT_EXPERIENCE_KEY) }) {
+            Button(
+                onClick = { viewModel.runSingleExperience(DEFAULT_EXPERIENCE_KEY) },
+                modifier = Modifier.weight(1f),
+            ) {
                 Text("Run Experience")
             }
-            OutlinedButton(onClick = { viewModel.trackPurchaseConversion() }) {
+            OutlinedButton(
+                onClick = { viewModel.trackPurchaseConversion() },
+                modifier = Modifier.weight(1f),
+            ) {
                 Text("Buy")
             }
         }
