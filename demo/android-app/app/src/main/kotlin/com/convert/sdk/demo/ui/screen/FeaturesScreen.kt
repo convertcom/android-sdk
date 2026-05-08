@@ -85,11 +85,13 @@ fun FeaturesScreen(viewModel: SdkViewModel) {
         ) {
             Button(
                 onClick = { viewModel.runFeature(DEFAULT_FEATURE_KEY) },
+                modifier = Modifier.weight(1f),
             ) {
                 Text("Run Feature")
             }
             OutlinedButton(
                 onClick = { viewModel.runFeatures() },
+                modifier = Modifier.weight(1f),
             ) {
                 Text("Run Features")
             }
