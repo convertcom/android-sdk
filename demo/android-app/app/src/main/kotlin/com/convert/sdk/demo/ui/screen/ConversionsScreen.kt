@@ -86,6 +86,7 @@ fun ConversionsScreen(viewModel: SdkViewModel) {
         ) {
             Button(
                 onClick = { viewModel.trackPurchaseConversion() },
+                modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Buy")
             }
