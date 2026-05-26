@@ -51,13 +51,15 @@ plugins {
 // clone. The fallbacks MUST stay in lockstep with the values
 // committed in `test.properties` and the assertions in `app/src/test/`:
 //
-//   | property              | fallback literal      |
-//   | --------------------- | --------------------- |
-//   | convertSdkKey         | "demo-sdk-key"        |
-//   | convertEnvironment    | ""  (empty sentinel)  |
-//   | convertExperienceKey  | "test-experience"     |
-//   | convertFeatureKey     | "test-feature"        |
-//   | convertGoalKey        | "purchase-goal"       |
+//   | property                   | fallback literal (prod)              | test.properties pin     |
+//   | -------------------------- | ------------------------------------ | ----------------------- |
+//   | convertSdkKey              | "demo-sdk-key"                       | demo-sdk-key            |
+//   | convertEnvironment         | ""  (empty sentinel)                 | (empty)                 |
+//   | convertExperienceKey       | "test-experience"                    | test-experience         |
+//   | convertFeatureKey          | "test-feature"                       | test-feature            |
+//   | convertGoalKey             | "purchase-goal"                      | purchase-goal           |
+//   | convertVisitorAttributes   | "{}"  (empty object)                 | {} (empty object)       |
+//   | convertLocationProperties  | "{}"  (empty object)                 | {} (empty object)       |
 //
 // The empty-string sentinel for `convertEnvironment` signals "not
 // configured" to `DemoApplication.onCreate`, which skips the builder
@@ -98,6 +100,8 @@ val convertEnvironment: String = demoTunable("convertEnvironment", "")
 val convertExperienceKey: String = demoTunable("convertExperienceKey", "test-experience")
 val convertFeatureKey: String = demoTunable("convertFeatureKey", "test-feature")
 val convertGoalKey: String = demoTunable("convertGoalKey", "purchase-goal")
+val convertVisitorAttributes: String = demoTunable("convertVisitorAttributes", "{}")
+val convertLocationProperties: String = demoTunable("convertLocationProperties", "{}")
 
 android {
     namespace = "com.convert.sdk.demo"
@@ -118,6 +122,9 @@ android {
         buildConfigField("String", "convertExperienceKey", "\"$convertExperienceKey\"")
         buildConfigField("String", "convertFeatureKey", "\"$convertFeatureKey\"")
         buildConfigField("String", "convertGoalKey", "\"$convertGoalKey\"")
+        buildConfigField("String", "convertVisitorAttributes", "\"${convertVisitorAttributes.replace("\"", "\\\"")}\"")
+        buildConfigField("String", "convertLocationProperties", "\"${convertLocationProperties.replace("\"", "\\\"")}\"")
+
     }
 
     compileOptions {

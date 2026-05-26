@@ -24,6 +24,12 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Story 7.1 AC-3 (F-166) — Application subclass that initialises the
@@ -101,12 +107,34 @@ class DemoApplication : Application() {
      * createContext call itself touches disk for visitor-id
      * persistence and so must not run on the main thread either.
      *
+     * After construction the context is seeded with:
+     *  - **Visitor attributes** from [BuildConfig.convertVisitorAttributes]
+     *    (a JSON object string, e.g. `{"mobile":true}`). The staging
+     *    project's "adv-audience" rule requires `mobile=true` OR
+     *    `(desktop=true AND browser!="CH")` — setting `mobile=true` here
+     *    satisfies the mobile branch, which is correct for any Android target.
+     *  - **Location properties** from [BuildConfig.convertLocationProperties]
+     *    (a JSON object string, e.g. `{"location":"pricing"}`). The staging
+     *    project's "pricing-location" rule requires `location=pricing` —
+     *    the default value satisfies that gate. Both values are tunable
+     *    via `local.properties` without rebuilding the source.
+     *
+     * Empty JSON objects (`{}`) are treated as "no attributes / no location
+     * properties" so the test build (which reads `test.properties` pins of
+     * `{}` for both fields) never injects staging-specific state into the
+     * fake-runner unit-test path.
+     *
      * Kept `internal` for the same reason as [sdkDeferred] — future
      * runners (features, conversions) can compose against it directly.
      */
     internal val contextDeferred: Deferred<ConvertContext> by lazy {
         applicationScope.async(Dispatchers.Default, start = CoroutineStart.LAZY) {
-            sdkDeferred.await().createContext()
+            val ctx = sdkDeferred.await().createContext()
+            val attrs = parseJsonObjectToMap(BuildConfig.convertVisitorAttributes)
+            if (attrs.isNotEmpty()) ctx.setAttributes(attrs)
+            val locationProps = parseJsonObjectToMap(BuildConfig.convertLocationProperties)
+            if (locationProps.isNotEmpty()) ctx.setLocationProperties(locationProps)
+            ctx
         }
     }
 
@@ -315,4 +343,44 @@ class DemoApplication : Application() {
             trackingEnabled = tracking,
         )
     }
+}
+
+/**
+ * Parses a JSON object string (e.g. `{"mobile":true,"browser":"CH"}`) into
+ * a `Map<String, Any?>` suitable for [com.convert.sdk.android.ConvertContext.setAttributes]
+ * and [com.convert.sdk.android.ConvertContext.setLocationProperties].
+ *
+ * Coercion rules for JSON primitive values:
+ *  - Boolean JSON values → Kotlin [Boolean]
+ *  - Numeric JSON values that are exact integers → Kotlin [Int]
+ *  - Other numeric JSON values → Kotlin [Double]
+ *  - String JSON values → Kotlin [String]
+ *
+ * An empty JSON object (`{}`) or a blank string returns [emptyMap], which
+ * the [DemoApplication] contextDeferred treats as "no attributes to set" —
+ * this is intentional so the `test.properties` pin of `{}` for both
+ * attribute fields is a clean no-op in the unit-test path.
+ *
+ * Any parse error is swallowed and returns [emptyMap] — the demo must not
+ * crash if a developer puts a malformed string in `local.properties`.
+ */
+private fun parseJsonObjectToMap(jsonString: String): Map<String, Any?> {
+    if (jsonString.isBlank()) return emptyMap()
+    return runCatching {
+        val obj = Json.parseToJsonElement(jsonString) as? JsonObject
+            ?: return@runCatching emptyMap()
+        obj.entries.associate { (key, element) ->
+            val primitive = runCatching { element.jsonPrimitive }.getOrNull()
+            val value: Any? = when {
+                primitive == null -> element.toString()
+                primitive.booleanOrNull != null -> primitive.boolean
+                primitive.doubleOrNull != null -> {
+                    val d = primitive.doubleOrNull!!
+                    if (d % 1.0 == 0.0 && !d.isInfinite()) d.toInt() else d
+                }
+                else -> primitive.content
+            }
+            key to value
+        }
+    }.getOrDefault(emptyMap())
 }

@@ -2,6 +2,19 @@
 
 Standalone Compose demo app showcasing the Convert Android SDK. This is **not** part of the root SDK Gradle build — open `demo/android-app/` as its own Android Studio project (File → Open → select the `demo/android-app` directory).
 
+## Quick start (macOS / Linux)
+
+From `demo/android-app/`:
+
+```bash
+./scripts/setup-emulator.sh                  # installs system image + creates AVD; prints the exact launch command at the end
+cp local.properties.example local.properties # then edit to add convertSdkKey + tunables for your Convert account
+# 1) Paste the launch command from setup-emulator.sh's output to start the emulator in a standalone window.
+# 2) In Android Studio: device dropdown → Convert_Demo_API_34 → ▶ Run.
+```
+
+The script auto-detects your Android SDK location (via `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or the macOS default `~/Library/Android/sdk`), so you do not need to set any environment variables first. It installs the only system image known to work for this demo (Google APIs ARM64 / x86_64 for API 34 — NOT Android XR) and creates an AVD bound to it. See [Setup](#setup) for `local.properties` details and [Run the demo in Android Studio](#run-the-demo-in-android-studio) for the cross-platform manual path (including Windows).
+
 ## How the SDK is discovered
 
 `settings.gradle.kts` uses `includeBuild("../../")` to pull the root SDK project (`android-sdk/`) in as a composite build. Gradle substitutes the `implementation("com.convert:sdk-android")` dependency declared in `app/build.gradle.kts` with the locally-built AAR. No prior `./gradlew publishToMavenLocal` needed.
@@ -10,17 +23,53 @@ If SDK code changes aren't picked up, run `./gradlew --stop` in both projects an
 
 ## Setup
 
-1. Open `demo/android-app/` in Android Studio.
-2. (Optional) Copy `local.properties.example` to `local.properties` and fill in any of the exposed tunables: `convertSdkKey`, `convertEnvironment`, `convertExperienceKey`, `convertFeatureKey`, `convertGoalKey`. Every entry is optional — when omitted, the demo falls back to the hardcoded literals documented in `local.properties.example` and still builds cleanly.
-3. Run the demo (see the **Run the demo in Android Studio** section below).
+1. **Provision an emulator.** On macOS / Linux, run `./scripts/setup-emulator.sh` (see [Quick start](#quick-start-macos--linux)). On Windows, follow the manual path in [Run the demo in Android Studio](#run-the-demo-in-android-studio) → "Manual setup via Android Studio".
+2. **Open `demo/android-app/`** in Android Studio.
+3. **(Optional) Copy `local.properties.example` to `local.properties`** and fill in any of the exposed tunables: `convertSdkKey`, `convertEnvironment`, `convertExperienceKey`, `convertFeatureKey`, `convertGoalKey`, `convertVisitorAttributes`, `convertLocationProperties`. Every entry is optional — when omitted, the demo falls back to the hardcoded literals documented in `local.properties.example` and still builds cleanly.
+4. **Run the demo** (see the [Run the demo in Android Studio](#run-the-demo-in-android-studio) section below).
+
+### Configuring the demo against your Convert account
+
+The demo ships with **generic placeholder fallbacks** (`test-experience`, `test-feature`, `purchase-goal`, plus empty `{}` for visitor attributes and location properties). The expectation is that anyone cloning this repo points the demo at experiences/features/goals that exist in **their own** Convert account — the placeholders are NOT live keys.
+
+Minimum viable `local.properties`:
+
+```
+convertSdkKey=<your-sdk-key>
+convertExperienceKey=<an-experience-key-that-exists-in-your-account>
+convertFeatureKey=<a-feature-key-that-exists-in-your-account>
+convertGoalKey=<a-goal-key-that-exists-in-your-account>
+```
+
+If any of those experiences/features have audience rules that gate on visitor attributes, add the matching attributes:
+
+```
+convertVisitorAttributes={"<your-attr-key>":<value>, ...}
+```
+
+If any have location rules, add the matching location properties:
+
+```
+convertLocationProperties={"<your-location-key>":"<value>"}
+```
+
+All five non-`convertSdkKey` fields are optional — the demo still launches if they're omitted, but with placeholder keys the `runExperience` / `runFeature` / `trackConversion` calls will return null/no-op and the inspector will surface "No eligible experiences" or "No variation for experience …" cards. That's an honest signal that the demo needs to be pointed at real keys.
 
 ## Run the demo in Android Studio
 
 1. **Open the project.** In Android Studio: `File → Open` and select the `demo/android-app/` folder (not the repo root — the demo is a standalone Gradle project wired to the SDK via `includeBuild("../../")`).
 2. **Wait for Gradle sync.** On first open, Android Studio indexes the project and syncs Gradle. When you see the **"Sync successful"** toast at the bottom, the `app` run configuration is auto-generated from the `:app` module's AGP metadata and pre-selected in the toolbar dropdown — no manual creation needed.
-3. **Pick a target device.** Either start an emulator from `Device Manager` or plug in a physical device with USB debugging enabled. The device dropdown sits immediately to the right of the run-configuration dropdown.
+3. **Pick a target device.** Either start an emulator (two paths below) or plug in a physical device with USB debugging enabled. The device dropdown sits immediately to the right of the run-configuration dropdown.
 
-   **Emulator requirements (read this before creating the AVD):**
+   **A. Recommended one-shot CLI setup (macOS + Linux):**
+
+   ```bash
+   ./scripts/setup-emulator.sh
+   ```
+
+   Installs the right Google APIs system image (~1.5 GB on first run) and creates an AVD named `Convert_Demo_API_34`. Idempotent. The script auto-detects the Android SDK location (via `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or the macOS default `~/Library/Android/sdk`) so no environment-variable setup is required. After it finishes, the script prints the exact `emulator -avd Convert_Demo_API_34 &` command with the resolved absolute path — paste that to launch the emulator in a standalone window, then select `Convert_Demo_API_34` in Android Studio's device dropdown. **Skip section B if you used this.**
+
+   **B. Manual setup via Android Studio (cross-platform, including Windows):**
 
    - **System image — use a "Google APIs" or "Google Play" image, NOT "Android XR".** Pick any Pixel hardware profile on Android 7.0 / API 24 or later, then in the system-image step select an image whose tag is "Google APIs" or "Google Play". On Apple Silicon Macs that means the `arm64-v8a` variant. Do **not** select an "Android XR" image — those are intended for XR headset / glasses development and remap host mouse input through a spatial pointer model, so on a 2D phone skin Compose `onClick` handlers never fire and drag-to-expand on the inspector sheet is inert. If your SDK Manager only offers an Android XR image for the API level you want, install a Google APIs image first: **SDK Manager → SDK Platforms → (tick) Show Package Details → Android 14 (or your target) → "Google APIs ARM 64 v8a System Image"** (Apple Silicon) or **"Google APIs Intel x86_64 System Image"** (Intel).
    - **Run the emulator in a standalone window, not the embedded "Running Devices" tool window.** The tool window does not dispatch multi-touch gestures (see [emulator troubleshooting docs](https://developer.android.com/studio/run/emulator-troubleshooting) — "Multi-touch does not work in tool window"), so drag-to-expand on the inspector sheet won't work there. It also only forwards full keyboard/mouse events to the app when **Hardware Input** mode is enabled. The simplest reliable setup is to launch the emulator in its own window: **Android Studio → Settings… → Tools → Emulator** (on macOS: **Android Studio menu → Settings…**) → **deselect** *"Launch in the Running Devices tool window"* → **Apply** → **OK**. Then cold-boot the AVD via **Device Manager → ⋮ → Cold Boot Now** so the change takes effect. The emulator now opens in a standalone window with full mouse and multi-touch support.
@@ -203,7 +252,7 @@ The fifth tab — Config — is a read-only panel showing what the SDK currently
 | Row | Source | Example |
 |-----|--------|---------|
 | SDK Key | `BuildConfig.convertSdkKey` (from `local.properties`) | `abcdef12...` |
-| Environment | Empty until the SDK exposes it | `(not set)` |
+| Environment | `BuildConfig.convertEnvironment` (from `local.properties`) | `staging` or `(not set)` |
 | Active Experiences | `ConvertContext.runExperiences()` count + keys | `2 active — welcome, checkout` |
 | Active Features | `ConvertContext.runFeatures()` count + keys | `1 active — banner` |
 | Config Last Fetched | Stamped when the ViewModel observes `ready` / `config.updated` | `14:32:17.842` |

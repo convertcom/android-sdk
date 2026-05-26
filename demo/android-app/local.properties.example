@@ -35,21 +35,49 @@
 # Experience key
 # ---------------------------------------------------------------------------
 # Experience key the Experiences / Offline screens' primary buttons
-# target via `ConvertContext.runExperience(…)`. Default when omitted:
-# `"test-experience"`.
+# target via `ConvertContext.runExperience(…)`. Must match an experience
+# key configured in YOUR Convert account. Default when omitted:
+# `"test-experience"` (a generic placeholder; replace with your own key).
 # convertExperienceKey=your-experience-key
 
 # ---------------------------------------------------------------------------
 # Feature key
 # ---------------------------------------------------------------------------
 # Feature key the Features screen's primary button targets via
-# `ConvertContext.runFeature(…)`. Default when omitted: `"test-feature"`.
+# `ConvertContext.runFeature(…)`. Must match a feature key configured in
+# YOUR Convert account. Default when omitted: `"test-feature"`
+# (a generic placeholder; replace with your own key).
 # convertFeatureKey=your-feature-key
 
 # ---------------------------------------------------------------------------
 # Goal key
 # ---------------------------------------------------------------------------
 # Goal key the Conversions / Offline screens' Buy button tracks via
-# `ConvertContext.trackConversion(…)`. Default when omitted:
-# `"purchase-goal"`.
+# `ConvertContext.trackConversion(…)`. Must match a goal key configured
+# in YOUR Convert account. Default when omitted: `"purchase-goal"`
+# (a generic placeholder; replace with your own key).
 # convertGoalKey=your-goal-key
+
+# ---------------------------------------------------------------------------
+# Visitor attributes (JSON object)
+# ---------------------------------------------------------------------------
+# Initial visitor attributes set on the ConvertContext via
+# `ConvertContext.setAttributes(…)`. Must be a valid JSON object string.
+# Populate this with whatever attributes YOUR Convert audiences require
+# (e.g. `{"mobile":true}` for an audience that gates on a `mobile` flag,
+# `{"plan":"premium"}` for a subscription-tier audience, etc.). Default
+# when omitted: `"{}"` (empty object — no attributes injected).
+# convertVisitorAttributes={"mobile":true}
+
+# ---------------------------------------------------------------------------
+# Location properties (JSON object)
+# ---------------------------------------------------------------------------
+# Location properties set on the ConvertContext via
+# `ConvertContext.setLocationProperties(…)`. Must be a valid JSON object
+# string. Populate this only if YOUR experiences have location rules
+# (e.g. `{"location":"pricing"}` for a rule that gates on a `location`
+# property). Default when omitted: `"{}"` (empty object — no location
+# properties injected, so experiences without location rules bucket
+# normally and experiences with location rules will be reported as
+# "no location properties set on context").
+# convertLocationProperties={"location":"pricing"}
