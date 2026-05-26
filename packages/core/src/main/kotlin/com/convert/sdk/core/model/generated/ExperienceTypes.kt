@@ -23,7 +23,7 @@ import kotlinx.serialization.Serializable
 /**
  * 
  *
- * Values: A_SLASH_B,A_SLASH_A,MVT,SPLIT_URL,MULTIPAGE,DEPLOY
+ * Values: A_SLASH_B,A_SLASH_A,MVT,SPLIT_URL,MULTIPAGE,DEPLOY,A_SLASH_B_FULLSTACK,FEATURE_ROLLOUT
  */
 @Serializable
 enum class ExperienceTypes(val value: kotlin.String) {
@@ -44,7 +44,13 @@ enum class ExperienceTypes(val value: kotlin.String) {
     MULTIPAGE("multipage"),
 
     @SerialName(value = "deploy")
-    DEPLOY("deploy");
+    DEPLOY("deploy"),
+
+    @SerialName(value = "a/b_fullstack")
+    A_SLASH_B_FULLSTACK("a/b_fullstack"),
+
+    @SerialName(value = "feature_rollout")
+    FEATURE_ROLLOUT("feature_rollout");
 
     /**
      * Override [toString()] to avoid using the enum variable name as the value, and instead use

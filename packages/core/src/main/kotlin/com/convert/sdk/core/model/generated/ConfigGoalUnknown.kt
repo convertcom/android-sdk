@@ -9,7 +9,14 @@ import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonEncoder
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.floatOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 
 /**
  * Sentinel variant of [ConfigGoal] used as the polymorphic-default
@@ -31,10 +38,14 @@ import kotlinx.serialization.json.buildJsonObject
 internal data class ConfigGoalUnknown(
     val raw: JsonObject = buildJsonObject {},
 ) : ConfigGoal {
-    override val id: kotlin.String? get() = null
-    override val name: kotlin.String? get() = null
-    override val key: kotlin.String? get() = null
-    override val type: kotlin.String? get() = null
+    override val id: kotlin.String?
+        get() = raw["id"]?.jsonPrimitive?.contentOrNull
+    override val name: kotlin.String?
+        get() = raw["name"]?.jsonPrimitive?.contentOrNull
+    override val key: kotlin.String?
+        get() = raw["key"]?.jsonPrimitive?.contentOrNull
+    override val type: kotlin.String?
+        get() = raw["type"]?.jsonPrimitive?.contentOrNull
     override val rules: RuleObject? get() = null
     override val settings: ClicksElementGoalSettings? get() = null
 }

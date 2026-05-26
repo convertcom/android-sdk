@@ -402,6 +402,42 @@ internal class GeneratedTypesTest {
     }
 
     /**
+     * F-174 regression — the many-to-one [ConfigGoalUnknown] sentinel
+     * previously returned `null` for every scalar interface member
+     * (`key`/`id`/`name`/`type`), so [ConvertContext.trackConversion]'s
+     * `goals.firstOrNull { it.key == goalKey }` lookup never matched a
+     * goal that was actually present in the fetched config — it logged
+     * "goal not found" for every real goal, breaking conversion tracking
+     * against any live Convert project. The prior ConfigGoal tests asserted
+     * the sentinel TYPE but never read a scalar back, so the null-key
+     * defect was invisible to the suite.
+     *
+     * AC-12.c (strengthened) requires the sentinel to materialise scalar
+     * interface members from its raw [kotlinx.serialization.json.JsonObject]
+     * via `jsonPrimitive.*OrNull`. This locks that in: a ConfigGoal that
+     * falls to the sentinel MUST expose `key`/`id`/`name`/`type` read from
+     * the wire payload, not `null`.
+     */
+    @Test
+    fun `ConfigGoalUnknown sentinel materialises scalar members from raw (F-174)`() {
+        val payload =
+            """{"id":"100","key":"purchase-goal","name":"Purchase","type":"clicks_on_element"}"""
+        val decoded: ConfigGoal = polymorphicJson.decodeFromString(payload)
+        assertTrue(
+            decoded is ConfigGoalUnknown,
+            "Expected ConfigGoalUnknown, got: ${decoded::class.qualifiedName}",
+        )
+        assertEquals("purchase-goal", decoded.key, "F-174: sentinel must materialise key from raw")
+        assertEquals("100", decoded.id, "F-174: sentinel must materialise id from raw")
+        assertEquals("Purchase", decoded.name, "F-174: sentinel must materialise name from raw")
+        assertEquals(
+            "clicks_on_element",
+            decoded.type,
+            "F-174: sentinel must materialise type from raw",
+        )
+    }
+
+    /**
      * Idempotency invariant — the aggregate module is byte-stable across
      * regenerations. This test pins that the SDK's view of the module's
      * registrations is non-empty (sanity check that the import resolved

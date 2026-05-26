@@ -9,7 +9,14 @@ import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonEncoder
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.floatOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 
 /**
  * Sentinel variant of [RuleElement] used as the polymorphic-default
@@ -33,9 +40,11 @@ internal data class RuleElementUnknown(
 ) : RuleElement {
     override val ruleType: JsConditionMatchRulesTypes
         get() = error("RuleElementUnknown.ruleType is not materialised; read raw[\"rule_type\"]")
-    override val `value`: kotlin.String? get() = null
+    override val `value`: kotlin.String?
+        get() = raw["value"]?.jsonPrimitive?.contentOrNull
     override val matching: JsConditionMatchRuleAllOfMatching? get() = null
-    override val key: kotlin.String? get() = null
+    override val key: kotlin.String?
+        get() = raw["key"]?.jsonPrimitive?.contentOrNull
 }
 
 /**
