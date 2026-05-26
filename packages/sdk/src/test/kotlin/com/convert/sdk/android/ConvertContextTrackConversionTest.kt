@@ -18,6 +18,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -234,6 +235,28 @@ internal class ConvertContextTrackConversionTest {
             "no enqueue expected when config is not ready",
             recordingApi.enqueueConversionCalls.isEmpty(),
         )
+    }
+
+    // --- hasGoal: goal-existence pre-check (lets callers surface an
+    //     unknown goal instead of letting trackConversion drop it) --------
+
+    @Test
+    fun `hasGoal reflects whether the goal key exists in the loaded config`() {
+        val sdk = buildSdk(testConfig())
+        val ctx = sdk.createContext("visitor_abc")
+
+        assertTrue("present goal must be reported", ctx.hasGoal("purchase"))
+        assertFalse("absent goal must not be reported", ctx.hasGoal("nonexistent-goal"))
+    }
+
+    @Test
+    fun `hasGoal returns false when config is not loaded`() {
+        // No data() AND no sdkKey → hasData() is false; hasGoal must not
+        // claim a goal exists when there is no config to look in.
+        val sdk = ConvertSDK.builder(appContext).build()
+        val ctx = sdk.createContext("visitor_abc")
+
+        assertFalse("no config → no goal", ctx.hasGoal("purchase"))
     }
 
     // --- AC-3: goalData keys preserve camelCase JSON mapping -------------

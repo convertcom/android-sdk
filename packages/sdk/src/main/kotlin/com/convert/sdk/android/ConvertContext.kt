@@ -668,6 +668,31 @@ public class ConvertContext internal constructor(
     }
 
     /**
+     * Returns `true` when a goal with [goalKey] exists in the currently
+     * loaded config, `false` otherwise (including when the config has not
+     * loaded yet).
+     *
+     * [trackConversion] silently logs a WARN and no-ops on an unknown goal
+     * (unknown goals are caller bugs worth surfacing — see its AC-1 step 2
+     * lookup), so a caller that wants to react to the unknown-goal case —
+     * e.g. surface an explicit "goal not configured" affordance instead of
+     * dropping the tap on the floor — can pre-check with this method. The
+     * lookup mirrors [trackConversion]'s exactly (`data.goals` matched by
+     * `key`), so a `true` result guarantees [trackConversion] will resolve
+     * the same goal.
+     *
+     * Cheap and synchronous: a deterministic in-memory scan of the loaded
+     * config, safe to call on any thread.
+     *
+     * @param goalKey merchant-defined key of the goal to check.
+     */
+    public fun hasGoal(goalKey: String): Boolean {
+        val sdk = this.sdk ?: return false
+        return sdk.dataManager.hasData() &&
+            sdk.dataManager.data?.goals?.any { it.key == goalKey } == true
+    }
+
+    /**
      * Launches the scope coroutine that runs the AC-1 steps 4-5 work
      * (single conversion enqueue, internal CONVERSION fire). Extracted
      * from [trackConversion] so the outer method stays under detekt's
