@@ -18,7 +18,7 @@ import com.convert.sdk.core.model.GoalData
  * ViewModel can be exercised without building a real SDK (which
  * requires an Android [android.content.Context]).
  *
- * Keeping the interface tiny — only the single method the screen drives —
+ * Keeping the interface narrow — only the two methods the screen drives —
  * lets the ViewModel ignore everything else `ConvertContext` exposes
  * and keeps the test double trivial.
  */
@@ -42,4 +42,21 @@ public interface ConversionTracker {
      * see [SdkViewModel.trackPurchaseConversion] for the rationale.
      */
     public fun trackConversion(goalKey: String, goalData: List<GoalData>)
+
+    /**
+     * Mirrors [com.convert.sdk.android.ConvertContext.hasGoal] — reports
+     * whether a goal with [goalKey] exists in the currently-loaded config.
+     *
+     * The Conversions screen pre-checks this before [trackConversion]:
+     * the SDK's `trackConversion` silently WARN-logs and drops an unknown
+     * goal, so without the pre-check the demo would show a "tracked"
+     * success card for a goal the SDK never actually recorded. A `false`
+     * result lets the ViewModel surface the unknown goal honestly (the
+     * red Conversion error card) instead.
+     *
+     * Returns `false` when the SDK / config is not ready yet — a synchronous
+     * best-effort check, matching the `isCompleted`-guarded discipline the
+     * [ExperienceRunner] / [FeatureRunner] ports use.
+     */
+    public fun hasGoal(goalKey: String): Boolean
 }

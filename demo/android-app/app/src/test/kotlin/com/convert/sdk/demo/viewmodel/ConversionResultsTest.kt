@@ -123,6 +123,29 @@ class ConversionResultsTest {
     }
 
     @Test
+    fun `trackPurchaseConversion surfaces an error result for an unknown goal and does not track (F-174)`() {
+        // Goal-existence pre-check: when the configured goal key is not in
+        // the fetched config, the SDK's trackConversion would WARN-log and
+        // drop it silently. The demo must instead show the red error card
+        // and NOT call the SDK (a dropped tap with a misleading "tracked"
+        // card is exactly the F-174 demo-side symptom).
+        val tracker = FakeConversionTracker(goalExists = false)
+        val vm = newVm(tracker)
+
+        vm.trackPurchaseConversion()
+
+        val r = vm.conversionResults.value.single()
+        assertTrue(r.isError, "unknown goal must produce an error result")
+        assertFalse(r.isDedup)
+        assertEquals("purchase-goal", r.goalKey)
+        assertNotNull(r.errorMessage, "error result must carry a headline message")
+        assertTrue(
+            tracker.calls.isEmpty(),
+            "an unknown goal must NOT be forwarded to the SDK tracker",
+        )
+    }
+
+    @Test
     fun `second tap emits dedup DEBUG log (AC-3)`() {
         val vm = newVm(FakeConversionTracker())
 
@@ -216,12 +239,16 @@ class ConversionResultsTest {
 
     // ------------------------------------------------------------------
 
-    private class FakeConversionTracker : ConversionTracker {
+    private class FakeConversionTracker(
+        private val goalExists: Boolean = true,
+    ) : ConversionTracker {
         val calls: MutableList<Pair<String, List<GoalData>>> = mutableListOf()
 
         override fun trackConversion(goalKey: String, goalData: List<GoalData>) {
             calls += goalKey to goalData
         }
+
+        override fun hasGoal(goalKey: String): Boolean = goalExists
     }
 
     private class FakeEventSubscriber : EventSubscriber {

@@ -231,5 +231,18 @@ class DemoApplication : Application() {
                 contextDeferred.await().trackConversion(goalKey = goalKey, goalData = goalData)
             }
         }
+
+        // Synchronous best-effort, mirroring the experience / feature
+        // runners' O(1) isCompleted guard: when the context has not landed
+        // yet the goal cannot be confirmed, so report false (the screen
+        // then surfaces the unknown-goal card rather than a false-positive
+        // success). Once the context is ready the call delegates straight
+        // to ConvertContext.hasGoal with no main-thread block.
+        override fun hasGoal(goalKey: String): Boolean =
+            if (contextDeferred.isCompleted) {
+                contextDeferred.getCompleted().hasGoal(goalKey)
+            } else {
+                false
+            }
     }
 }

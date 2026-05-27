@@ -133,6 +133,11 @@ class ConversionsScreenTest {
         override fun trackConversion(goalKey: String, goalData: List<GoalData>) {
             calls += goalKey to goalData
         }
+
+        // These screen tests exercise the success / dedup card rendering,
+        // so the goal is reported present (the unknown-goal error card is
+        // covered at the ViewModel level in ConversionResultsTest).
+        override fun hasGoal(goalKey: String): Boolean = true
     }
 
     private object SilentSubscriber : EventSubscriber {

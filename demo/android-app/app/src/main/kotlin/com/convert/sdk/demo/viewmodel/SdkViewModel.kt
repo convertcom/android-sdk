@@ -410,6 +410,27 @@ class SdkViewModel(
      */
     fun trackPurchaseConversion() {
         val goalKey = DEFAULT_GOAL_KEY
+
+        // Goal-existence pre-check (F-174). The SDK's trackConversion
+        // silently WARN-logs and drops an unknown goal, so without this
+        // guard the screen would show a "Conversion tracked" success card
+        // for a goal the SDK never recorded. Surface the unknown goal
+        // honestly via the red Conversion error card instead.
+        if (!conversionTracker.hasGoal(goalKey)) {
+            appendConversionResult(
+                ConversionResult(
+                    id = ConversionResult.nextId(),
+                    goalKey = goalKey,
+                    isError = true,
+                    errorMessage = "Goal not found: \"$goalKey\"",
+                    errorHint = "No goal with this key exists in the fetched " +
+                        "config (or the SDK has not loaded it yet). Verify the " +
+                        "goal is configured in your Convert project.",
+                ),
+            )
+            return
+        }
+
         val goalData: List<GoalData> = listOf(
             GoalData(key = GoalDataKey.AMOUNT, value = JsonPrimitive(DEFAULT_AMOUNT)),
             GoalData(key = GoalDataKey.PRODUCTS_COUNT, value = JsonPrimitive(DEFAULT_PRODUCTS_COUNT)),
@@ -651,4 +672,10 @@ private object NoOpConversionTracker : ConversionTracker {
         // No-op — matches the NoOpExperienceRunner / NoOpFeatureRunner
         // pattern. A real demo wires ConvertContext.trackConversion.
     }
+
+    // Reports the goal as present so the default (no real SDK wired)
+    // ViewModel keeps the happy-path tracking behaviour the existing
+    // tests exercise; the real goal-existence check lives in the
+    // DemoApplication-wired tracker backed by ConvertContext.hasGoal.
+    override fun hasGoal(goalKey: String): Boolean = true
 }
