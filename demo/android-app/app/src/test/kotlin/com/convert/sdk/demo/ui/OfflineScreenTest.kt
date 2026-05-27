@@ -158,6 +158,8 @@ class OfflineScreenTest {
         ) {
             calls += goalKey
         }
+
+        override fun hasGoal(goalKey: String): Boolean = true
     }
 
     private object SilentSubscriber : EventSubscriber {
