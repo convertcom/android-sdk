@@ -1,18 +1,137 @@
 # Convert Android SDK
 
 [![CI](https://github.com/convertcom/android-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/convertcom/android-sdk/actions/workflows/ci.yml)
+[![Maven Central](https://img.shields.io/maven-central/v/com.convert/sdk-android.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/com.convert/sdk-android)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 
-Server-side A/B testing, feature flags, and personalizations for Android applications — part of the Convert Experiences platform.
+Server-side A/B testing, feature flags, and personalisations for Android applications — the native Kotlin/Java client for the [Convert Experiences](https://www.convert.com) platform. Decisions are resolved on-device from a cached bucketing config; tracking events are batched, persisted to disk, and flushed in the background via WorkManager so nothing is lost when the network is down.
 
-## Prerequisites
+- **Kotlin-first** (Java interop via `@JvmOverloads` + SAM-convertible `fun interface` callbacks)
+- **Offline-safe** (SQLite queue + WorkManager exponential backoff)
+- **Privacy-aware** (app-scoped UUID only — no device identifiers, no PII)
+- **JS-SDK parity** (same bucketing hash, same wire format)
 
-- **JDK 17** or later (required to run Gradle and as the compile target)
-- **Android SDK** with API level 35 installed (`compileSdk = 35`)
+## Quick Start
 
-## Build
+### 1. Add the dependency
 
-```bash
-./gradlew build
+```kotlin
+// settings.gradle.kts — make sure Maven Central is declared
+dependencyResolutionManagement {
+    repositories {
+        mavenCentral()
+        google()
+    }
+}
+
+// packages/app/build.gradle.kts (or your app module)
+dependencies {
+    implementation("com.convert:sdk-android:+")
+}
 ```
 
-The full quick-start, integration guide, and API reference arrive in Story 6.2.
+Latest released version: see the Maven Central badge above. Replace `+` with the version you want to pin.
+
+### 2. Initialise once in `Application.onCreate()`
+
+```kotlin
+import android.app.Application
+import com.convert.sdk.android.ConvertSDK
+import com.convert.sdk.core.model.LogLevel
+
+class MyApp : Application() {
+    lateinit var convertSdk: ConvertSDK
+
+    override fun onCreate() {
+        super.onCreate()
+
+        convertSdk = ConvertSDK.builder(this)
+            .sdkKey("YOUR_SDK_KEY")       // from your Convert dashboard
+            .logLevel(LogLevel.INFO)      // optional; DEBUG for integration work
+            .build()
+    }
+}
+```
+
+Register the class in your `AndroidManifest.xml`:
+
+```xml
+<application android:name=".MyApp" ... />
+```
+
+The SDK fetches its bucketing config in the background. Use `onReady { ... }` to be notified when decisions become available.
+
+### 3. Run an experience
+
+```kotlin
+val sdk = (application as MyApp).convertSdk
+
+sdk.onReady {
+    val ctx = sdk.createContext()  // auto-persisted UUID visitor id
+    val variation = ctx.runExperience("homepage-redesign")
+    when (variation?.key) {
+        "control" -> renderControl()
+        "treatment" -> renderTreatment()
+        null -> renderControl()  // SDK not ready yet / visitor not bucketed
+    }
+}
+```
+
+### 4. Track a conversion
+
+```kotlin
+import com.convert.sdk.core.model.GoalData
+import com.convert.sdk.core.model.GoalDataKey
+import kotlinx.serialization.json.JsonPrimitive
+
+val ctx = sdk.createContext()
+
+// Bare conversion.
+ctx.trackConversion("signup-completed")
+
+// With transactional goal data.
+ctx.trackConversion(
+    goalKey = "purchase-completed",
+    goalData = listOf(
+        GoalData(key = GoalDataKey.AMOUNT, value = JsonPrimitive(49.99)),
+        GoalData(key = GoalDataKey.TRANSACTION_ID, value = JsonPrimitive("tx-42")),
+    ),
+)
+```
+
+That's it. Everything else is [in the user guide](./docs/user-guide.md).
+
+## Requirements
+
+| Toolchain | Minimum |
+|---|---|
+| JDK (build) | 17 |
+| Android API (runtime) | 24 (Android 7.0) |
+| Android API (compile) | 35 |
+| Kotlin | 2.x (binary-compatible with any 2.x consumer) |
+| Gradle | 8.x |
+
+For best offline-recovery behaviour, declare `ACCESS_NETWORK_STATE` in your app's manifest — the SDK uses it to trigger a queue flush when connectivity returns. If the permission is missing the SDK degrades gracefully (the foreground retry path still delivers events; only the "flush-on-network-regained" push is skipped).
+
+```xml
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+```
+
+## What's New
+
+The [`CHANGELOG.md`](./CHANGELOG.md) in this repository is auto-maintained by `semantic-release` on every release-triggering merge to `main`. For the full history (with conventional-commit grouping and the matching git tag), see that file. The Maven Central listing also carries the full release history per artifact.
+
+## Full Documentation
+
+- **[User Guide](./docs/user-guide.md)** — end-to-end integration, feature flags, conversion tracking, segmentation, offline behaviour, tracking control, Data Safety, troubleshooting
+- **API Reference** — published by the release pipeline as the Javadoc JAR alongside every Maven Central release
+- **[Release Process](./RELEASE.md)** — how the release pipeline works, one-time setup for the repo admin
+- **[Contributing / Releasing](./RELEASE.md#contributing)** — conventional commits drive every release
+
+## Support
+
+For production issues, open a ticket via your Convert dashboard. For bugs in this SDK, open a [GitHub issue](https://github.com/convertcom/android-sdk/issues) with a minimal reproducer.
+
+## License
+
+Copyright (c) 2026 Convert Insights, Inc. Licensed under the [Apache License, Version 2.0](./LICENSE).

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Convert Android SDK Demo App — manifest
+
+  Story 7.1 AC-7: MainActivity is locked to portrait orientation.
+  Story 6.2 correction: the consumer app (this demo IS a consumer) must
+  declare ACCESS_NETWORK_STATE if the SDK's NetworkObserver is expected
+  to register a ConnectivityManager callback. Without this permission
+  the SDK degrades gracefully (per NetworkObserver's try/catch), but
+  the demo's offline-recovery showcase depends on the callback firing,
+  so we declare the permission here.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:name=".DemoApplication"
+        android:allowBackup="true"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Convert.Demo">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>

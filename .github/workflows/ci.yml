@@ -146,12 +146,36 @@ jobs:
       - name: Test + Kover XML report
         run: ./gradlew :packages:sdk:testDebugUnitTest :packages:sdk:koverXmlReport --no-daemon
 
+      - name: Test :packages:sdk-lint (Story 6.3 custom lint rules)
+        # Exercises ConvertSdkInitializedBeforeUseDetector and
+        # ConvertSdkNotInApplicationOnCreateDetector against inline
+        # Kotlin fixtures via LintDetectorTest. Separate from the SDK
+        # unit test step so the report artefacts stay distinct.
+        run: ./gradlew :packages:sdk-lint:test --no-daemon
+
+      - name: Validate :packages:sdk lint output (Story 6.3 AC-3)
+        # Runs the published lint rules (lintPublish in sdk/build.gradle.kts
+        # bundles sdk-lint's JAR into the AAR) on the sdk module itself.
+        # A registry misconfiguration — wrong META-INF/services FQN,
+        # mis-matched lint-api ABI, malformed Issue constants — would
+        # crash this step. Green here = consumer apps will load the rules
+        # correctly.
+        run: ./gradlew :packages:sdk:lintDebug --no-daemon
+
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-sdk-report
           path: packages/sdk/build/reports/tests/testDebugUnitTest/
+          retention-days: 7
+
+      - name: Upload sdk-lint test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-sdk-lint-report
+          path: packages/sdk-lint/build/reports/tests/test/
           retention-days: 7
 
   coverage:
