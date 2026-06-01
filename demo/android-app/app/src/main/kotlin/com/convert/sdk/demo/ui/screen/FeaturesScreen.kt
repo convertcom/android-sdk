@@ -25,6 +25,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.convert.sdk.demo.BuildConfig
 import com.convert.sdk.demo.viewmodel.FeatureResult
 import com.convert.sdk.demo.viewmodel.SdkViewModel
 
@@ -169,10 +170,19 @@ private fun ResultCardForFeatureResult(result: FeatureResult) {
 }
 
 /**
- * Hardcoded feature key the "Run Feature" primary button targets.
- * Documented in `demo/android-app/README.md`. When the backing
- * Convert account has no feature with this key, the screen exercises
- * the null-feature error path (AC-5) — which doubles as a useful
- * visual test of the error card.
+ * Feature key the "Run Feature" primary button targets. Documented in
+ * `demo/android-app/README.md`. Story 7.7 redirected the source of
+ * truth to [BuildConfig.convertFeatureKey] so a developer can override
+ * the key from `local.properties`; the fallback literal `"test-feature"`
+ * matches the pre-existing default and keeps the `FeaturesScreenTest`
+ * click-path assertions green without changes.
+ *
+ * When the backing Convert account has no feature with this key, the
+ * screen exercises the null-feature error path (AC-5) — which doubles
+ * as a useful visual test of the error card.
+ *
+ * `const` dropped because [BuildConfig] fields are `static final` Java
+ * strings but NOT Kotlin compile-time constants — `val` is the correct
+ * replacement. Runtime semantics are identical.
  */
-private const val DEFAULT_FEATURE_KEY: String = "test-feature"
+private val DEFAULT_FEATURE_KEY: String = BuildConfig.convertFeatureKey
