@@ -328,6 +328,307 @@ internal class DataManagerTest {
         assertSame(first, second)
     }
 
+    // --- Story 3.2 SDK-3: atomic read-modify-write under concurrent writers.
+    //
+    // The pre-SDK-3 implementation released the visitor lock between the
+    // getStoreData read and the setStoreData write, so two threads could
+    // both read the same snapshot, both build a merged map, both write —
+    // last write wins and the first thread's update is lost. These tests
+    // spawn many parallel writers against a single visitor and assert
+    // zero lost updates.
+
+    @Test
+    fun `updateBucketing is atomic under concurrent writers — no lost updates`() {
+        val dataStore = RecordingDataStore()
+        val manager = DataManager(
+            eventManager = EventManager(),
+            environment = "staging",
+            dataStore = dataStore,
+        )
+        // Seed the visitor with an empty StoreData to prime the cache.
+        manager.setStoreData("v", StoreData())
+
+        val writerCount = 64
+        val startGate = java.util.concurrent.CountDownLatch(1)
+        val doneGate = java.util.concurrent.CountDownLatch(writerCount)
+
+        for (i in 0 until writerCount) {
+            Thread {
+                try {
+                    // Start all threads in the narrow window around the
+                    // read-modify-write so the race has maximum chance
+                    // to manifest.
+                    startGate.await()
+                    manager.updateBucketing(
+                        visitorId = "v",
+                        experienceKey = "exp-$i",
+                        variationId = "var-$i",
+                    )
+                } finally {
+                    doneGate.countDown()
+                }
+            }.start()
+        }
+
+        startGate.countDown()
+        assertTrue(
+            doneGate.await(10, java.util.concurrent.TimeUnit.SECONDS),
+            "Writers did not complete within the timeout",
+        )
+
+        val finalBucketing = manager.getStoreData("v").bucketing ?: emptyMap()
+        assertEquals(writerCount, finalBucketing.size, "Lost updates detected: $finalBucketing")
+        for (i in 0 until writerCount) {
+            assertEquals(
+                "var-$i",
+                finalBucketing["exp-$i"],
+                "Missing or incorrect value for exp-$i",
+            )
+        }
+    }
+
+    @Test
+    fun `updateGoal is atomic under concurrent writers — no lost updates`() {
+        val dataStore = RecordingDataStore()
+        val manager = DataManager(
+            eventManager = EventManager(),
+            environment = "staging",
+            dataStore = dataStore,
+        )
+        manager.setStoreData("v", StoreData())
+
+        val writerCount = 64
+        val startGate = java.util.concurrent.CountDownLatch(1)
+        val doneGate = java.util.concurrent.CountDownLatch(writerCount)
+
+        for (i in 0 until writerCount) {
+            Thread {
+                try {
+                    startGate.await()
+                    manager.updateGoal(
+                        visitorId = "v",
+                        goalKey = "goal-$i",
+                        tracked = true,
+                    )
+                } finally {
+                    doneGate.countDown()
+                }
+            }.start()
+        }
+
+        startGate.countDown()
+        assertTrue(
+            doneGate.await(10, java.util.concurrent.TimeUnit.SECONDS),
+            "Writers did not complete within the timeout",
+        )
+
+        val finalGoals = manager.getStoreData("v").goals ?: emptyMap()
+        assertEquals(writerCount, finalGoals.size, "Lost updates detected: $finalGoals")
+        for (i in 0 until writerCount) {
+            assertEquals(true, finalGoals["goal-$i"], "Missing flag for goal-$i")
+        }
+    }
+
+    @Test
+    fun `updateBucketing interleaved with updateGoal on same visitor preserves both maps`() {
+        // Cross-API race — updateBucketing + updateGoal both touch the same
+        // visitor StoreData. If either fails to hold the lock across read +
+        // write, updates from the other API will be lost. This test asserts
+        // both maps end up complete.
+        val dataStore = RecordingDataStore()
+        val manager = DataManager(
+            eventManager = EventManager(),
+            environment = "staging",
+            dataStore = dataStore,
+        )
+        manager.setStoreData("v", StoreData())
+
+        val perApiCount = 32
+        val startGate = java.util.concurrent.CountDownLatch(1)
+        val doneGate = java.util.concurrent.CountDownLatch(perApiCount * 2)
+
+        for (i in 0 until perApiCount) {
+            Thread {
+                try {
+                    startGate.await()
+                    manager.updateBucketing("v", "exp-$i", "var-$i")
+                } finally {
+                    doneGate.countDown()
+                }
+            }.start()
+            Thread {
+                try {
+                    startGate.await()
+                    manager.updateGoal("v", "goal-$i", tracked = true)
+                } finally {
+                    doneGate.countDown()
+                }
+            }.start()
+        }
+
+        startGate.countDown()
+        assertTrue(doneGate.await(10, java.util.concurrent.TimeUnit.SECONDS))
+
+        val final = manager.getStoreData("v")
+        assertEquals(perApiCount, final.bucketing?.size)
+        assertEquals(perApiCount, final.goals?.size)
+    }
+
+    // --- Story 4.3 SDK-1: markGoalTracked atomic check-and-set.
+    //
+    // This method is the single source of dedup truth for Story 4.3.
+    // Returns `true` the first time a goal is marked for a visitor and
+    // `false` on every subsequent call for the same pair. The
+    // check-and-set must happen atomically under the same [visitorLock]
+    // that [updateGoal] / [updateBucketing] already use so that concurrent
+    // `trackConversion` callers cannot both observe `goals[goalId] == null`
+    // and both treat themselves as the "first mark" — exactly one caller
+    // must win per (visitor, goal) pair.
+
+    @Test
+    fun `markGoalTracked returns true on first call and false on second`() {
+        val dataStore = RecordingDataStore()
+        val manager = DataManager(
+            eventManager = EventManager(),
+            environment = "staging",
+            dataStore = dataStore,
+        )
+
+        val first = manager.markGoalTracked("v", "g-42")
+        val second = manager.markGoalTracked("v", "g-42")
+
+        assertTrue(first, "first call must return true (this is the fresh mark)")
+        assertFalse(second, "second call must return false (already marked)")
+    }
+
+    @Test
+    fun `markGoalTracked persists the flag to the DataStore`() {
+        val dataStore = RecordingDataStore()
+        val manager = DataManager(
+            eventManager = EventManager(),
+            environment = "staging",
+            dataStore = dataStore,
+        )
+
+        manager.markGoalTracked("v", "g-42")
+
+        // Persistence: the DataStore must see a `set:visitor.v` call after
+        // the mark, and the stored payload must carry `goals["g-42"] = true`.
+        assertTrue(
+            dataStore.log.any { it == "set:visitor.v" },
+            "markGoalTracked should persist via setStoreData; log=${dataStore.log}",
+        )
+        val raw = dataStore.map["visitor.v"]
+        assertNotNull(raw)
+        assertTrue(
+            raw!!.contains("\"g-42\":true"),
+            "persisted StoreData must record goals[\"g-42\"] = true; got $raw",
+        )
+    }
+
+    @Test
+    fun `markGoalTracked is per-visitor`() {
+        val dataStore = RecordingDataStore()
+        val manager = DataManager(
+            eventManager = EventManager(),
+            environment = "staging",
+            dataStore = dataStore,
+        )
+
+        val visitorA = manager.markGoalTracked("visitor-A", "g-42")
+        val visitorB = manager.markGoalTracked("visitor-B", "g-42")
+
+        // Two different visitors tracking the same goal both get true —
+        // AC-4 per-visitor dedup. The flag lives in each visitor's
+        // StoreData, not in a global goal-tracked set.
+        assertTrue(visitorA, "visitor-A first call must return true")
+        assertTrue(visitorB, "visitor-B first call must return true (per-visitor dedup)")
+    }
+
+    @Test
+    fun `markGoalTracked leaves StoreData goals populated after the call`() {
+        val dataStore = RecordingDataStore()
+        val manager = DataManager(
+            eventManager = EventManager(),
+            environment = "staging",
+            dataStore = dataStore,
+        )
+
+        manager.markGoalTracked("v", "g-42")
+
+        val goals = manager.getStoreData("v").goals ?: emptyMap()
+        assertEquals(true, goals["g-42"], "StoreData.goals must carry the flag after marking")
+    }
+
+    @Test
+    fun `markGoalTracked preserves other StoreData fields`() {
+        // A markGoalTracked call on a visitor that already has bucketing
+        // state must not clobber the bucketing map — the critical section
+        // is a strict read-merge-write that composes with updateBucketing.
+        val dataStore = RecordingDataStore()
+        val manager = DataManager(
+            eventManager = EventManager(),
+            environment = "staging",
+            dataStore = dataStore,
+        )
+        manager.setStoreData("v", StoreData(bucketing = mapOf("exp-1" to "var-a")))
+
+        manager.markGoalTracked("v", "g-42")
+
+        val final = manager.getStoreData("v")
+        assertEquals(mapOf("exp-1" to "var-a"), final.bucketing)
+        assertEquals(true, final.goals?.get("g-42"))
+    }
+
+    @Test
+    fun `markGoalTracked returns true exactly once under concurrent calls`() {
+        // AC-6: 10 threads race to mark the same (visitor, goal) pair.
+        // The atomic check-and-set inside visitorLock must ensure that
+        // exactly one thread sees the transition from absent to true, and
+        // nine threads see "already tracked".
+        val dataStore = RecordingDataStore()
+        val manager = DataManager(
+            eventManager = EventManager(),
+            environment = "staging",
+            dataStore = dataStore,
+        )
+        manager.setStoreData("v", StoreData())
+
+        val threadCount = 10
+        val startGate = java.util.concurrent.CountDownLatch(1)
+        val doneGate = java.util.concurrent.CountDownLatch(threadCount)
+        val trueCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val falseCount = java.util.concurrent.atomic.AtomicInteger(0)
+
+        for (i in 0 until threadCount) {
+            Thread {
+                try {
+                    startGate.await()
+                    if (manager.markGoalTracked("v", "g-42")) {
+                        trueCount.incrementAndGet()
+                    } else {
+                        falseCount.incrementAndGet()
+                    }
+                } finally {
+                    doneGate.countDown()
+                }
+            }.start()
+        }
+
+        startGate.countDown()
+        assertTrue(
+            doneGate.await(10, java.util.concurrent.TimeUnit.SECONDS),
+            "Writers did not complete within the timeout",
+        )
+
+        assertEquals(1, trueCount.get(), "exactly one thread must see the fresh mark")
+        assertEquals(
+            threadCount - 1,
+            falseCount.get(),
+            "all other threads must see 'already tracked'",
+        )
+    }
+
     // --- helpers ---------------------------------------------------------
 
     /**
