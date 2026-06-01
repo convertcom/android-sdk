@@ -12,6 +12,7 @@ kotlinxCoroutines = "1.10.2"
 kotlinxSerialization = "1.10.0"
 okhttp = "5.3.0"
 lifecycleProcess = "2.10.0"
+lifecycleRuntimeTesting = "2.10.0"
 workRuntime = "2.11.1"
 startupRuntime = "1.2.0"
 murmurhash = "0.4.1"
@@ -20,6 +21,8 @@ vanniktechMavenPublish = "0.36.0"
 junitJupiter = "5.11.4"
 mockk = "1.13.13"
 kover = "0.9.8"
+robolectric = "4.16"
+androidxTestCore = "1.7.0"
 
 [libraries]
 # Core module runtime dependencies (pure JVM — no Android)
@@ -30,7 +33,18 @@ murmurhash = { module = "com.goncalossilva:murmurhash", version.ref = "murmurhas
 # SDK module runtime dependencies (Android-only)
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 androidx-lifecycle-process = { module = "androidx.lifecycle:lifecycle-process", version.ref = "lifecycleProcess" }
+# Story 2.3 AC-10 test dependency: TestLifecycleOwner drives observer
+# callbacks (ON_START / ON_STOP) from unit tests without needing a real
+# Android process. Pinned to the same version as lifecycle-process to avoid
+# an ABI mismatch across the androidx.lifecycle artifact family.
+androidx-lifecycle-runtime-testing = { module = "androidx.lifecycle:lifecycle-runtime-testing", version.ref = "lifecycleRuntimeTesting" }
 androidx-work-runtime = { module = "androidx.work:work-runtime", version.ref = "workRuntime" }
+# Story 5.3 AC-10 test dependency: work-testing provides
+# TestListenableWorkerBuilder and WorkManagerTestInitHelper so
+# EventFlushWorker can be exercised under Robolectric without an
+# actual WorkManager scheduler. Pinned to the same workRuntime
+# version to keep the androidx.work ABI family in sync.
+androidx-work-testing = { module = "androidx.work:work-testing", version.ref = "workRuntime" }
 androidx-startup-runtime = { module = "androidx.startup:startup-runtime", version.ref = "startupRuntime" }
 
 # Test dependencies (declared for use starting in Story 1.2)
@@ -40,6 +54,22 @@ kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-t
 # Gradle 9+ requires an explicit junit-platform-launcher on the test runtime
 # classpath; the junit-jupiter aggregator no longer pulls it transitively.
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+# JUnit Vintage engine — runs JUnit 3/4 test classes under JUnit Platform.
+# Required by Robolectric (Story 2.1): Robolectric 4.x is JUnit 4 only
+# (`@RunWith(RobolectricTestRunner::class)`). The vintage engine is the
+# only way to execute those tests on Gradle's JUnit Platform runner.
+junit-vintage-engine = { module = "org.junit.vintage:junit-vintage-engine", version.ref = "junitJupiter" }
+# Robolectric — Android SDK shadow framework for JVM-side unit tests that
+# need `android.content.Context`, SharedPreferences, android.util.Log, etc.
+# Introduced in Story 2.1 alongside the AndroidLogger / SharedPrefsDataStore
+# adapters and the ConvertSDK.Builder(context) test path.
+robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
+# androidx.test.core provides ApplicationProvider — the canonical way to
+# obtain a Context under Robolectric (and the modern replacement for
+# RuntimeEnvironment.application from older Robolectric versions).
+androidx-test-core = { module = "androidx.test:core", version.ref = "androidxTestCore" }
+# OkHttp's MockWebServer for HTTP client integration tests (Story 2.1 SDK-3).
+okhttp-mockwebserver = { module = "com.squareup.okhttp3:mockwebserver", version.ref = "okhttp" }
 
 [plugins]
 android-library = { id = "com.android.library", version.ref = "agp" }
