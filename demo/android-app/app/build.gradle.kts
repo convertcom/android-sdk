@@ -30,22 +30,78 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose") version "2.3.20"
 }
 
-// Read the convertSdkKey from local.properties (git-ignored) so devs can
-// point the demo at their own Convert account. AC-3 prefers this path
-// over a hard-coded key. When the entry is missing we fall back to the
-// placeholder `"demo-sdk-key"` so `assembleDebug` succeeds cleanly in CI
-// and on fresh clones — the SDK initialises, the first config fetch
-// fails silently, and the scaffolding launch-verification gate still
-// passes (AC-10).
-val convertSdkKey: String = run {
-    val localProps = Properties().apply {
-        val f = rootProject.file("local.properties")
-        if (f.exists()) {
-            f.inputStream().use { load(it) }
-        }
-    }
-    localProps.getProperty("convertSdkKey") ?: "demo-sdk-key"
+// Demo-tunable BuildConfig fields are read from one of TWO independent
+// properties files, chosen by what's in the gradle task graph:
+//
+//   - `local.properties`  — the developer's personal config for
+//     running the demo against staging via Android Studio /
+//     `installDebug` / `assembleDebug`. Git-ignored. Free to hold
+//     real SDK keys / environment overrides / experience keys.
+//
+//   - `test.properties`   — committed test fixtures. Consumed when
+//     the gradle invocation contains a `test` or `check` task
+//     (`:app:testDebugUnitTest`, `:app:check`, etc.). Keeps the unit
+//     tests deterministic regardless of what's in `local.properties`.
+//     Every assertion in `app/src/test/...` is written against these
+//     values.
+//
+// Each key is optional in either file — when missing, a fallback
+// literal is injected so `./gradlew :app:assembleDebug` (or test
+// runs without `test.properties`) succeeds cleanly on a fresh
+// clone. The fallbacks MUST stay in lockstep with the values
+// committed in `test.properties` and the assertions in `app/src/test/`:
+//
+//   | property                   | fallback literal (prod)              | test.properties pin     |
+//   | -------------------------- | ------------------------------------ | ----------------------- |
+//   | convertSdkKey              | "demo-sdk-key"                       | demo-sdk-key            |
+//   | convertEnvironment         | ""  (empty sentinel)                 | (empty)                 |
+//   | convertExperienceKey       | "test-experience"                    | test-experience         |
+//   | convertFeatureKey          | "test-feature"                       | test-feature            |
+//   | convertGoalKey             | "purchase-goal"                      | purchase-goal           |
+//   | convertVisitorAttributes   | "{}"  (empty object)                 | {} (empty object)       |
+//   | convertLocationProperties  | "{}"  (empty object)                 | {} (empty object)       |
+//
+// The empty-string sentinel for `convertEnvironment` signals "not
+// configured" to `DemoApplication.onCreate`, which skips the builder
+// call when the value is blank. `BuildConfig` emits `@NonNull` Java
+// strings, so empty-string is preferred over `null` (which would
+// require nullable typing at every read site).
+//
+// Detection looks at gradle task names — robust against
+// `./gradlew :app:testDebugUnitTest`, `./gradlew test`,
+// `./gradlew check`, Android Studio's "Run test" actions (which
+// invoke gradle with `--tests` filters on a `test*` task), and
+// combined invocations like `./gradlew test lintDebug assembleDebug`
+// (which we still treat as a test run because the tests dominate).
+// `sdk.dir` is read by AGP itself from `local.properties` and does
+// NOT flow through this selector.
+private val isTestBuild: Boolean = gradle.startParameter.taskNames.any { taskName ->
+    val lower = taskName.lowercase()
+    lower.contains("test") || lower.contains("check")
 }
+
+private val convertTunablesFile: java.io.File = if (isTestBuild) {
+    rootProject.file("test.properties")
+} else {
+    rootProject.file("local.properties")
+}
+
+private val convertTunables: Properties = Properties().apply {
+    if (convertTunablesFile.exists()) {
+        convertTunablesFile.inputStream().use { load(it) }
+    }
+}
+
+private fun demoTunable(key: String, fallback: String): String =
+    convertTunables.getProperty(key) ?: fallback
+
+val convertSdkKey: String = demoTunable("convertSdkKey", "demo-sdk-key")
+val convertEnvironment: String = demoTunable("convertEnvironment", "")
+val convertExperienceKey: String = demoTunable("convertExperienceKey", "test-experience")
+val convertFeatureKey: String = demoTunable("convertFeatureKey", "test-feature")
+val convertGoalKey: String = demoTunable("convertGoalKey", "purchase-goal")
+val convertVisitorAttributes: String = demoTunable("convertVisitorAttributes", "{}")
+val convertLocationProperties: String = demoTunable("convertLocationProperties", "{}")
 
 android {
     namespace = "com.convert.sdk.demo"
@@ -62,6 +118,13 @@ android {
         versionName = "0.1.0"
 
         buildConfigField("String", "convertSdkKey", "\"$convertSdkKey\"")
+        buildConfigField("String", "convertEnvironment", "\"$convertEnvironment\"")
+        buildConfigField("String", "convertExperienceKey", "\"$convertExperienceKey\"")
+        buildConfigField("String", "convertFeatureKey", "\"$convertFeatureKey\"")
+        buildConfigField("String", "convertGoalKey", "\"$convertGoalKey\"")
+        buildConfigField("String", "convertVisitorAttributes", "\"${convertVisitorAttributes.replace("\"", "\\\"")}\"")
+        buildConfigField("String", "convertLocationProperties", "\"${convertLocationProperties.replace("\"", "\\\"")}\"")
+
     }
 
     compileOptions {

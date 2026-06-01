@@ -6,6 +6,7 @@
 package com.convert.sdk.demo.viewmodel
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.convert.sdk.core.event.SystemEvents
 import com.convert.sdk.core.model.Feature
 import com.convert.sdk.core.model.GoalData
@@ -13,11 +14,15 @@ import com.convert.sdk.core.model.GoalDataKey
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.Variation
 import com.convert.sdk.core.port.Logger
+import com.convert.sdk.demo.BuildConfig
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
 /**
  * Story 7.1 AC-9 / Story 7.2 — shared ViewModel that aggregates SDK
@@ -75,6 +80,7 @@ class SdkViewModel(
     private val experienceRunner: ExperienceRunner = NoOpExperienceRunner,
     private val featureRunner: FeatureRunner = NoOpFeatureRunner,
     private val conversionTracker: ConversionTracker = NoOpConversionTracker,
+    private val configSnapshotProvider: ConfigSnapshotProvider = NoOpConfigSnapshotProvider,
 ) : ViewModel() {
 
     private val _events = MutableStateFlow<List<InspectorEvent>>(emptyList())
@@ -141,6 +147,35 @@ class SdkViewModel(
      */
     val conversionResults: StateFlow<List<ConversionResult>> = _conversionResults.asStateFlow()
 
+    private val _configState = MutableStateFlow<ConfigState>(ConfigState.Loading)
+
+    /**
+     * Story 7.6 AC-5 / AC-6 / AC-7 — the Config screen's three-branch
+     * rendering state.
+     *
+     * Transitions:
+     *  - [ConfigState.Loading] → [ConfigState.Loaded] on the first
+     *    `ready` event (or any subsequent `config.updated`).
+     *  - [ConfigState.Loading] → [ConfigState.Failed] when a WARN or
+     *    ERROR log accumulates BEFORE any `ready` fires — per
+     *    Story 7.6 Gotcha 3, the UI infers the error from the log
+     *    stream because the SDK does not expose a typed error event.
+     *  - [ConfigState.Loading] → [ConfigState.Failed] when no `ready`
+     *    has fired within [READY_TIMEOUT_MILLIS] of ViewModel
+     *    construction (Story 7.6 AC-7, F-145 remediation): a silent
+     *    network hang would otherwise leave the spinner running
+     *    forever. The timeout sentinel reason is used because no log
+     *    message is available; the same canonical
+     *    [CONFIG_FAILURE_HINT] is supplied.
+     *  - Once [ConfigState.Loaded] is reached, subsequent WARN/ERROR
+     *    logs do NOT downgrade state and the timeout has no effect
+     *    (the timer's transition is no-op'd by the
+     *    `current is ConfigState.Loading` guard). The demo already has
+     *    a usable config in memory; a stale-refresh WARN is not a
+     *    regression.
+     */
+    val configState: StateFlow<ConfigState> = _configState.asStateFlow()
+
     /**
      * Story 7.5 — display-only memory of which goal keys this ViewModel
      * has already asked the SDK to track in the current process
@@ -190,6 +225,21 @@ class SdkViewModel(
 
     private val subscriptionTokens: MutableList<AutoCloseable> = mutableListOf()
 
+    /**
+     * Story 7.6 AC-7 (F-145 remediation) — coroutine that flips
+     * [configState] to [ConfigState.Failed] if no `ready` event arrives
+     * within [READY_TIMEOUT_MILLIS] of ViewModel construction. Cancelled
+     * eagerly in [onCleared] so a backgrounded then-recreated ViewModel
+     * does not leak the timer.
+     *
+     * Cancellation when `ready` arrives is unnecessary — once the state
+     * has transitioned to [ConfigState.Loaded] the post-delay update is
+     * a no-op (guarded by `current is ConfigState.Loading`). Letting the
+     * job run to completion keeps the wiring symmetric and avoids a
+     * separate "first ready arrived" guard.
+     */
+    private val readyTimeoutJob: Job
+
     init {
         // Subscribe to the five system events named in AC-9. We keep
         // the AutoCloseable tokens alive for the lifetime of the
@@ -200,6 +250,25 @@ class SdkViewModel(
                 onSdkEvent(event, payload)
             }
             subscriptionTokens += token
+        }
+
+        // Story 7.6 AC-7 (F-145) — start the 10-second deadline. If the
+        // SDK never fires `ready` and never logs a WARN/ERROR (silent
+        // network hang) the Config screen would otherwise spin forever.
+        // Tests drive `Dispatchers.Main` via a TestDispatcher so this
+        // launch is observable through `advanceTimeBy(...)`.
+        readyTimeoutJob = viewModelScope.launch {
+            delay(READY_TIMEOUT_MILLIS)
+            _configState.update { current ->
+                if (current is ConfigState.Loading) {
+                    ConfigState.Failed(
+                        reason = CONFIG_FETCH_TIMEOUT_REASON,
+                        hint = CONFIG_FAILURE_HINT,
+                    )
+                } else {
+                    current
+                }
+            }
         }
     }
 
@@ -535,6 +604,14 @@ class SdkViewModel(
             onApiQueueReleased(payload)
             return
         }
+        // Story 7.6 AC-5 — both ready and config.updated refresh the
+        // configState to Loaded with a new snapshot + timestamp. Doing
+        // this BEFORE the inspector capture keeps the Config screen in
+        // sync with the most recent event even if a later subscriber
+        // (hypothetically) throws.
+        if (event == SystemEvents.READY || event == SystemEvents.CONFIG_UPDATED) {
+            refreshConfigSnapshot()
+        }
         val lifecycle = when (event) {
             SystemEvents.BUCKETING, SystemEvents.CONVERSION -> EventLifecycle.QUEUED
             else -> EventLifecycle.NONE
@@ -546,6 +623,25 @@ class SdkViewModel(
             lifecycle = lifecycle,
         )
         _events.update { listOf(captured) + it }
+    }
+
+    /**
+     * Story 7.6 AC-5 — pulls a fresh snapshot from [configSnapshotProvider]
+     * and publishes a new [ConfigState.Loaded] stamped with the
+     * current wall-clock time. Called on `ready` and `config.updated`.
+     *
+     * Any exception from the provider is swallowed — the ViewModel
+     * must never crash the host on a snapshot failure. The state stays
+     * at whatever value it had (typically Loading on the very first
+     * ready after a provider bug), and the user sees the caller's
+     * error path through the ordinary log stream.
+     */
+    private fun refreshConfigSnapshot() {
+        val snapshot = runCatching { configSnapshotProvider.snapshot() }.getOrNull() ?: return
+        _configState.value = ConfigState.Loaded(
+            snapshot = snapshot,
+            lastFetchedAt = System.currentTimeMillis(),
+        )
     }
 
     /**
@@ -583,12 +679,35 @@ class SdkViewModel(
             throwable = throwable,
         )
         _logs.update { listOf(entry) + it }
+        // Story 7.6 AC-7 — a WARN or ERROR log that fires BEFORE the
+        // SDK has emitted its first `ready` signals the config-fetch
+        // path failed AND there is no cached config to fall back on.
+        // Transition the Config screen to Failed so the user sees the
+        // reason + hint instead of an indefinite spinner. Post-ready
+        // WARN/ERROR does NOT downgrade — the app already has usable
+        // config in memory (see configState KDoc).
+        if (level == LogLevel.WARN || level == LogLevel.ERROR) {
+            _configState.update { current ->
+                if (current is ConfigState.Loading) {
+                    ConfigState.Failed(
+                        reason = message,
+                        hint = CONFIG_FAILURE_HINT,
+                    )
+                } else {
+                    current
+                }
+            }
+        }
     }
 
     override fun onCleared() {
         super.onCleared()
         subscriptionTokens.forEach { runCatching { it.close() } }
         subscriptionTokens.clear()
+        // viewModelScope is cancelled automatically on onCleared, so the
+        // explicit cancel below is belt-and-braces for clarity. Safe to
+        // call after the scope has already finished.
+        readyTimeoutJob.cancel()
     }
 
     private companion object {
@@ -612,10 +731,18 @@ class SdkViewModel(
         const val RESULTS_CAP: Int = 20
 
         /**
-         * Story 7.5 AC-1 — hardcoded goal key the Conversions screen's
-         * "Buy" button tracks. Documented in `demo/android-app/README.md`.
+         * Story 7.5 AC-1 — goal key the Conversions screen's "Buy"
+         * button tracks. Story 7.7 redirected the source of truth to
+         * [BuildConfig.convertGoalKey] so a developer can override the
+         * key from `local.properties`; the fallback literal
+         * `"purchase-goal"` matches the pre-existing default and keeps
+         * the Conversions/Offline screen tests green without changes.
+         *
+         * `const` dropped because [BuildConfig] fields are `static final`
+         * Java strings but NOT Kotlin compile-time constants — `val` is
+         * the correct replacement. Runtime semantics are identical.
          */
-        const val DEFAULT_GOAL_KEY: String = "purchase-goal"
+        val DEFAULT_GOAL_KEY: String = BuildConfig.convertGoalKey
 
         /**
          * Story 7.5 AC-1 — hardcoded AMOUNT goal-data value sent with
@@ -628,6 +755,38 @@ class SdkViewModel(
          * sent with every `trackPurchaseConversion` call.
          */
         const val DEFAULT_PRODUCTS_COUNT: Int = 2
+
+        /**
+         * Story 7.6 AC-7 — fixed remediation hint rendered in the
+         * Config screen's error card. The story names this literal
+         * verbatim ("Check network + SDK key") so a future
+         * UX-copy refresh can find and replace it in one place.
+         */
+        const val CONFIG_FAILURE_HINT: String = "Check network + SDK key"
+
+        /**
+         * Story 7.6 AC-7 (F-145 remediation) — deadline for the SDK's
+         * first `ready` event after ViewModel construction. The corrected
+         * AC-7 specifies 10 seconds (option (a) in the F-145 audit
+         * finding): a reasonable upper bound for a demo context, matching
+         * OkHttp's default read timeout. After this point the absence of
+         * a `ready` event AND the absence of any WARN/ERROR log is
+         * treated as a silent failure — the Config screen flips to the
+         * Failed branch with [CONFIG_FETCH_TIMEOUT_REASON] so the
+         * developer is not left staring at a perpetual spinner.
+         */
+        const val READY_TIMEOUT_MILLIS: Long = 10_000L
+
+        /**
+         * Story 7.6 AC-7 (F-145 remediation) — the failure-reason
+         * sentinel used when the [READY_TIMEOUT_MILLIS] deadline elapses
+         * with no `ready` event AND no WARN/ERROR log to derive a real
+         * reason from. Surfaces in the [ConfigState.Failed.reason]
+         * field, which the Config screen renders as the
+         * [com.convert.sdk.demo.ui.screen.ConfigResultCard] title.
+         */
+        const val CONFIG_FETCH_TIMEOUT_REASON: String =
+            "Configuration fetch timed out"
     }
 }
 
@@ -678,4 +837,22 @@ private object NoOpConversionTracker : ConversionTracker {
     // tests exercise; the real goal-existence check lives in the
     // DemoApplication-wired tracker backed by ConvertContext.hasGoal.
     override fun hasGoal(goalKey: String): Boolean = true
+}
+
+/**
+ * Story 7.6 — default [ConfigSnapshotProvider] used by the production
+ * constructor when the caller does not supply one. Returns an empty
+ * snapshot with `trackingEnabled = null` so the ConfigScreen renders
+ * sensible defaults (masked key `""`, `"—"` for tracking) rather than
+ * a crash. The real SDK-backed impl is wired in
+ * [com.convert.sdk.demo.DemoApplication].
+ */
+private object NoOpConfigSnapshotProvider : ConfigSnapshotProvider {
+    override fun snapshot(): ConfigSnapshot = ConfigSnapshot(
+        sdkKey = "",
+        environment = null,
+        experienceKeys = emptyList(),
+        featureKeys = emptyList(),
+        trackingEnabled = null,
+    )
 }

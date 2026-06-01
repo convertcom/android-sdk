@@ -25,6 +25,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.convert.sdk.demo.BuildConfig
 import com.convert.sdk.demo.viewmodel.ExperienceResult
 import com.convert.sdk.demo.viewmodel.SdkViewModel
 
@@ -141,10 +142,19 @@ private fun ResultCardForResult(result: ExperienceResult) {
 }
 
 /**
- * Hardcoded experience key the "Run Experience" primary button
- * targets. Documented in `demo/android-app/README.md`. When the
- * backing Convert account has no experience with this key, the
- * screen exercises the null-variation error path (AC-4) — which
+ * Experience key the "Run Experience" primary button targets.
+ * Documented in `demo/android-app/README.md`. Story 7.7 redirected the
+ * source of truth to [BuildConfig.convertExperienceKey] so a developer
+ * can override the key from `local.properties`; the fallback literal
+ * `"test-experience"` matches the pre-existing default and keeps the
+ * `ExperiencesScreenTest` click-path assertions green without changes.
+ *
+ * When the backing Convert account has no experience with this key,
+ * the screen exercises the null-variation error path (AC-4) — which
  * doubles as a useful visual test of the error card.
+ *
+ * `const` dropped because [BuildConfig] fields are `static final` Java
+ * strings but NOT Kotlin compile-time constants — `val` is the correct
+ * replacement. Runtime semantics are identical.
  */
-private const val DEFAULT_EXPERIENCE_KEY: String = "test-experience"
+private val DEFAULT_EXPERIENCE_KEY: String = BuildConfig.convertExperienceKey
