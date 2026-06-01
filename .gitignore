@@ -1,4 +1,5 @@
 .gradle/
+.kotlin/
 build/
 */build/
 .idea/
@@ -7,3 +8,9 @@ local.properties
 .DS_Store
 /captures/
 /out/
+
+# Node / semantic-release tooling (Story 1.4)
+node_modules/
+.yarn/cache
+.yarn/install-state.gz
+.pnp.*

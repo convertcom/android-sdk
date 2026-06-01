@@ -21,4 +21,7 @@ internal val testJson: Json = Json {
     ignoreUnknownKeys = true
     encodeDefaults = false
     explicitNulls = false
+    // TrackingEvent sealed hierarchy uses "eventType" as the polymorphic
+    // discriminant (AC-5) — must match the JS SDK wire contract.
+    classDiscriminator = "eventType"
 }
