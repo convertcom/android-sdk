@@ -67,10 +67,21 @@ import kotlinx.serialization.json.JsonPrimitive
  * @property visitorId stable visitor identifier supplied at construction
  *   time by [ConvertSDK.createContext].
  */
+@Suppress("TooManyFunctions")
 public class ConvertContext internal constructor(
     public val visitorId: String,
     internal val sdk: ConvertSDK? = null,
 ) {
+    // detekt's TooManyFunctions rule flags this class at its 20-function
+    // ceiling. ConvertContext is the SDK's per-visitor public surface and
+    // MUST host every setter (attributes, location, default segments,
+    // custom segments, tracking) plus every run-method (runExperience,
+    // runExperiences, runFeature, runFeatures, trackConversion) plus the
+    // internal coercion accessors the rule engine / tracking payload
+    // builder consume. Splitting is not a clean refactor — a thin wrapper
+    // delegating to a backing object would move the functions without
+    // reducing the public surface, and the public surface is what matters
+    // for API stability. Suppressed here with explicit justification.
 
     /**
      * Replace-not-merge attribute store. `@Volatile` ensures the write
@@ -328,6 +339,7 @@ public class ConvertContext internal constructor(
                 visitorId = visitorId,
                 experienceId = experience.id.orEmpty(),
                 variationId = allocation.variationId,
+                segments = getMergedSegments(),
             )
             sdk.eventManager.fire(
                 event = SystemEvents.BUCKETING,
@@ -603,10 +615,21 @@ public class ConvertContext internal constructor(
      *     This is the only observable the application-level observer
      *     API surfaces, so consumers can latch onto it for
      *     in-process analytics without parsing the tracking payload.
-     *  6. **Dedup deferred to Story 4.3 (AC-1 step 6).** This story
-     *     enqueues unconditionally every time the method is called.
-     *     Story 4.3 adds the `goals[goalId] == true` check before
-     *     enqueue + fire.
+     *  6. **Dedup (Story 4.3 AC-1 / AC-3 / AC-5 / AC-6).** Before the
+     *     enqueue, the atomic check-and-set
+     *     [com.convert.sdk.core.data.DataManager.markGoalTracked] serializes
+     *     concurrent callers — exactly one transition from "untracked" to
+     *     "tracked" wins, every other racing caller sees `false`. JS SDK
+     *     schema-strict shape: a single [com.convert.sdk.core.api.ApiManager.enqueueConversionEvent]
+     *     call carries goalData verbatim (per F-007/F-015 remediation —
+     *     `"tr"` is not a valid eventType; revenue lives in `goalData`).
+     *       - `!firstMark && !forceMultipleTransactions`: DEBUG log and
+     *         return — no enqueue, no CONVERSION fire.
+     *       - `firstMark || forceMultipleTransactions`: emit single
+     *         ConversionEvent with goalData (null when omitted), FIRE CONVERSION.
+     *     `forceMultipleTransactions` flows in via the optional
+     *     [conversionSetting] map — developer-supplied at call time, not
+     *     a backend schema field (F-080 remediation).
      *
      * ### Never throws (AC-4)
      *
@@ -619,12 +642,19 @@ public class ConvertContext internal constructor(
      * @param goalKey merchant-defined key of the goal to track.
      * @param goalData optional goal-data payload (amounts, transaction
      *   ids, custom dimensions). `null` omits the payload entirely.
+     * @param conversionSetting optional per-call settings map — mirrors
+     *   JS SDK `ConversionAttributes.conversionSetting`. The only flag
+     *   consulted today is `forceMultipleTransactions` (Boolean): when
+     *   `true`, the transaction enqueue fires even on a repeat call for
+     *   an already-tracked goal. `null` (the default) applies regular
+     *   dedup semantics.
      */
     @JvmOverloads
     @Suppress("ReturnCount")
     public fun trackConversion(
         goalKey: String,
         goalData: List<GoalData>? = null,
+        conversionSetting: Map<String, Any?>? = null,
     ) {
         lastConversionGoalKey = goalKey
         lastConversionGoalData = goalData
@@ -664,7 +694,32 @@ public class ConvertContext internal constructor(
             return
         }
 
-        dispatchConversion(sdk, goalKey, goalId, goalData)
+        // Step 3 — Story 4.3 AC-6 dedup guard. Atomic check-and-set; the
+        // returned `firstMark` drives the enqueue/fire decisions inside
+        // dispatchConversion so thread A (firstMark=true) and thread B
+        // (firstMark=false) take deterministically different paths.
+        val forceMultipleTransactions =
+            (conversionSetting?.get(FORCE_MULTIPLE_TRANSACTIONS_KEY) as? Boolean) == true
+        val firstMark = sdk.dataManager.markGoalTracked(visitorId = visitorId, goalId = goalId)
+
+        if (!firstMark && !forceMultipleTransactions) {
+            // Pure dedup path. JS SDK parity: convert() returns undefined
+            // (data-manager.ts line 1036), context.ts line 417 guard is
+            // false → no CONVERSION fire either.
+            sdk.logger.debug(
+                message = "ConvertContext.trackConversion: goal '$goalKey' already tracked " +
+                    "for visitor '$visitorId', skipping",
+                tag = TAG,
+            )
+            return
+        }
+
+        dispatchConversion(
+            sdk = sdk,
+            goalKey = goalKey,
+            goalId = goalId,
+            goalData = goalData,
+        )
     }
 
     /**
@@ -699,15 +754,17 @@ public class ConvertContext internal constructor(
      * `LongMethod` ceiling and the launch body holds the full AC-4
      * try/catch in one place.
      *
-     * F-008 remediation: a single [com.convert.sdk.core.api.ApiManager.enqueueConversionEvent]
+     * F-008 / F-007 / F-015 remediation: a single
+     * [com.convert.sdk.core.api.ApiManager.enqueueConversionEvent]
      * call passes [goalData] verbatim (null when omitted; the caller's
-     * list when present). The previous dual-call pattern (one bare,
-     * one with goalData) violated the JS SDK schema at
-     * `javascript-sdk/packages/types/src/config/types.gen.ts:2749-2757`,
-     * which declares only `'bucketing'` and `'conversion'` event types —
-     * a single `ConversionEvent` carries goalId, optional goalData, and
-     * optional bucketingData. Revenue lives in `goalData` on the same
-     * event, not on a sibling event.
+     * list when present). The `"tr"` event type does not exist in the
+     * JS SDK schema (`types.gen.ts:2749-2757` — only `"bucketing"` and
+     * `"conversion"`); revenue lives in `goalData` on the same
+     * ConversionEvent. The previous dual-call DispatchFlags pattern
+     * (sendBare + sendTransaction) is dropped in favour of this
+     * schema-strict single-call shape. The dedup gate in
+     * [trackConversion] ensures this method is only reached when
+     * the call should actually enqueue.
      */
     @Suppress("TooGenericExceptionCaught")
     private fun dispatchConversion(
@@ -718,17 +775,22 @@ public class ConvertContext internal constructor(
     ) {
         sdk.scope.launch {
             try {
-                // Step 4 — single ConversionEvent enqueue (F-008 remediation).
+                // Step 4 — single ConversionEvent enqueue (F-008 / F-007 / F-015 remediation).
                 // Pass goalData verbatim: null for a bare hit, the caller's
                 // list when revenue / custom-dimension fields are present.
                 // Empty list is normalised to null so the wire payload
                 // matches `ConversionEvent.goalData: List<...>? = null`
                 // (avoids serialising an empty array where the schema
-                // accepts the field's absence).
+                // accepts the field's absence). The dedup gate in
+                // trackConversion ensures this method is only called when
+                // the event should actually be emitted. Story 4.4 wires
+                // the merged default+custom segments snapshot into the
+                // outbound call (AC-3).
                 sdk.apiManager?.enqueueConversionEvent(
                     visitorId = visitorId,
                     goalId = goalId,
                     goalData = goalData?.takeIf { it.isNotEmpty() },
+                    segments = getMergedSegments(),
                 )
                 // Step 5 — internal event fire. JS SDK parity:
                 // `{visitorId, goalKey}` — not goalId. Downstream consumers
@@ -759,7 +821,8 @@ public class ConvertContext internal constructor(
 
     /**
      * Replaces (does not merge) the default-segment map used by rule
-     * evaluation. Successive calls replace the previous value:
+     * evaluation and outbound tracking events. Successive calls replace
+     * the previous value:
      *
      *     ctx.setDefaultSegments(mapOf("plan" to "free"))
      *     ctx.setDefaultSegments(mapOf("tier" to "gold"))
@@ -768,24 +831,78 @@ public class ConvertContext internal constructor(
      * Callers wanting a merge must merge themselves:
      * `ctx.setDefaultSegments(old + new)`.
      *
+     * ### Persistence (Story 4.4 AC-4)
+     *
+     * After the in-memory write, the merged (`defaults ∪ customs`, custom-
+     * wins) segment map is persisted to [com.convert.sdk.core.data.StoreData.segments]
+     * via [com.convert.sdk.core.data.DataManager.setStoreData]. This makes
+     * the segments available to the Story 3.4 [com.convert.sdk.core.rules.RuleManager]
+     * audience-rule evaluation on the next and subsequent launches, and
+     * captures a snapshot the Story 5.1 outbound-queue flush can read
+     * after an SDK restart. Passing `emptyMap()` clears the persisted map
+     * to `emptyMap()` — NOT `null` (AC-6).
+     *
      * @param segments default segment values keyed by segment name.
      * @return this context for fluent chaining.
      */
     public fun setDefaultSegments(segments: Map<String, String>): ConvertContext {
         defaultSegments = segments
+        persistSegmentsToStore(this)
         return this
     }
 
     /**
      * Replaces (does not merge) the custom-segment map used by rule
-     * evaluation. Same replace-semantics as [setDefaultSegments].
+     * evaluation and outbound tracking events. Same replace-semantics as
+     * [setDefaultSegments].
+     *
+     * Custom segment values can be any [JsonElement] — number, string,
+     * boolean, array, or object — giving merchants a richer payload than
+     * the `Map<String, String>` default-segment path. Non-JsonElement
+     * values are coerced via the Story 3.1 Gotcha 7 table
+     * (String / Number / Boolean → [JsonPrimitive]; `null` → [JsonNull];
+     * anything else → `JsonPrimitive(value.toString())`).
+     *
+     * ### Persistence (Story 4.4 AC-4)
+     *
+     * Same `DataManager.setStoreData` write as [setDefaultSegments] —
+     * segments survive an SDK restart. On key collision with defaults,
+     * the custom value wins (Gotcha 1).
      *
      * @param customSegments merchant-supplied segment values.
      * @return this context for fluent chaining.
      */
     public fun setCustomSegments(customSegments: Map<String, Any?>): ConvertContext {
         this.customSegments = customSegments
+        persistSegmentsToStore(this)
         return this
+    }
+
+    /**
+     * Returns the merged default + custom segment map that outbound
+     * tracking events carry (Story 4.4 AC-3).
+     *
+     * Default segment values are strings; they are coerced to
+     * [JsonPrimitive] for parity with the richer custom-segment type.
+     * Custom segments override defaults on key collision (Gotcha 1).
+     * When both segment maps are unset, returns an empty map.
+     *
+     * Internal to the SDK — consumers set segments via the public setters;
+     * the merged view exists only to feed
+     * [com.convert.sdk.core.api.ApiManager.enqueueBucketingEvent] and
+     * [com.convert.sdk.core.api.ApiManager.enqueueConversionEvent].
+     */
+    internal fun getMergedSegments(): Map<String, JsonElement> {
+        val defaults = defaultSegments
+        val customs = customSegments
+        if (defaults == null && customs == null) return emptyMap()
+        val defaultsAsJson: Map<String, JsonElement> = defaults
+            ?.mapValues { (_, value) -> JsonPrimitive(value) }
+            .orEmpty()
+        val customsAsJson: Map<String, JsonElement> = toJsonElementMap(customs)
+        // `+` on Map gives right-hand precedence on key collision — exactly
+        // the "custom wins" semantics Gotcha 1 mandates.
+        return defaultsAsJson + customsAsJson
     }
 
     /**
@@ -899,6 +1016,19 @@ public class ConvertContext internal constructor(
          * (i.e. the whole wheel).
          */
         const val DEFAULT_VARIATION_PCT: Double = 100.0
+
+        /**
+         * Key in the per-call `conversionSetting` map that toggles
+         * force-multiple-transactions semantics. JS SDK parity with
+         * `javascript-sdk/packages/enums/src/conversion-setting-key.ts`
+         * (`FORCE_MULTIPLE_TRANSACTIONS = 'forceMultipleTransactions'`).
+         *
+         * When the map value at this key is the Boolean `true`, a repeat
+         * [trackConversion] call for an already-tracked goal will still
+         * emit the transaction conversion (and fire CONVERSION) — only
+         * the bare goal hit stays suppressed on the repeat path.
+         */
+        const val FORCE_MULTIPLE_TRANSACTIONS_KEY: String = "forceMultipleTransactions"
 
         /**
          * Lifts a `Map<String, Any?>?` into `Map<String, JsonElement>`,
@@ -1033,4 +1163,31 @@ private fun passesLocationGate(
         )
     }
     return anyMatch
+}
+
+/**
+ * Writes [context]'s current merged (`defaults ∪ customs`, custom-wins)
+ * segment snapshot into the visitor's persisted
+ * [com.convert.sdk.core.model.StoreData] (Story 4.4 AC-4).
+ *
+ * A no-op when the context has no SDK reference (pure-JVM test-only
+ * construction path) — matches the same guard as the other SDK-dependent
+ * paths in [ConvertContext.runExperience] / [ConvertContext.trackConversion].
+ *
+ * Runs on the caller thread: [com.convert.sdk.core.data.DataManager.setStoreData]
+ * already serialises on its `visitorLock` and wraps an in-memory cache
+ * update plus a SharedPreferences string write — fast enough to not
+ * introduce perceptible latency for the setter call.
+ *
+ * Lives at file scope (same rationale as [passesAudienceGate] /
+ * [passesLocationGate]) so [ConvertContext] stays under detekt's
+ * `TooManyFunctions` threshold.
+ */
+private fun persistSegmentsToStore(context: ConvertContext) {
+    val sdk = context.sdk ?: return
+    val current = sdk.dataManager.getStoreData(context.visitorId)
+    sdk.dataManager.setStoreData(
+        context.visitorId,
+        current.copy(segments = context.getMergedSegments()),
+    )
 }
