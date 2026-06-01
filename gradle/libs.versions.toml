@@ -39,6 +39,12 @@ androidx-lifecycle-process = { module = "androidx.lifecycle:lifecycle-process", 
 # an ABI mismatch across the androidx.lifecycle artifact family.
 androidx-lifecycle-runtime-testing = { module = "androidx.lifecycle:lifecycle-runtime-testing", version.ref = "lifecycleRuntimeTesting" }
 androidx-work-runtime = { module = "androidx.work:work-runtime", version.ref = "workRuntime" }
+# Story 5.3 AC-10 test dependency: work-testing provides
+# TestListenableWorkerBuilder and WorkManagerTestInitHelper so
+# EventFlushWorker can be exercised under Robolectric without an
+# actual WorkManager scheduler. Pinned to the same workRuntime
+# version to keep the androidx.work ABI family in sync.
+androidx-work-testing = { module = "androidx.work:work-testing", version.ref = "workRuntime" }
 androidx-startup-runtime = { module = "androidx.startup:startup-runtime", version.ref = "startupRuntime" }
 
 # Test dependencies (declared for use starting in Story 1.2)

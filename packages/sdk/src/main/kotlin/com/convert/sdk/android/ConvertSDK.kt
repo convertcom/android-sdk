@@ -9,11 +9,21 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.convert.sdk.android.adapter.AndroidLogger
 import com.convert.sdk.android.adapter.FileConfigCache
+import com.convert.sdk.android.adapter.FileEventQueue
 import com.convert.sdk.android.adapter.OkHttpClientAdapter
 import com.convert.sdk.android.adapter.SharedPrefsDataStore
+import com.convert.sdk.android.lifecycle.NetworkObserver
 import com.convert.sdk.android.lifecycle.SdkLifecycleObserver
+import com.convert.sdk.android.worker.EventFlushWorker
 import com.convert.sdk.core.api.ApiManager
 import com.convert.sdk.core.bucketing.BucketingManager
 import com.convert.sdk.core.config.ApiConfig
@@ -32,6 +42,7 @@ import com.convert.sdk.core.internal.sharedSerializersModule
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.port.DataStore
+import com.convert.sdk.core.port.EventQueue
 import com.convert.sdk.core.port.HttpClient
 import com.convert.sdk.core.port.Logger
 import com.convert.sdk.core.rules.RuleManager
@@ -46,6 +57,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -105,7 +117,13 @@ import java.util.concurrent.atomic.AtomicReference
  * @property scope the SDK-scoped [CoroutineScope]; all internal async
  *   work launches on this scope so the SupervisorJob isolates failures.
  */
-@Suppress("LongParameterList")
+// +2 functions over the 20-function threshold after Story 5.3 added
+// `onProcessStart` / `onProcessStop` / `enqueueFlushWorker` and two
+// test-only hooks for the new lifecycle path. Splitting those out
+// into a helper would force the SDK's DI graph to leak several more
+// references; keeping them on ConvertSDK itself is the clearer
+// expression of the wiring, so the ceiling gets a targeted suppress.
+@Suppress("LongParameterList", "TooManyFunctions")
 public class ConvertSDK internal constructor(
     internal val config: ConvertConfig,
     internal val appContext: Context? = null,
@@ -116,10 +134,20 @@ public class ConvertSDK internal constructor(
     initialDataManager: DataManager? = null,
     apiManager: ApiManager? = null,
     internal val fileConfigCache: FileConfigCache? = null,
+    internal val fileEventQueue: EventQueue? = null,
+    networkObserver: NetworkObserver? = null,
     initialBucketingManager: BucketingManager? = null,
     initialRuleManager: RuleManager? = null,
     scope: CoroutineScope? = null,
 ) {
+
+    /**
+     * Optional [NetworkObserver] that triggers an offline-queue drain
+     * whenever the OS default network becomes available again (Story 5.2
+     * AC-4). Null in pure-JVM tests that do not need the android system
+     * service. Kept `internal` so tests can inspect / swap if needed.
+     */
+    internal val networkObserver: NetworkObserver? = networkObserver
 
     /**
      * Mutable [ApiManager] reference — Story 3.2 SDK-4 introduces a
@@ -283,6 +311,48 @@ public class ConvertSDK internal constructor(
         if (appContext != null && apiManager != null) {
             registerLifecycleObserverWhenReady()
         }
+        // Story 5.2 AC-4: NetworkObserver registration deliberately does
+        // NOT happen here in the init block — it is called by
+        // [Builder.build] after it has assigned its `sdkRef[0] = sdk`
+        // holder. If we registered here, the OS may synchronously fire
+        // `onAvailable` on a binder thread before the Builder's
+        // late-bound reference is assigned, and the
+        // `sdkRef[0]?.onNetworkAvailable()` callback no-ops against a
+        // null. Deferring to the Builder avoids the race.
+    }
+
+    /**
+     * Registers the [NetworkObserver] once the SDK reference is fully
+     * assembled. Callable only from [Builder.build] to preserve the
+     * late-binding contract described in the init-block comment.
+     */
+    internal fun registerNetworkObserver() {
+        networkObserver?.register()
+    }
+
+    /**
+     * Re-enqueues any events persisted offline and kicks a flush —
+     * driven by [NetworkObserver] on default-network restore (Story 5.2
+     * AC-4). Reading the queue is cheap when the file is absent (returns
+     * an empty list), so this runs unconditionally on every `onAvailable`
+     * tick and short-circuits when there's nothing to drain.
+     *
+     * Runs on the SDK [scope]; [EventQueue.read] and [EventQueue.clear]
+     * both suspend on [Dispatchers.IO] inside
+     * [com.convert.sdk.android.adapter.FileEventQueue].
+     */
+    internal fun onNetworkAvailable() {
+        val api = apiManager ?: return
+        val queue = fileEventQueue ?: return
+        scope.launch {
+            val persisted = queue.read()
+            if (persisted.isEmpty()) return@launch
+            api.reenqueuePersisted(persisted)
+            queue.clear()
+            // Re-use the existing flush() path — it already handles
+            // retry + re-persist if the network is flaky again.
+            api.flushNow()
+        }
     }
 
     /**
@@ -316,17 +386,175 @@ public class ConvertSDK internal constructor(
 
     /**
      * Posts an [SdkLifecycleObserver] install onto the main-thread handler.
-     * The observer routes ON_START / ON_STOP to [startRefreshLoop] and
-     * [stopRefreshLoop] respectively.
+     *
+     * ### Story 2.3 role
+     *
+     * ON_START → [startRefreshLoop]; ON_STOP → [stopRefreshLoop].
+     *
+     * ### Story 5.3 additions (AC-2, AC-3)
+     *
+     * ON_START additionally runs [onProcessStart]: restores any events
+     * persisted on disk back onto the in-memory queue (the process just
+     * came back to the foreground — either after the OS backgrounded us or
+     * after a full app restart where the worker hadn't yet been able to
+     * run).
+     *
+     * ON_STOP additionally runs [onProcessStop]: flushes the in-memory
+     * queue immediately, persists whatever survived the flush, and
+     * enqueues an [EventFlushWorker] to pick up from where we left off if
+     * the OS kills us.
      */
     private fun postObserverRegistration() {
         Handler(Looper.getMainLooper()).post {
             val observer = SdkLifecycleObserver(
-                onStart = { startRefreshLoop() },
-                onStop = { stopRefreshLoop() },
+                onStart = {
+                    startRefreshLoop()
+                    onProcessStart()
+                },
+                onStop = {
+                    stopRefreshLoop()
+                    onProcessStop()
+                },
             )
             ProcessLifecycleOwner.get().lifecycle.addObserver(observer)
         }
+    }
+
+    /**
+     * Story 5.3 AC-3 — foreground restore.
+     *
+     * Reads [fileEventQueue] and re-enqueues any persisted events onto
+     * the live [apiManager]; the batch timer then flushes them through
+     * the normal foreground retry path. Empty reads short-circuit.
+     *
+     * Mirrors [onNetworkAvailable] structurally — the two paths drive
+     * the same "pull from disk, rehydrate, let flush ship them" sequence
+     * from different triggers (network restore vs foreground resume). Kept
+     * separate rather than folded together so the log lines distinguish
+     * the two paths.
+     */
+    internal fun onProcessStart() {
+        val api = apiManager ?: return
+        val queue = fileEventQueue ?: return
+        scope.launch {
+            val persisted = queue.read()
+            if (persisted.isEmpty()) return@launch
+            api.enqueueAll(persisted)
+            queue.clear()
+        }
+    }
+
+    /**
+     * Story 5.3 AC-2 — background handoff.
+     *
+     * Runs the following in order on the SDK [scope]:
+     *
+     *  1. `apiManager.flushNow()` — attempt an immediate delivery of the
+     *     current queue. On success the queue empties; on IOException or
+     *     transient failure [com.convert.sdk.core.api.ApiManager.flush]
+     *     already persists internally (Story 5.2).
+     *  2. Snapshot whatever is still on the live queue via
+     *     [com.convert.sdk.core.api.ApiManager.snapshotQueue] and persist
+     *     it to [fileEventQueue]. Covers the mid-retry case: step 1's
+     *     flush may have scheduled a backoff retry and returned with
+     *     the snapshot re-prepended to the queue.
+     *  3. Enqueue a unique [EventFlushWorker] via WorkManager with the
+     *     `REPLACE` policy — rapid background/foreground transitions
+     *     collapse into a single pending worker (AC-7).
+     *
+     * The worker runs even if the process is killed between steps 2 and
+     * 3 thanks to WorkManager's durable storage. The `NetworkType.CONNECTED`
+     * constraint (AC-5) keeps the worker idle until a network is
+     * available; the `BackoffPolicy.EXPONENTIAL` setting (AC-6) gives
+     * it a 30s/60s/... retry cadence on failure.
+     */
+    @Suppress("ReturnCount") // 3 early-return guards (apiManager,
+    // fileEventQueue, appContext) keep the launched coroutine readable;
+    // folding them into a single boolean would obscure intent.
+    internal fun onProcessStop() {
+        val api = apiManager ?: return
+        val queue = fileEventQueue ?: return
+        val ctx = appContext ?: return
+        scope.launch {
+            // Step 1 — flush what's already in memory.
+            api.flushNow()
+            // Step 2 — persist anything that's still there after the flush
+            // (mid-retry snapshots, or events that arrived since).
+            val snapshot = api.snapshotQueue()
+            if (snapshot.isNotEmpty()) {
+                queue.persist(snapshot)
+            }
+            // Step 3 — enqueue the WorkManager flush job.
+            enqueueFlushWorker(ctx)
+        }
+    }
+
+    /**
+     * Enqueues an [EventFlushWorker] with the per-session config values
+     * (sdkKey, accountId, projectId, trackEndpoint) packed into the
+     * work request's [androidx.work.Data] bundle. The worker pulls
+     * the persisted event list off disk and POSTs it when the
+     * network constraint is satisfied.
+     */
+    @Suppress("ReturnCount") // 3 early-return guards — sdkKey / projectId /
+    // accountId all required for a meaningful enqueue; without any one of
+    // them the worker has nothing useful to POST. Coalescing into a
+    // compound boolean would hide which field was missing.
+    private fun enqueueFlushWorker(context: Context) {
+        val sdkKey = config.sdkKey ?: return
+        val projectId = config.data?.project?.id ?: return
+        val accountId = config.data?.accountId ?: return
+        val trackEndpoint = (
+            config.api?.endpoint?.track
+                ?: com.convert.sdk.core.config.ConfigDefaults.DEFAULT_TRACK_ENDPOINT
+            ).replace(TEMPLATE_PROJECT_ID, projectId)
+
+        val inputData = Data.Builder()
+            .putString(EventFlushWorker.KEY_SDK_KEY, sdkKey)
+            .putString(EventFlushWorker.KEY_PROJECT_ID, projectId)
+            .putString(EventFlushWorker.KEY_ACCOUNT_ID, accountId)
+            .putString(EventFlushWorker.KEY_TRACK_ENDPOINT, trackEndpoint)
+            .build()
+
+        val request = OneTimeWorkRequestBuilder<EventFlushWorker>()
+            .setInputData(inputData)
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build(),
+            )
+            .setBackoffCriteria(
+                BackoffPolicy.EXPONENTIAL,
+                WORKER_BACKOFF_DELAY_SECONDS,
+                TimeUnit.SECONDS,
+            )
+            .build()
+
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            EventFlushWorker.UNIQUE_WORK_NAME,
+            ExistingWorkPolicy.REPLACE,
+            request,
+        )
+    }
+
+    /**
+     * Test-only hook — lets
+     * [com.convert.sdk.android.ConvertSDKLifecycleHooksTest] drive the
+     * Story 5.3 AC-2 path without reaching into
+     * [androidx.lifecycle.ProcessLifecycleOwner]. Production code never
+     * calls this.
+     */
+    internal fun onProcessStopForTest() {
+        onProcessStop()
+    }
+
+    /**
+     * Test-only hook — lets
+     * [com.convert.sdk.android.ConvertSDKLifecycleHooksTest] drive the
+     * Story 5.3 AC-3 path. See [onProcessStopForTest].
+     */
+    internal fun onProcessStartForTest() {
+        onProcessStart()
     }
 
     /**
@@ -709,6 +937,24 @@ public class ConvertSDK internal constructor(
         internal const val VISITOR_ID_KEY: String = "visitor_id"
 
         /**
+         * Template literal in the default tracking endpoint URL that
+         * holds the merchant project id; replaced at enqueue time in
+         * [enqueueFlushWorker]. Must match the constant ApiManager uses
+         * for the foreground flush path so both paths hit the same URL.
+         */
+        private const val TEMPLATE_PROJECT_ID: String = "[project_id]"
+
+        /**
+         * Initial delay (seconds) for the [BackoffPolicy.EXPONENTIAL]
+         * retry cadence on [EventFlushWorker] (Story 5.3 AC-6).
+         * 10s aligns with the foreground retry base (architecture:
+         * 10s → 20s → 40s), is WorkManager's minimum backoff, and is
+         * cited in the patched spec (F-071 option a). [Source:
+         * https://developer.android.com/reference/androidx/work/WorkRequest.Builder#setBackoffCriteria(androidx.work.BackoffPolicy,%20java.time.Duration)]
+         */
+        private const val WORKER_BACKOFF_DELAY_SECONDS: Long = 10L
+
+        /**
          * Creates a new [Builder].
          *
          * The passed [Context] is immediately reduced to its
@@ -903,6 +1149,9 @@ public class ConvertSDK internal constructor(
          *
          * @return a new [ConvertSDK] ready for use.
          */
+        @Suppress("LongMethod") // +6 over 60 after Story 5.2 wiring — extraction
+        // would spread ConvertSDK's all-at-once DI graph across several
+        // helpers and obscure the construction order comments. Acceptable.
         public fun build(): ConvertSDK {
             val assembled = assembleConfig()
 
@@ -961,13 +1210,24 @@ public class ConvertSDK internal constructor(
                 json = sharedJson,
             )
 
-            // 6. Story 2.2 / 5.1 collaborators: ApiManager (CDN fetch +
-            // outbound tracking queue) and FileConfigCache (offline cold-start
-            // fallback). See [buildApiManager] for the full wiring rationale.
-            // Story 2.2 AC-12 (F-172): FileConfigCache must receive the
-            // shared Json so its encode path does not throw on @Contextual
+            // 6. Story 2.2 / 5.1 / 5.2 collaborators: FileEventQueue
+            // (offline persistence of undelivered events) is wired into
+            // ApiManager so the retry + persist path (Story 5.2 AC-2/3)
+            // has a durable fallback store; FileConfigCache provides the
+            // offline cold-start config fallback.
+            // Story 2.2 AC-12 (F-172): FileConfigCache receives the shared
+            // Json so its encode path does not throw on @Contextual
             // BigDecimal fields.
-            val apiManager = buildApiManager(httpClient, logger, assembled, sharedJson, eventManager, sdkScope)
+            val fileEventQueue: EventQueue = FileEventQueue(context = appContext, logger = logger)
+            val apiManager = buildApiManager(
+                httpClient,
+                logger,
+                assembled,
+                sharedJson,
+                eventManager,
+                sdkScope,
+                fileEventQueue,
+            )
             val fileConfigCache = FileConfigCache(
                 context = appContext,
                 logger = logger,
@@ -983,6 +1243,18 @@ public class ConvertSDK internal constructor(
             val bucketingManager = BucketingManager(config = assembled, logger = logger)
             val ruleManager = RuleManager(config = assembled, logger = logger)
 
+            // Story 5.2 AC-4: NetworkObserver wraps
+            // ConnectivityManager.NetworkCallback. The constructed
+            // observer captures the final `sdk` reference via a late
+            // closure so the onNetworkAvailable hook can reach into the
+            // built SDK's onNetworkAvailable() method. Using a mutable
+            // holder (lateInitSdk) because `sdk` has not been constructed
+            // yet at the point NetworkObserver is wired.
+            val sdkRef: Array<ConvertSDK?> = arrayOfNulls(1)
+            val networkObserver = NetworkObserver(context = appContext) {
+                sdkRef[0]?.onNetworkAvailable()
+            }
+
             val sdk = ConvertSDK(
                 config = assembled,
                 appContext = appContext,
@@ -993,10 +1265,20 @@ public class ConvertSDK internal constructor(
                 initialDataManager = dataManager,
                 apiManager = apiManager,
                 fileConfigCache = fileConfigCache,
+                fileEventQueue = fileEventQueue,
+                networkObserver = networkObserver,
                 initialBucketingManager = bucketingManager,
                 initialRuleManager = ruleManager,
                 scope = sdkScope,
             )
+            sdkRef[0] = sdk
+            // Now that the late-bound sdkRef is populated, it is safe to
+            // register the NetworkObserver. The callback closure uses
+            // sdkRef[0]?.onNetworkAvailable(); any synchronous OS-fired
+            // onAvailable tick during register() would have observed a
+            // null sdkRef[0] if we had registered inside ConvertSDK.init
+            // (see the commentary there).
+            sdk.registerNetworkObserver()
 
             // Direct-data mode (AC-3) or sdk-key mode (AC-5/6/7) — delegate
             // to the file-private seeding helper so that `build()` stays
@@ -1304,6 +1586,7 @@ private fun buildApiManager(
     sharedJson: Json,
     eventManager: com.convert.sdk.core.event.EventManager,
     sdkScope: CoroutineScope,
+    eventQueue: EventQueue,
 ): ApiManager = ApiManager(
     httpClient = httpClient,
     logger = logger,
@@ -1311,6 +1594,7 @@ private fun buildApiManager(
     json = sharedJson,
     eventManager = eventManager,
     scope = sdkScope,
+    eventQueue = eventQueue,
 )
 
 private fun buildSdkScope(logger: Logger): CoroutineScope =

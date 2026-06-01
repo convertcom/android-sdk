@@ -9,8 +9,12 @@ import com.convert.sdk.core.config.ConfigDefaults
 import com.convert.sdk.core.config.ConvertConfig
 import com.convert.sdk.core.event.EventManager
 import com.convert.sdk.core.event.SystemEvents
+import com.convert.sdk.core.model.BucketingEvent
+import com.convert.sdk.core.model.ConversionEvent
 import com.convert.sdk.core.model.GoalData
+import com.convert.sdk.core.model.TrackingEvent
 import com.convert.sdk.core.model.generated.ConfigResponseData
+import com.convert.sdk.core.port.EventQueue
 import com.convert.sdk.core.port.HttpClient
 import com.convert.sdk.core.port.Logger
 import kotlinx.coroutines.CoroutineDispatcher
@@ -28,6 +32,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -90,20 +95,16 @@ import java.util.concurrent.atomic.AtomicBoolean
  * `number | string | Array<string>` — a union the Kotlin generator can't
  * express. Binding our [GoalData.value] (a [JsonElement]) through it
  * would drop the actual value. We therefore emit the wire JSON directly
- * via [buildJsonObject] at flush time. The generated
- * [com.convert.sdk.core.model.generated.VisitorTrackingEvents] type is
- * still used by [com.convert.sdk.core.model.Visitor] for round-trip
- * reads (Story 5.1 SDK-1).
+ * via [buildJsonObject] at flush time.
  *
  * #### enrichData semantics
  *
  * The JS SDK sets `enrichData = !config.dataStore` — true when the SDK
- * does not keep an in-memory store of loaded config (so the backend
- * enriches at write time). For the Android SDK, `config.data != null`
- * means we have the loaded CDN config in memory and can send
- * fully-formed events, so `enrichData = false`. When `config.data` is
- * null we shouldn't be able to enqueue anyway (projectId null → flush
- * is skipped), but the field is emitted for wire parity.
+ * does not keep an in-memory store of loaded config. For the Android SDK,
+ * `config.data != null` means we have the loaded CDN config in memory, so
+ * `enrichData = false`. When `config.data` is null we shouldn't be able
+ * to enqueue anyway (projectId null → flush is skipped), but the field is
+ * emitted for wire parity.
  *
  * The supplied [json] instance MUST be configured with
  * `ignoreUnknownKeys = true; explicitNulls = false` (Story 2.2 AC-2,
@@ -126,17 +127,31 @@ import java.util.concurrent.atomic.AtomicBoolean
  * releases the lock before issuing the HTTP POST. This prevents the
  * lock being held for the duration of a slow network call. On failure
  * (non-2xx or thrown exception) the snapshot is prepended back to the
- * queue under the lock so enqueue order is preserved (Story 5.2 picks
- * up from here with retry + disk persistence).
+ * queue under the lock so enqueue order is preserved (Story 5.2 adds
+ * retry + disk persistence on top of this).
  *
- * #### Timer-loop lifecycle
+ * ### Story 5.2 — offline persistence + retry
  *
- * If a [scope] is supplied at construction, [init] launches a timer
- * coroutine that calls [flush] every `releaseInterval`. If no scope is
- * supplied (pure-JVM core tests) the timer is disabled; tests drive
- * [flush] via [flushForTest]. The timer job is captured in
- * [timerJob]; a second [init] call is a no-op (idempotent — AC-9 /
- * Gotcha 3 in the story).
+ * The flush path distinguishes two failure modes:
+ *
+ *  - **True offline** ([IOException] family:
+ *    [java.net.UnknownHostException], [java.net.ConnectException]):
+ *    no point retrying now — the network is genuinely unreachable.
+ *    Persist the snapshot to [eventQueue] and return. The next flush
+ *    is triggered by [NetworkObserver][com.convert.sdk.android.lifecycle.NetworkObserver]
+ *    calling [reenqueuePersisted] with the persisted events + [flush].
+ *  - **Server/transient error** (non-2xx HTTP, [java.net.SocketTimeoutException],
+ *    or other non-IO exception): exponential backoff 10s → 20s → 40s,
+ *    max 3 retries. After the third failure, persist and give up foreground
+ *    retry — NetworkObserver will re-drive the flush.
+ *
+ * Dedup on re-enqueue: [com.convert.sdk.core.model.VisitorEvent]s coming
+ * back through [reenqueuePersisted] are compared against the live queue by
+ * `TrackingEvent` content equality (Kotlin data class `equals()`/`hashCode()`
+ * over payload fields). Any event already present in the live queue is
+ * dropped. Known MVP tradeoff: two legitimately separate but payload-identical
+ * events for the same visitor will be deduped. Documented as accepted limitation.
+ * [Source: 5-2 patched spec AC-6, F-002/F-014 option c]
  *
  * ### Tracking toggle (Story 5.4)
  *
@@ -159,6 +174,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   passive mode (flush must be driven explicitly — primarily for
  *   pure-JVM tests and for the short window between construction and
  *   `ConvertSDK.Builder.build()` wiring).
+ * @property ioDispatcher dispatcher used for the HTTP POST. Injected so
+ *   `TestScope`-driven tests can pin network I/O onto a
+ *   [kotlinx.coroutines.test.StandardTestDispatcher] and drive virtual
+ *   time through [kotlinx.coroutines.test.advanceTimeBy].
+ * @property eventQueue optional [EventQueue] for offline persistence.
+ *   When null, the [flush] failure path simply re-prepends the snapshot
+ *   to the in-memory queue — suitable for pure-JVM tests that do not
+ *   exercise offline behaviour. The SDK builder always wires
+ *   [com.convert.sdk.android.adapter.FileEventQueue] here.
  */
 @Suppress("TooManyFunctions", "LongParameterList")
 public open class ApiManager(
@@ -169,6 +193,7 @@ public open class ApiManager(
     private val eventManager: EventManager? = null,
     private val scope: CoroutineScope? = null,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val eventQueue: EventQueue? = null,
 ) {
 
     /**
@@ -178,6 +203,9 @@ public open class ApiManager(
      * outbound payload. Keeping the event pre-serialised lets [flush]
      * avoid any per-event serialisation work under the lock.
      *
+     * Also retains the original [TrackingEvent] so that [reenqueuePersisted]
+     * can build a dedup set keyed on payload equality (Story 5.2 AC-6).
+     *
      * @property visitorId the visitor id for grouping at flush time.
      * @property segments segment snapshot to attach to this visitor's
      *   entry in the outbound payload. Merged segments produced by
@@ -186,11 +214,14 @@ public open class ApiManager(
      * @property event pre-built JSON for this event (one of
      *   `{eventType: "bucketing", data: {...}}` or
      *   `{eventType: "conversion", data: {...}}`).
+     * @property trackingEvent the original [TrackingEvent] retained for
+     *   dedup key construction in [reenqueuePersisted].
      */
     internal data class VisitorEvent(
         val visitorId: String,
         val segments: Map<String, JsonElement>,
         val event: JsonObject,
+        val trackingEvent: TrackingEvent,
     )
 
     private val trackingEnabled: AtomicBoolean = AtomicBoolean(
@@ -198,7 +229,7 @@ public open class ApiManager(
     )
 
     /**
-     * Guards [eventQueue]. Every mutation (enqueue, snapshot, clear,
+     * Guards [eventQueueInternal]. Every mutation (enqueue, snapshot, clear,
      * requeue) goes through `synchronized(queueLock)`. JVM monitor lock
      * is chosen over `kotlinx.coroutines.Mutex` because the non-suspend
      * public API ([enqueueBucketingEvent], [enqueueConversionEvent])
@@ -207,7 +238,7 @@ public open class ApiManager(
      * snapshot-and-release pattern — lock is released BEFORE the POST).
      */
     private val queueLock: Any = Any()
-    private val eventQueue: MutableList<VisitorEvent> = mutableListOf()
+    private val eventQueueInternal: MutableList<VisitorEvent> = mutableListOf()
 
     private val batchSize: Int =
         config.events?.batchSize ?: ConfigDefaults.DEFAULT_EVENTS_BATCH_SIZE
@@ -265,6 +296,7 @@ public open class ApiManager(
             logger.debug("ApiManager.enqueueBucketingEvent() skipped: tracking disabled", TAG)
             return
         }
+        val trackingEvent = BucketingEvent(experienceId = experienceId, variationId = variationId)
         val data = buildJsonObject {
             put(KEY_EXPERIENCE_ID, experienceId)
             put(KEY_VARIATION_ID, variationId)
@@ -273,7 +305,7 @@ public open class ApiManager(
             put(KEY_EVENT_TYPE, EVENT_TYPE_BUCKETING)
             put(KEY_DATA, data)
         }
-        enqueueInternal(VisitorEvent(visitorId, segments, event))
+        enqueueInternal(VisitorEvent(visitorId, segments, event, trackingEvent))
     }
 
     /**
@@ -312,12 +344,13 @@ public open class ApiManager(
             logger.debug("ApiManager.enqueueConversionEvent() skipped: tracking disabled", TAG)
             return
         }
+        val trackingEvent = ConversionEvent(goalId = goalId, goalData = goalData)
         val data = buildConversionData(goalId, goalData)
         val event = buildJsonObject {
             put(KEY_EVENT_TYPE, EVENT_TYPE_CONVERSION)
             put(KEY_DATA, data)
         }
-        enqueueInternal(VisitorEvent(visitorId, segments, event))
+        enqueueInternal(VisitorEvent(visitorId, segments, event, trackingEvent))
     }
 
     private fun buildConversionData(
@@ -355,8 +388,8 @@ public open class ApiManager(
     private fun enqueueInternal(event: VisitorEvent) {
         val shouldFlush: Boolean
         synchronized(queueLock) {
-            eventQueue += event
-            shouldFlush = eventQueue.size >= batchSize
+            eventQueueInternal += event
+            shouldFlush = eventQueueInternal.size >= batchSize
         }
         if (shouldFlush) {
             scope?.launch { flush() }
@@ -364,10 +397,109 @@ public open class ApiManager(
     }
 
     /**
+     * Rehydrates previously-persisted events back onto the live queue.
+     *
+     * Called by [com.convert.sdk.android.ConvertSDK] when the
+     * [NetworkObserver][com.convert.sdk.android.lifecycle.NetworkObserver]
+     * fires on network restore.
+     *
+     * Dedup (Story 5.2 AC-6, F-002/F-014 option c): events are compared
+     * against the live queue by [TrackingEvent] content equality (Kotlin
+     * data class `equals()`/`hashCode()` over payload fields). Any event
+     * whose [TrackingEvent] is already present in the live queue is silently
+     * dropped.
+     *
+     * Known MVP tradeoff: two legitimately separate but payload-identical
+     * events for the same visitor are deduped. Documented as accepted
+     * limitation in the patched 5-2 spec Dev Notes.
+     *
+     * @param events [com.convert.sdk.core.model.VisitorEvent]s read from
+     *   the [EventQueue] disk store by the NetworkObserver path. Each
+     *   carries a [com.convert.sdk.core.model.TrackingEvent] that is
+     *   re-serialized into the ApiManager's internal wire-JSON format.
+     */
+    public open fun reenqueuePersisted(events: List<com.convert.sdk.core.model.VisitorEvent>) {
+        if (events.isEmpty()) return
+        synchronized(queueLock) {
+            // Build a dedup set from the live queue's TrackingEvent payloads.
+            val liveSet: MutableSet<TrackingEvent> =
+                eventQueueInternal.mapTo(HashSet()) { it.trackingEvent }
+            events.forEach { ve ->
+                if (liveSet.add(ve.event)) {
+                    val internalEvent = toInternalVisitorEvent(ve)
+                    eventQueueInternal += internalEvent
+                }
+            }
+        }
+    }
+
+    /**
+     * Bulk-enqueues events restored from disk on foreground resume (onStart).
+     *
+     * ### Story 5.3 AC-4 — rehydrate path
+     *
+     * Called by [com.convert.sdk.android.ConvertSDK.onProcessStart] when the
+     * app returns to the foreground. Events previously persisted by
+     * [com.convert.sdk.android.ConvertSDK.onProcessStop] (or not yet delivered
+     * by [com.convert.sdk.android.worker.EventFlushWorker]) are re-enqueued
+     * here so the foreground batch timer can ship them through the normal
+     * retry path.
+     *
+     * Each [com.convert.sdk.core.model.VisitorEvent] carries (visitorId,
+     * segments, TrackingEvent) — [ApiManager] appends each to its internal
+     * queue, re-serializing the [TrackingEvent] into the internal wire-JSON
+     * format.
+     *
+     * @param events events read from [com.convert.sdk.core.port.EventQueue];
+     *   may be empty (caller short-circuits on empty, but a no-op is safe).
+     */
+    public open fun enqueueAll(events: List<com.convert.sdk.core.model.VisitorEvent>) {
+        if (events.isEmpty()) return
+        synchronized(queueLock) {
+            events.forEach { ve ->
+                val internalEvent = toInternalVisitorEvent(ve)
+                eventQueueInternal += internalEvent
+            }
+        }
+    }
+
+    /**
+     * Converts a [com.convert.sdk.core.model.VisitorEvent] (the port's
+     * persisted type) into the [VisitorEvent] the internal live queue uses.
+     * Re-serializes the [TrackingEvent] sealed subtype into a [JsonObject].
+     */
+    private fun toInternalVisitorEvent(
+        ve: com.convert.sdk.core.model.VisitorEvent,
+    ): VisitorEvent {
+        val eventJson: JsonObject = when (val te = ve.event) {
+            is BucketingEvent -> buildJsonObject {
+                put(KEY_EVENT_TYPE, EVENT_TYPE_BUCKETING)
+                put(
+                    KEY_DATA,
+                    buildJsonObject {
+                        put(KEY_EXPERIENCE_ID, te.experienceId)
+                        put(KEY_VARIATION_ID, te.variationId)
+                    },
+                )
+            }
+            is ConversionEvent -> buildJsonObject {
+                put(KEY_EVENT_TYPE, EVENT_TYPE_CONVERSION)
+                put(KEY_DATA, buildConversionData(te.goalId, te.goalData))
+            }
+        }
+        return VisitorEvent(
+            visitorId = ve.visitorId,
+            segments = ve.segments ?: emptyMap(),
+            event = eventJson,
+            trackingEvent = ve.event,
+        )
+    }
+
+    /**
      * Posts the current queue contents to the tracking endpoint.
      *
      * Snapshot-and-release sequence (AC-9):
-     *  1. Under [queueLock], copy + drain [eventQueue] into a local
+     *  1. Under [queueLock], copy + drain [eventQueueInternal] into a local
      *     snapshot. Release the lock.
      *  2. Build the JSON payload from the snapshot (one Visitor entry
      *     per unique visitorId).
@@ -375,9 +507,12 @@ public open class ApiManager(
      *  4. On HTTP 2xx: fire [SystemEvents.API_QUEUE_RELEASED] with
      *     `{reason, result, visitors}` matching JS SDK `api-manager.ts:232-237`
      *     and drop the snapshot.
-     *  5. On non-2xx or thrown exception: re-prepend the snapshot to
-     *     the queue under the lock so the next flush retries. No event
-     *     fires on failure (Story 5.2 will add retry semantics).
+     *  5. On [IOException] family ([java.net.UnknownHostException],
+     *     [java.net.ConnectException]): persist snapshot and return immediately.
+     *     No retry — rely on NetworkObserver.
+     *  6. On [java.net.SocketTimeoutException] or non-2xx HTTP: apply
+     *     exponential backoff (10s → 20s → 40s), max 3 retries. After max
+     *     retries, persist snapshot and stop foreground retry.
      *
      * The HTTP call runs OUTSIDE the lock — holding a monitor across a
      * network call would starve concurrent enqueues.
@@ -385,8 +520,8 @@ public open class ApiManager(
      * Skipped with WARN when `sdkKey` or projectId is unresolvable —
      * we must not POST to a partial URL.
      */
-    @Suppress("ReturnCount", "TooGenericExceptionCaught")
-    internal suspend fun flush() {
+    @Suppress("ReturnCount", "TooGenericExceptionCaught", "LongMethod")
+    internal suspend fun flush(retryCount: Int = 0) {
         val sdkKey = config.sdkKey
         val projectId = config.data?.project?.id
         if (sdkKey.isNullOrEmpty()) {
@@ -399,9 +534,9 @@ public open class ApiManager(
         }
 
         val snapshot: List<VisitorEvent> = synchronized(queueLock) {
-            if (eventQueue.isEmpty()) return
-            val copy = eventQueue.toList()
-            eventQueue.clear()
+            if (eventQueueInternal.isEmpty()) return
+            val copy = eventQueueInternal.toList()
+            eventQueueInternal.clear()
             copy
         }
 
@@ -413,12 +548,7 @@ public open class ApiManager(
                 httpClient.post(url, payload, mapOf(HEADER_CONTENT_TYPE to CONTENT_TYPE_JSON))
             }
         } catch (t: Throwable) {
-            logger.warn(
-                message = "ApiManager.flush(): network error: ${t.message}",
-                throwable = t,
-                tag = TAG,
-            )
-            requeueFront(snapshot)
+            handleFlushException(t, snapshot, retryCount)
             return
         }
 
@@ -440,18 +570,150 @@ public open class ApiManager(
                 message = "ApiManager.flush(): ${response.statusCode} ${response.body.take(MAX_BODY_LOG_CHARS)}",
                 tag = TAG,
             )
+            scheduleRetryOrPersist(snapshot, retryCount)
+        }
+    }
+
+    /**
+     * Dispatches a flush exception into one of the two failure modes:
+     *  - [IOException] family (UnknownHostException, ConnectException) →
+     *    persist + stop (no foreground retry; wait for NetworkObserver)
+     *  - SocketTimeoutException or other → treat as server-side transient;
+     *    apply exponential backoff per AC-2 / AC-3 (patched spec F-114 option a)
+     */
+    private suspend fun handleFlushException(
+        t: Throwable,
+        snapshot: List<VisitorEvent>,
+        retryCount: Int,
+    ) {
+        val isTrueOffline = t is java.net.UnknownHostException || t is java.net.ConnectException
+        if (isTrueOffline) {
+            logger.warn(
+                message = "ApiManager.flush(): offline (${t::class.simpleName}: ${t.message}) — persisting",
+                throwable = t,
+                tag = TAG,
+            )
+            persistOrRequeue(snapshot)
+        } else {
+            // Includes SocketTimeoutException (slow-server, not true offline)
+            // and any other IOException subtype.
+            logger.warn(
+                message = "ApiManager.flush(): network error: ${t.message}",
+                throwable = t,
+                tag = TAG,
+            )
+            scheduleRetryOrPersist(snapshot, retryCount)
+        }
+    }
+
+    /**
+     * Retry scheduling: if we have retries left, re-prepend the snapshot
+     * onto the queue and schedule a flush after `RETRY_DELAYS_MS[retryCount]`
+     * ms. Otherwise persist and give up foreground retry.
+     *
+     * Re-prepending (rather than persisting on every retry) keeps the
+     * in-memory queue live for the next attempt; the persistence path
+     * fires only when we hit the max-retry ceiling.
+     */
+    private fun scheduleRetryOrPersist(
+        snapshot: List<VisitorEvent>,
+        retryCount: Int,
+    ) {
+        if (retryCount >= MAX_FOREGROUND_RETRIES) {
+            persistOrRequeue(snapshot)
+            return
+        }
+        requeueFront(snapshot)
+        val delayMs = RETRY_DELAYS_MS[retryCount]
+        val nextRetry = retryCount + 1
+        scope?.launch {
+            delay(delayMs)
+            flush(retryCount = nextRetry)
+        }
+        // No scope — passive mode; the test drives flush manually.
+        // The snapshot is on the queue; the test's next flushForTest picks it up.
+    }
+
+    /**
+     * Persists [snapshot] to the [eventQueue] when present, converting the
+     * internal [VisitorEvent] format to the port's
+     * [com.convert.sdk.core.model.VisitorEvent] format.
+     * Falls back to re-prepending when no [EventQueue] is wired.
+     */
+    private fun persistOrRequeue(snapshot: List<VisitorEvent>) {
+        val q = eventQueue
+        if (q != null) {
+            val persisted = snapshot.map { ve ->
+                com.convert.sdk.core.model.VisitorEvent(
+                    visitorId = ve.visitorId,
+                    segments = ve.segments.ifEmpty { null },
+                    event = ve.trackingEvent,
+                )
+            }
+            scope?.launch { q.persist(persisted) }
+                ?: requeueFront(snapshot) // scope-less path: keep on in-memory queue
+        } else {
             requeueFront(snapshot)
         }
     }
 
     /**
-     * Test seam — drives [flush] synchronously without requiring a
-     * scope. Pure-JVM core tests call this to exercise the flush path
-     * deterministically (no timer loop, no suspense on
-     * `scope.launch`).
+     * Public wrapper around the retry-aware [flush] — used by
+     * [com.convert.sdk.android.ConvertSDK.onNetworkAvailable] (Story 5.2
+     * AC-4) to drain re-enqueued persisted events. The retry counter is
+     * always reset to 0 so a network-restore-triggered flush gets the
+     * full backoff budget rather than inheriting some stale counter.
      */
+    public open suspend fun flushNow() {
+        flush()
+    }
+
+    /**
+     * `open` solely so that test doubles in the `:packages:sdk` module
+     * can override [snapshotQueue] without instantiating a full Robolectric
+     * Android context. Production callers never override.
+     *
+     * Returns a point-in-time copy of the live in-memory event queue as
+     * [com.convert.sdk.core.model.VisitorEvent]s, without draining.
+     *
+     * ### Story 5.3 AC-4 — onStop persistence path
+     *
+     * When the host app moves to background, [com.convert.sdk.android.ConvertSDK]
+     * calls [flushNow] to attempt an immediate delivery. Whatever is still
+     * sitting in the in-memory queue after that attempt (either a flush
+     * was mid-retry, the size threshold wasn't reached, or the call simply
+     * had nothing to ship) is snapshotted here and handed to
+     * [com.convert.sdk.core.port.EventQueue.persist] so that the
+     * [com.convert.sdk.android.worker.EventFlushWorker] can pick it up
+     * after process death.
+     *
+     * The returned list is a fresh copy on each call — callers may safely
+     * mutate it without affecting the live queue.
+     *
+     * @return a list of [com.convert.sdk.core.model.VisitorEvent] mirroring
+     *   the live queue in enqueue order.
+     */
+    public open fun snapshotQueue(): List<com.convert.sdk.core.model.VisitorEvent> = synchronized(queueLock) {
+        eventQueueInternal.map { ve ->
+            com.convert.sdk.core.model.VisitorEvent(
+                visitorId = ve.visitorId,
+                segments = ve.segments.ifEmpty { null },
+                event = ve.trackingEvent,
+            )
+        }
+    }
+
     internal suspend fun flushForTest() {
         flush()
+    }
+
+    /**
+     * Test seam — returns a snapshot of the current live queue.
+     * Used by [com.convert.sdk.core.api.ApiManagerRetryTest] to verify
+     * dedup and queue state without exposing the queue as a public field.
+     */
+    internal fun snapshotQueueForTest(): List<VisitorEvent> = synchronized(queueLock) {
+        eventQueueInternal.toList()
     }
 
     /**
@@ -471,7 +733,7 @@ public open class ApiManager(
             // Preserve original ordering: the retry should flush the
             // oldest event first. addAll(0, ...) prepends, keeping the
             // snapshot's own relative order.
-            eventQueue.addAll(0, snapshot)
+            eventQueueInternal.addAll(0, snapshot)
         }
     }
 
@@ -482,21 +744,26 @@ public open class ApiManager(
         return "$normalised/track/$sdkKey"
     }
 
+    /**
+     * Assembles the outbound POST body from [snapshot].
+     *
+     * Story 5.3: the wire format lives in [TrackingPayloadBuilder] so
+     * [com.convert.sdk.android.worker.EventFlushWorker] (which cannot
+     * reach into ApiManager) can produce a byte-identical body from the
+     * disk-loaded [com.convert.sdk.core.model.VisitorEvent] list.
+     * ApiManager converts its internal [VisitorEvent] wrappers to the
+     * port's [com.convert.sdk.core.model.VisitorEvent] envelopes and
+     * delegates to the shared builder.
+     */
     private fun buildPayload(snapshot: List<VisitorEvent>): String {
-        val grouped: Map<String, List<VisitorEvent>> = snapshot.groupBy { it.visitorId }
-        val visitors = buildJsonArray {
-            grouped.forEach { (visitorId, events) ->
-                add(buildVisitorEntry(visitorId, events))
-            }
+        val portEvents: List<com.convert.sdk.core.model.VisitorEvent> = snapshot.map { ve ->
+            com.convert.sdk.core.model.VisitorEvent(
+                visitorId = ve.visitorId,
+                segments = ve.segments.ifEmpty { null },
+                event = ve.trackingEvent,
+            )
         }
-        val payload = buildJsonObject {
-            put(KEY_ACCOUNT_ID, config.data?.accountId ?: "")
-            put(KEY_PROJECT_ID, config.data?.project?.id ?: "")
-            put(KEY_ENRICH_DATA, config.data == null)
-            config.network?.source?.let { put(KEY_SOURCE, it) }
-            put(KEY_VISITORS, visitors)
-        }
-        return json.encodeToString(JsonObject.serializer(), payload)
+        return TrackingPayloadBuilder.build(portEvents, config, json)
     }
 
     /**
@@ -522,27 +789,6 @@ public open class ApiManager(
                 }
                 put("events", events.map { it.event })
             }
-        }
-    }
-
-    private fun buildVisitorEntry(visitorId: String, events: List<VisitorEvent>): JsonObject {
-        // Segments: the JS SDK's VisitorsQueue.push replaces the
-        // existing visitor's segments on subsequent pushes — the most
-        // recent snapshot wins. We mirror that by taking the last
-        // event's segments.
-        val lastSegments = events.last().segments
-        val eventsArray = buildJsonArray {
-            events.forEach { add(it.event) }
-        }
-        val segmentsObj = if (lastSegments.isNotEmpty()) {
-            buildJsonObject { lastSegments.forEach { (k, v) -> put(k, v) } }
-        } else {
-            null
-        }
-        return buildJsonObject {
-            put(KEY_VISITOR_ID, visitorId)
-            segmentsObj?.let { put(KEY_SEGMENTS, it) }
-            put(KEY_EVENTS, eventsArray)
         }
     }
 
@@ -748,8 +994,22 @@ public open class ApiManager(
         private const val MAX_BODY_LOG_CHARS: Int = 200
         private val LOOPBACK_HOSTS: Set<String> = setOf("localhost", "127.0.0.1", "[::1]")
 
-        // Wire shape constants — matches JS SDK
-        // javascript-sdk/packages/types/src/config/types.gen.ts:2738.
+        /**
+         * Story 5.2 AC-2 exponential backoff delays: 10s, 20s, 40s. Explicit
+         * list (rather than `10_000 shl retryCount`) for readability per
+         * Dev Notes. [Source: architecture.md#Retry-strategy]
+         */
+        private val RETRY_DELAYS_MS: LongArray = longArrayOf(10_000L, 20_000L, 40_000L)
+
+        /** Maximum number of foreground retries before persisting + giving up. */
+        private const val MAX_FOREGROUND_RETRIES: Int = 3
+
+        // Wire shape constants — matches JS SDK. Per-event keys live
+        // here; the outer-payload keys (accountId / projectId / source /
+        // enrichData / visitors / visitorId / segments / events) moved
+        // to [TrackingPayloadBuilder] when Story 5.3 extracted the
+        // payload-building logic so the background WorkManager worker
+        // can produce byte-identical bodies.
         private const val KEY_EVENT_TYPE: String = "eventType"
         private const val KEY_DATA: String = "data"
         private const val KEY_EXPERIENCE_ID: String = "experienceId"
@@ -758,14 +1018,6 @@ public open class ApiManager(
         private const val KEY_GOAL_DATA: String = "goalData"
         private const val KEY_KEY: String = "key"
         private const val KEY_VALUE: String = "value"
-        private const val KEY_ACCOUNT_ID: String = "accountId"
-        private const val KEY_PROJECT_ID: String = "projectId"
-        private const val KEY_ENRICH_DATA: String = "enrichData"
-        private const val KEY_SOURCE: String = "source"
-        private const val KEY_VISITORS: String = "visitors"
-        private const val KEY_VISITOR_ID: String = "visitorId"
-        private const val KEY_SEGMENTS: String = "segments"
-        private const val KEY_EVENTS: String = "events"
 
         private const val EVENT_TYPE_BUCKETING: String = "bucketing"
         private const val EVENT_TYPE_CONVERSION: String = "conversion"
