@@ -434,6 +434,36 @@ public open class ApiManager(
     }
 
     /**
+     * Bulk-enqueues events restored from disk on foreground resume (onStart).
+     *
+     * ### Story 5.3 AC-4 — rehydrate path
+     *
+     * Called by [com.convert.sdk.android.ConvertSDK.onProcessStart] when the
+     * app returns to the foreground. Events previously persisted by
+     * [com.convert.sdk.android.ConvertSDK.onProcessStop] (or not yet delivered
+     * by [com.convert.sdk.android.worker.EventFlushWorker]) are re-enqueued
+     * here so the foreground batch timer can ship them through the normal
+     * retry path.
+     *
+     * Each [com.convert.sdk.core.model.VisitorEvent] carries (visitorId,
+     * segments, TrackingEvent) — [ApiManager] appends each to its internal
+     * queue, re-serializing the [TrackingEvent] into the internal wire-JSON
+     * format.
+     *
+     * @param events events read from [com.convert.sdk.core.port.EventQueue];
+     *   may be empty (caller short-circuits on empty, but a no-op is safe).
+     */
+    public open fun enqueueAll(events: List<com.convert.sdk.core.model.VisitorEvent>) {
+        if (events.isEmpty()) return
+        synchronized(queueLock) {
+            events.forEach { ve ->
+                val internalEvent = toInternalVisitorEvent(ve)
+                eventQueueInternal += internalEvent
+            }
+        }
+    }
+
+    /**
      * Converts a [com.convert.sdk.core.model.VisitorEvent] (the port's
      * persisted type) into the [VisitorEvent] the internal live queue uses.
      * Re-serializes the [TrackingEvent] sealed subtype into a [JsonObject].
@@ -634,16 +664,45 @@ public open class ApiManager(
      * always reset to 0 so a network-restore-triggered flush gets the
      * full backoff budget rather than inheriting some stale counter.
      */
-    public suspend fun flushNow() {
+    public open suspend fun flushNow() {
         flush()
     }
 
     /**
-     * Test seam — drives [flush] synchronously without requiring a
-     * scope. Pure-JVM core tests call this to exercise the flush path
-     * deterministically (no timer loop, no suspense on
-     * `scope.launch`).
+     * `open` solely so that test doubles in the `:packages:sdk` module
+     * can override [snapshotQueue] without instantiating a full Robolectric
+     * Android context. Production callers never override.
+     *
+     * Returns a point-in-time copy of the live in-memory event queue as
+     * [com.convert.sdk.core.model.VisitorEvent]s, without draining.
+     *
+     * ### Story 5.3 AC-4 — onStop persistence path
+     *
+     * When the host app moves to background, [com.convert.sdk.android.ConvertSDK]
+     * calls [flushNow] to attempt an immediate delivery. Whatever is still
+     * sitting in the in-memory queue after that attempt (either a flush
+     * was mid-retry, the size threshold wasn't reached, or the call simply
+     * had nothing to ship) is snapshotted here and handed to
+     * [com.convert.sdk.core.port.EventQueue.persist] so that the
+     * [com.convert.sdk.android.worker.EventFlushWorker] can pick it up
+     * after process death.
+     *
+     * The returned list is a fresh copy on each call — callers may safely
+     * mutate it without affecting the live queue.
+     *
+     * @return a list of [com.convert.sdk.core.model.VisitorEvent] mirroring
+     *   the live queue in enqueue order.
      */
+    public open fun snapshotQueue(): List<com.convert.sdk.core.model.VisitorEvent> = synchronized(queueLock) {
+        eventQueueInternal.map { ve ->
+            com.convert.sdk.core.model.VisitorEvent(
+                visitorId = ve.visitorId,
+                segments = ve.segments.ifEmpty { null },
+                event = ve.trackingEvent,
+            )
+        }
+    }
+
     internal suspend fun flushForTest() {
         flush()
     }
@@ -685,21 +744,26 @@ public open class ApiManager(
         return "$normalised/track/$sdkKey"
     }
 
+    /**
+     * Assembles the outbound POST body from [snapshot].
+     *
+     * Story 5.3: the wire format lives in [TrackingPayloadBuilder] so
+     * [com.convert.sdk.android.worker.EventFlushWorker] (which cannot
+     * reach into ApiManager) can produce a byte-identical body from the
+     * disk-loaded [com.convert.sdk.core.model.VisitorEvent] list.
+     * ApiManager converts its internal [VisitorEvent] wrappers to the
+     * port's [com.convert.sdk.core.model.VisitorEvent] envelopes and
+     * delegates to the shared builder.
+     */
     private fun buildPayload(snapshot: List<VisitorEvent>): String {
-        val grouped: Map<String, List<VisitorEvent>> = snapshot.groupBy { it.visitorId }
-        val visitors = buildJsonArray {
-            grouped.forEach { (visitorId, events) ->
-                add(buildVisitorEntry(visitorId, events))
-            }
+        val portEvents: List<com.convert.sdk.core.model.VisitorEvent> = snapshot.map { ve ->
+            com.convert.sdk.core.model.VisitorEvent(
+                visitorId = ve.visitorId,
+                segments = ve.segments.ifEmpty { null },
+                event = ve.trackingEvent,
+            )
         }
-        val payload = buildJsonObject {
-            put(KEY_ACCOUNT_ID, config.data?.accountId ?: "")
-            put(KEY_PROJECT_ID, config.data?.project?.id ?: "")
-            put(KEY_ENRICH_DATA, config.data == null)
-            config.network?.source?.let { put(KEY_SOURCE, it) }
-            put(KEY_VISITORS, visitors)
-        }
-        return json.encodeToString(JsonObject.serializer(), payload)
+        return TrackingPayloadBuilder.build(portEvents, config, json)
     }
 
     /**
@@ -725,27 +789,6 @@ public open class ApiManager(
                 }
                 put("events", events.map { it.event })
             }
-        }
-    }
-
-    private fun buildVisitorEntry(visitorId: String, events: List<VisitorEvent>): JsonObject {
-        // Segments: the JS SDK's VisitorsQueue.push replaces the
-        // existing visitor's segments on subsequent pushes — the most
-        // recent snapshot wins. We mirror that by taking the last
-        // event's segments.
-        val lastSegments = events.last().segments
-        val eventsArray = buildJsonArray {
-            events.forEach { add(it.event) }
-        }
-        val segmentsObj = if (lastSegments.isNotEmpty()) {
-            buildJsonObject { lastSegments.forEach { (k, v) -> put(k, v) } }
-        } else {
-            null
-        }
-        return buildJsonObject {
-            put(KEY_VISITOR_ID, visitorId)
-            segmentsObj?.let { put(KEY_SEGMENTS, it) }
-            put(KEY_EVENTS, eventsArray)
         }
     }
 
@@ -961,8 +1004,12 @@ public open class ApiManager(
         /** Maximum number of foreground retries before persisting + giving up. */
         private const val MAX_FOREGROUND_RETRIES: Int = 3
 
-        // Wire shape constants — matches JS SDK
-        // javascript-sdk/packages/types/src/config/types.gen.ts:2738.
+        // Wire shape constants — matches JS SDK. Per-event keys live
+        // here; the outer-payload keys (accountId / projectId / source /
+        // enrichData / visitors / visitorId / segments / events) moved
+        // to [TrackingPayloadBuilder] when Story 5.3 extracted the
+        // payload-building logic so the background WorkManager worker
+        // can produce byte-identical bodies.
         private const val KEY_EVENT_TYPE: String = "eventType"
         private const val KEY_DATA: String = "data"
         private const val KEY_EXPERIENCE_ID: String = "experienceId"
@@ -971,14 +1018,6 @@ public open class ApiManager(
         private const val KEY_GOAL_DATA: String = "goalData"
         private const val KEY_KEY: String = "key"
         private const val KEY_VALUE: String = "value"
-        private const val KEY_ACCOUNT_ID: String = "accountId"
-        private const val KEY_PROJECT_ID: String = "projectId"
-        private const val KEY_ENRICH_DATA: String = "enrichData"
-        private const val KEY_SOURCE: String = "source"
-        private const val KEY_VISITORS: String = "visitors"
-        private const val KEY_VISITOR_ID: String = "visitorId"
-        private const val KEY_SEGMENTS: String = "segments"
-        private const val KEY_EVENTS: String = "events"
 
         private const val EVENT_TYPE_BUCKETING: String = "bucketing"
         private const val EVENT_TYPE_CONVERSION: String = "conversion"
