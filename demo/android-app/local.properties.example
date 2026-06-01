@@ -1,17 +1,83 @@
 # Convert Android SDK Demo App — local.properties example
 #
-# Copy this file to `local.properties` and fill in your values. Both
-# `local.properties` and `.idea/` are git-ignored by Android Studio's
-# default .gitignore, so your real SDK key never hits version control.
-#
-# Android SDK path (Android Studio normally populates this automatically
-# when you first open the project — the line below is here only as a
-# template).
+# Copy this file to `local.properties` and uncomment the lines you want
+# to override. Every entry below is OPTIONAL — when absent, the demo
+# falls back to the hardcoded literals documented next to each key, so
+# `./gradlew :app:assembleDebug` on a fresh clone succeeds with no
+# extra setup. `demo/android-app/.gitignore` keeps `local.properties`
+# out of version control so your real SDK key never hits git.
+
+# ---------------------------------------------------------------------------
+# Android SDK path
+# ---------------------------------------------------------------------------
+# Android Studio normally populates this automatically when you first open
+# the project — the line below is here only as a template.
 # sdk.dir=/Users/you/Library/Android/sdk
-#
-# Convert SDK key — override the `"demo-sdk-key"` default wired into
-# BuildConfig. See `app/build.gradle.kts` for the read-and-inject logic.
-# When this entry is absent, `assembleDebug` still succeeds (the SDK
-# initialises with the placeholder key and the first config fetch fails
-# quietly — plenty for the scaffolding story's launch-verification gate).
+
+# ---------------------------------------------------------------------------
+# Convert SDK key
+# ---------------------------------------------------------------------------
+# The merchant SDK key the demo initialises `ConvertSDK.Builder.sdkKey(…)`
+# with. Default when omitted: `"demo-sdk-key"` (the demo still launches,
+# but the first config fetch fails quietly).
 # convertSdkKey=your-staging-sdk-key-here
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+# Deployment environment tag passed to `ConvertSDK.Builder.environment(…)`
+# (typically `"staging"` or `"production"`). Default when omitted or blank:
+# the builder call is skipped entirely, and the Config screen's
+# Environment row renders `(not set)`.
+# convertEnvironment=staging
+
+# ---------------------------------------------------------------------------
+# Experience key
+# ---------------------------------------------------------------------------
+# Experience key the Experiences / Offline screens' primary buttons
+# target via `ConvertContext.runExperience(…)`. Must match an experience
+# key configured in YOUR Convert account. Default when omitted:
+# `"test-experience"` (a generic placeholder; replace with your own key).
+# convertExperienceKey=your-experience-key
+
+# ---------------------------------------------------------------------------
+# Feature key
+# ---------------------------------------------------------------------------
+# Feature key the Features screen's primary button targets via
+# `ConvertContext.runFeature(…)`. Must match a feature key configured in
+# YOUR Convert account. Default when omitted: `"test-feature"`
+# (a generic placeholder; replace with your own key).
+# convertFeatureKey=your-feature-key
+
+# ---------------------------------------------------------------------------
+# Goal key
+# ---------------------------------------------------------------------------
+# Goal key the Conversions / Offline screens' Buy button tracks via
+# `ConvertContext.trackConversion(…)`. Must match a goal key configured
+# in YOUR Convert account. Default when omitted: `"purchase-goal"`
+# (a generic placeholder; replace with your own key).
+# convertGoalKey=your-goal-key
+
+# ---------------------------------------------------------------------------
+# Visitor attributes (JSON object)
+# ---------------------------------------------------------------------------
+# Initial visitor attributes set on the ConvertContext via
+# `ConvertContext.setAttributes(…)`. Must be a valid JSON object string.
+# Populate this with whatever attributes YOUR Convert audiences require
+# (e.g. `{"mobile":true}` for an audience that gates on a `mobile` flag,
+# `{"plan":"premium"}` for a subscription-tier audience, etc.). Default
+# when omitted: `"{}"` (empty object — no attributes injected).
+# convertVisitorAttributes={"mobile":true}
+
+# ---------------------------------------------------------------------------
+# Location properties (JSON object)
+# ---------------------------------------------------------------------------
+# Location properties set on the ConvertContext via
+# `ConvertContext.setLocationProperties(…)`. Must be a valid JSON object
+# string. Populate this only if YOUR experiences have location rules
+# (e.g. `{"location":"pricing"}` for a rule that gates on a `location`
+# property). Default when omitted: `"{}"` (empty object — no location
+# properties injected, so experiences without location rules bucket
+# normally and experiences with location rules will be reported as
+# "no location properties set on context").
+# convertLocationProperties={"location":"pricing"}

@@ -30,22 +30,78 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose") version "2.3.20"
 }
 
-// Read the convertSdkKey from local.properties (git-ignored) so devs can
-// point the demo at their own Convert account. AC-3 prefers this path
-// over a hard-coded key. When the entry is missing we fall back to the
-// placeholder `"demo-sdk-key"` so `assembleDebug` succeeds cleanly in CI
-// and on fresh clones — the SDK initialises, the first config fetch
-// fails silently, and the scaffolding launch-verification gate still
-// passes (AC-10).
-val convertSdkKey: String = run {
-    val localProps = Properties().apply {
-        val f = rootProject.file("local.properties")
-        if (f.exists()) {
-            f.inputStream().use { load(it) }
-        }
-    }
-    localProps.getProperty("convertSdkKey") ?: "demo-sdk-key"
+// Demo-tunable BuildConfig fields are read from one of TWO independent
+// properties files, chosen by what's in the gradle task graph:
+//
+//   - `local.properties`  — the developer's personal config for
+//     running the demo against staging via Android Studio /
+//     `installDebug` / `assembleDebug`. Git-ignored. Free to hold
+//     real SDK keys / environment overrides / experience keys.
+//
+//   - `test.properties`   — committed test fixtures. Consumed when
+//     the gradle invocation contains a `test` or `check` task
+//     (`:app:testDebugUnitTest`, `:app:check`, etc.). Keeps the unit
+//     tests deterministic regardless of what's in `local.properties`.
+//     Every assertion in `app/src/test/...` is written against these
+//     values.
+//
+// Each key is optional in either file — when missing, a fallback
+// literal is injected so `./gradlew :app:assembleDebug` (or test
+// runs without `test.properties`) succeeds cleanly on a fresh
+// clone. The fallbacks MUST stay in lockstep with the values
+// committed in `test.properties` and the assertions in `app/src/test/`:
+//
+//   | property                   | fallback literal (prod)              | test.properties pin     |
+//   | -------------------------- | ------------------------------------ | ----------------------- |
+//   | convertSdkKey              | "demo-sdk-key"                       | demo-sdk-key            |
+//   | convertEnvironment         | ""  (empty sentinel)                 | (empty)                 |
+//   | convertExperienceKey       | "test-experience"                    | test-experience         |
+//   | convertFeatureKey          | "test-feature"                       | test-feature            |
+//   | convertGoalKey             | "purchase-goal"                      | purchase-goal           |
+//   | convertVisitorAttributes   | "{}"  (empty object)                 | {} (empty object)       |
+//   | convertLocationProperties  | "{}"  (empty object)                 | {} (empty object)       |
+//
+// The empty-string sentinel for `convertEnvironment` signals "not
+// configured" to `DemoApplication.onCreate`, which skips the builder
+// call when the value is blank. `BuildConfig` emits `@NonNull` Java
+// strings, so empty-string is preferred over `null` (which would
+// require nullable typing at every read site).
+//
+// Detection looks at gradle task names — robust against
+// `./gradlew :app:testDebugUnitTest`, `./gradlew test`,
+// `./gradlew check`, Android Studio's "Run test" actions (which
+// invoke gradle with `--tests` filters on a `test*` task), and
+// combined invocations like `./gradlew test lintDebug assembleDebug`
+// (which we still treat as a test run because the tests dominate).
+// `sdk.dir` is read by AGP itself from `local.properties` and does
+// NOT flow through this selector.
+private val isTestBuild: Boolean = gradle.startParameter.taskNames.any { taskName ->
+    val lower = taskName.lowercase()
+    lower.contains("test") || lower.contains("check")
 }
+
+private val convertTunablesFile: java.io.File = if (isTestBuild) {
+    rootProject.file("test.properties")
+} else {
+    rootProject.file("local.properties")
+}
+
+private val convertTunables: Properties = Properties().apply {
+    if (convertTunablesFile.exists()) {
+        convertTunablesFile.inputStream().use { load(it) }
+    }
+}
+
+private fun demoTunable(key: String, fallback: String): String =
+    convertTunables.getProperty(key) ?: fallback
+
+val convertSdkKey: String = demoTunable("convertSdkKey", "demo-sdk-key")
+val convertEnvironment: String = demoTunable("convertEnvironment", "")
+val convertExperienceKey: String = demoTunable("convertExperienceKey", "test-experience")
+val convertFeatureKey: String = demoTunable("convertFeatureKey", "test-feature")
+val convertGoalKey: String = demoTunable("convertGoalKey", "purchase-goal")
+val convertVisitorAttributes: String = demoTunable("convertVisitorAttributes", "{}")
+val convertLocationProperties: String = demoTunable("convertLocationProperties", "{}")
 
 android {
     namespace = "com.convert.sdk.demo"
@@ -62,11 +118,26 @@ android {
         versionName = "0.1.0"
 
         buildConfigField("String", "convertSdkKey", "\"$convertSdkKey\"")
+        buildConfigField("String", "convertEnvironment", "\"$convertEnvironment\"")
+        buildConfigField("String", "convertExperienceKey", "\"$convertExperienceKey\"")
+        buildConfigField("String", "convertFeatureKey", "\"$convertFeatureKey\"")
+        buildConfigField("String", "convertGoalKey", "\"$convertGoalKey\"")
+        buildConfigField("String", "convertVisitorAttributes", "\"${convertVisitorAttributes.replace("\"", "\\\"")}\"")
+        buildConfigField("String", "convertLocationProperties", "\"${convertLocationProperties.replace("\"", "\\\"")}\"")
+
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // Story 7.2 — EventInspectorSheet renders event timestamps with
+        // `java.time.DateTimeFormatter` (Gotcha 2: "use
+        // DateTimeFormatter.ofPattern(\"HH:mm:ss.SSS\") from java.time").
+        // `java.time` was added in API 26; minSdk is 24. Core-library
+        // desugaring backports the API set so these calls are safe on
+        // API 24/25 devices. This is the single-dependency
+        // standard-library shim recommended by Google for new code.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     buildFeatures {
@@ -94,7 +165,14 @@ android {
     // Use JUnit 5 for unit tests — matches the SDK module's stack and lets
     // the demo consume the same junit-jupiter + mockk + coroutines-test
     // version train without a second testing paradigm for devs to learn.
+    //
+    // `includeAndroidResources = true` is required by Robolectric Compose
+    // UI tests: `createComposeRule()` stands up an `androidx.activity.
+    // ComponentActivity` via `ActivityScenario`, and that activity is
+    // declared in the `ui-test-manifest` artifact's AndroidManifest.xml
+    // — the resource merger only picks it up when this flag is on.
     testOptions {
+        unitTests.isIncludeAndroidResources = true
         unitTests.all {
             it.useJUnitPlatform()
         }
@@ -144,13 +222,51 @@ dependencies {
     // to developers reading this file).
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
+    // Story 7.4 — kotlinx-serialization-json. The SDK's public
+    // [com.convert.sdk.core.model.Feature.variables] field is typed
+    // `Map<String, JsonElement>?`, but `packages/core` declares
+    // serialization as an `implementation` dependency (not `api`) so
+    // the `JsonElement` / `JsonPrimitive` types do NOT transitively land
+    // on the demo's compile classpath. The Features screen inspects
+    // variables' primitive shape to emit user-facing type labels
+    // (`[String]`, `[Int]`, etc. per AC-4) — that inspection requires
+    // the types be visible here. Version pinned to match the SDK's
+    // version catalog (`gradle/libs.versions.toml` → `kotlinxSerialization`).
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.10.0")
+
     // Debug-only Compose tooling
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+
+    // Story 7.2 — core-library desugaring runtime. Ships the API 26+
+    // `java.time` classes back-compat to API 24. Required by the
+    // `isCoreLibraryDesugaringEnabled = true` flag above.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 
     // Tests — match the SDK module's stack
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
     testImplementation("io.mockk:mockk:1.13.13")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+    // Story 7.2 AC-8 — Compose UI tests for EventInspectorSheet.
+    //
+    // `ui-test-junit4` is a JUnit-4 rule library (`createComposeRule` /
+    // `createAndroidComposeRule`). This module runs on JUnit 5, but
+    // the junit-vintage-engine below lets JUnit 4 tests cohabit with
+    // JUnit Jupiter tests (same pattern `:packages:sdk` uses for its
+    // Robolectric suite).
+    //
+    // `ui-test-manifest` is already added to `debugImplementation`
+    // above (that's the AGP-recommended configuration for a
+    // dependency that's only used by tests but needs to be on the
+    // packaged resource path).
+    //
+    // Robolectric provides the Android shadow runtime so the Compose
+    // rule can stand up a `ComponentActivity` without an instrumented
+    // device. The project already uses Robolectric 4.16 in the SDK
+    // module's version catalog.
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("org.robolectric:robolectric:4.16")
+    testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.11.4")
 }
