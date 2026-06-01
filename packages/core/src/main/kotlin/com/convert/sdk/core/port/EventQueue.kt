@@ -20,7 +20,7 @@ import com.convert.sdk.core.model.VisitorEvent
  * the queue is typed in [VisitorEvent] (not [com.convert.sdk.core.model.TrackingEvent])
  * so per-event visitor identity and segment snapshots survive process death.
  */
-internal interface EventQueue {
+public interface EventQueue {
 
     /**
      * Appends [events] to the tail of the queue, persisting them before
