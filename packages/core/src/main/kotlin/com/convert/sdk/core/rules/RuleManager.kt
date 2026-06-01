@@ -79,10 +79,10 @@ import kotlinx.serialization.json.contentOrNull
  *
  * The Android SDK mirrors the JS SDK's convention: per-element
  * negation is encoded in the wire payload as `matching.negated:
- * boolean`. The [RulesConfig.negation] SDK-level setting (the "not"
- * string prefix convention some SDKs expose) is NOT implemented here
- * because the JS SDK does not implement it either — it only flips
- * results via `matching.negated`.
+ * boolean`. The [com.convert.sdk.core.config.RulesConfig.negation]
+ * SDK-level setting (the "not" string prefix convention some SDKs
+ * expose) is NOT implemented here because the JS SDK does not
+ * implement it either — it only flips results via `matching.negated`.
  *
  * ### Never throws
  *

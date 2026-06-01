@@ -6,6 +6,32 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.kover)
     alias(libs.plugins.vanniktech.maven.publish)
+    // Story 6.1: Dokka generates HTML API reference under build/dokka/html/
+    // and its output is fed to the Javadoc JAR via vanniktech's
+    // `JavadocJar.Dokka("dokkaGenerateHtml")` hook below.
+    alias(libs.plugins.dokka)
+}
+
+// Story 6.1: Dokka source-set tuning.
+// 1) `jdkVersion.set(17)` aligns Dokka's analyser with the
+//    `jvmToolchain(17)` pinned below (Story 1.1). Without this, Dokka
+//    runs under whatever JDK the Gradle daemon picked, which can diverge
+//    from the Kotlin compiler's target on dev machines that auto-pick a
+//    higher JDK. CI is unaffected (Story 1-3 provisions Temurin 17), but
+//    explicit alignment removes the dev-vs-CI doc drift class. [F-079]
+// 2) Exclude the auto-generated OpenAPI types — they carry ApiModel-derived
+//    descriptions (e.g. "[incremental_number]", "[ISO_datetime]") that are
+//    human-language annotations, not Kotlin symbol references. Dokka (V2)
+//    tries to link them and emits noisy warnings. Same exclusion as Kover's
+//    coverage filter.
+dokka {
+    dokkaSourceSets.named("main") {
+        jdkVersion.set(17)
+        perPackageOption {
+            matchingRegex.set("com\\.convert\\.sdk\\.core\\.model\\.generated(\\..*)?")
+            suppress.set(true)
+        }
+    }
 }
 
 // Authoritative JVM toolchain for this module.
@@ -76,12 +102,15 @@ kover {
 // transitively, so the core JAR must exist on Maven Central at the same
 // version as the AAR.
 mavenPublishing {
-    // Kotlin-JVM publication with a real sources JAR and an empty Javadoc JAR
-    // (no Dokka wiring in this story — an empty Javadoc JAR satisfies the
-    // Central Portal's sources+javadoc requirement).
+    // Kotlin-JVM publication with a real sources JAR and a Dokka-generated
+    // Javadoc JAR (Story 6.1). `JavadocJar.Dokka("dokkaGenerateHtml")` wires
+    // the vanniktech plugin to the Dokka V2 task output so consumers browsing
+    // Maven Central get real API reference docs (not an empty stub).
+    // Task name is the V2 form (`dokkaGenerateHtml`) — the V1 alias
+    // `dokkaHtml` was removed in Dokka 2.2.0.
     configure(
         KotlinJvm(
-            javadocJar = JavadocJar.Empty(),
+            javadocJar = JavadocJar.Dokka("dokkaGenerateHtml"),
             sourcesJar = true,
         ),
     )
