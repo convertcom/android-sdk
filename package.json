@@ -1,0 +1,20 @@
+{
+  "name": "convert-android-sdk-release-tooling",
+  "private": true,
+  "type": "module",
+  "description": "Release automation tooling and cross-SDK parity-vector generation for the Convert Android SDK.",
+  "scripts": {
+    "release": "semantic-release",
+    "release:dry-run": "semantic-release --dry-run --no-ci",
+    "generate:parity-vectors": "node tools/generate-parity-vectors.mjs > packages/core/src/test/resources/hash-parity-vectors.json"
+  },
+  "devDependencies": {
+    "@convertcom/js-sdk-bucketing": "file:../javascript-sdk/packages/bucketing",
+    "@semantic-release/changelog": "^6.0.0",
+    "@semantic-release/exec": "^7.0.0",
+    "@semantic-release/git": "^10.0.0",
+    "@semantic-release/release-notes-generator": "^14.0.0",
+    "conventional-changelog-conventionalcommits": "^8.0.0",
+    "semantic-release": "^24.0.0"
+  }
+}

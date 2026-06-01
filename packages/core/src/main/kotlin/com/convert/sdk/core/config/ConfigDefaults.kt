@@ -21,6 +21,16 @@ import com.convert.sdk.core.model.LogLevel
  *   template URLs injected into the bundle at build time as
  *   `process.env.CONFIG_ENDPOINT` / `process.env.TRACK_ENDPOINT`.
  *
+ * ### Visibility (Story 2.1)
+ *
+ * Declared `public` so that `:packages:sdk` — which lives in a separate
+ * Gradle module and therefore a separate Kotlin `internal` visibility
+ * scope — can read these defaults when the Builder falls back for
+ * unset fields (see `ConvertSDK.Builder.build()`). Consumers of the
+ * published `sdk-core` artifact should treat it as SDK-internal: the
+ * Builder's `dataRefreshInterval`/`logLevel`/etc. setters are the
+ * consumer-visible way to override these values.
+ *
  * Deviations from the story spec's `AC-3` placeholders (which were
  * described as "to verify"):
  * - `DEFAULT_CONFIG_ENDPOINT` uses the CDN host rather than the story's
@@ -38,7 +48,7 @@ import com.convert.sdk.core.model.LogLevel
  * - `DEFAULT_CACHE_LEVEL` is `"default"` per the JS SDK's
  *   `network.cacheLevel: 'default'`.
  */
-internal object ConfigDefaults {
+public object ConfigDefaults {
 
     /**
      * Configuration-fetch endpoint. The JS SDK bundles this value from
