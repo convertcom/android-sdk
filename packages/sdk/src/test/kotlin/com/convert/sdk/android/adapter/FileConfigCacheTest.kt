@@ -7,7 +7,7 @@ package com.convert.sdk.android.adapter
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import com.convert.sdk.core.internal.bigDecimalSerializersModule
+import com.convert.sdk.core.internal.sharedSerializersModule
 import com.convert.sdk.core.model.generated.ConfigProject
 import com.convert.sdk.core.model.generated.ConfigProjectSettings
 import com.convert.sdk.core.model.generated.ConfigResponseData
@@ -47,7 +47,7 @@ internal class FileConfigCacheTest {
     /**
      * Story 2.2 AC-12 (F-172): every test that constructs a
      * [FileConfigCache] MUST pass a [Json] whose `serializersModule`
-     * registers [bigDecimalSerializersModule] (or any aggregate that
+     * registers [sharedSerializersModule] (or any aggregate that
      * subsumes it). Using a private `Json {}` without that module would
      * mask the production wire path and let the F-172 defect class
      * regress silently — encoding `ConfigResponseData` with a non-null
@@ -59,7 +59,7 @@ internal class FileConfigCacheTest {
     private val json: Json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
-        serializersModule = bigDecimalSerializersModule
+        serializersModule = sharedSerializersModule
     }
 
     private lateinit var context: Context
@@ -109,7 +109,7 @@ internal class FileConfigCacheTest {
      * Story 2.2 AC-12 (F-172) — round-trip a `ConfigResponseData` whose
      * project settings carry a non-null `@Contextual java.math.BigDecimal?`
      * field. Without the SDK shared `Json` (which registers
-     * [bigDecimalSerializersModule]) this test would throw
+     * [sharedSerializersModule]) this test would throw
      * `kotlinx.serialization.SerializationException: Serializer for
      * class 'BigDecimal' is not found` from
      * [FileConfigCache.write] — exactly the runtime failure recorded in
