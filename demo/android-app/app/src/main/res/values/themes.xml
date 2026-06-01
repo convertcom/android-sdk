@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Convert Android SDK Demo App — themes.
+
+  Story 7.1 AC-8 says "no custom ConvertTheme" — Material 3 Compose is
+  applied at the composable level (`MaterialTheme { ... }` in
+  MainActivity). The XML theme here is just the Activity shell base: an
+  edge-to-edge, no-action-bar container so Compose owns the full
+  layout surface. No custom colours / typography / shapes — exactly
+  the baseline a default Android Studio Compose template produces.
+-->
+<resources>
+    <style name="Theme.Convert.Demo" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/background_light</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+</resources>
