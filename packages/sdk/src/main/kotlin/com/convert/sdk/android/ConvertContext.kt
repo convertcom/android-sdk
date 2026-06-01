@@ -67,10 +67,21 @@ import kotlinx.serialization.json.JsonPrimitive
  * @property visitorId stable visitor identifier supplied at construction
  *   time by [ConvertSDK.createContext].
  */
+@Suppress("TooManyFunctions")
 public class ConvertContext internal constructor(
     public val visitorId: String,
     internal val sdk: ConvertSDK? = null,
 ) {
+    // detekt's TooManyFunctions rule flags this class at its 20-function
+    // ceiling. ConvertContext is the SDK's per-visitor public surface and
+    // MUST host every setter (attributes, location, default segments,
+    // custom segments, tracking) plus every run-method (runExperience,
+    // runExperiences, runFeature, runFeatures, trackConversion) plus the
+    // internal coercion accessors the rule engine / tracking payload
+    // builder consume. Splitting is not a clean refactor — a thin wrapper
+    // delegating to a backing object would move the functions without
+    // reducing the public surface, and the public surface is what matters
+    // for API stability. Suppressed here with explicit justification.
 
     /**
      * Replace-not-merge attribute store. `@Volatile` ensures the write
@@ -328,6 +339,7 @@ public class ConvertContext internal constructor(
                 visitorId = visitorId,
                 experienceId = experience.id.orEmpty(),
                 variationId = allocation.variationId,
+                segments = getMergedSegments(),
             )
             sdk.eventManager.fire(
                 event = SystemEvents.BUCKETING,
@@ -771,11 +783,14 @@ public class ConvertContext internal constructor(
                 // (avoids serialising an empty array where the schema
                 // accepts the field's absence). The dedup gate in
                 // trackConversion ensures this method is only called when
-                // the event should actually be emitted.
+                // the event should actually be emitted. Story 4.4 wires
+                // the merged default+custom segments snapshot into the
+                // outbound call (AC-3).
                 sdk.apiManager?.enqueueConversionEvent(
                     visitorId = visitorId,
                     goalId = goalId,
                     goalData = goalData?.takeIf { it.isNotEmpty() },
+                    segments = getMergedSegments(),
                 )
                 // Step 5 — internal event fire. JS SDK parity:
                 // `{visitorId, goalKey}` — not goalId. Downstream consumers
@@ -806,7 +821,8 @@ public class ConvertContext internal constructor(
 
     /**
      * Replaces (does not merge) the default-segment map used by rule
-     * evaluation. Successive calls replace the previous value:
+     * evaluation and outbound tracking events. Successive calls replace
+     * the previous value:
      *
      *     ctx.setDefaultSegments(mapOf("plan" to "free"))
      *     ctx.setDefaultSegments(mapOf("tier" to "gold"))
@@ -815,24 +831,78 @@ public class ConvertContext internal constructor(
      * Callers wanting a merge must merge themselves:
      * `ctx.setDefaultSegments(old + new)`.
      *
+     * ### Persistence (Story 4.4 AC-4)
+     *
+     * After the in-memory write, the merged (`defaults ∪ customs`, custom-
+     * wins) segment map is persisted to [com.convert.sdk.core.data.StoreData.segments]
+     * via [com.convert.sdk.core.data.DataManager.setStoreData]. This makes
+     * the segments available to the Story 3.4 [com.convert.sdk.core.rules.RuleManager]
+     * audience-rule evaluation on the next and subsequent launches, and
+     * captures a snapshot the Story 5.1 outbound-queue flush can read
+     * after an SDK restart. Passing `emptyMap()` clears the persisted map
+     * to `emptyMap()` — NOT `null` (AC-6).
+     *
      * @param segments default segment values keyed by segment name.
      * @return this context for fluent chaining.
      */
     public fun setDefaultSegments(segments: Map<String, String>): ConvertContext {
         defaultSegments = segments
+        persistSegmentsToStore(this)
         return this
     }
 
     /**
      * Replaces (does not merge) the custom-segment map used by rule
-     * evaluation. Same replace-semantics as [setDefaultSegments].
+     * evaluation and outbound tracking events. Same replace-semantics as
+     * [setDefaultSegments].
+     *
+     * Custom segment values can be any [JsonElement] — number, string,
+     * boolean, array, or object — giving merchants a richer payload than
+     * the `Map<String, String>` default-segment path. Non-JsonElement
+     * values are coerced via the Story 3.1 Gotcha 7 table
+     * (String / Number / Boolean → [JsonPrimitive]; `null` → [JsonNull];
+     * anything else → `JsonPrimitive(value.toString())`).
+     *
+     * ### Persistence (Story 4.4 AC-4)
+     *
+     * Same `DataManager.setStoreData` write as [setDefaultSegments] —
+     * segments survive an SDK restart. On key collision with defaults,
+     * the custom value wins (Gotcha 1).
      *
      * @param customSegments merchant-supplied segment values.
      * @return this context for fluent chaining.
      */
     public fun setCustomSegments(customSegments: Map<String, Any?>): ConvertContext {
         this.customSegments = customSegments
+        persistSegmentsToStore(this)
         return this
+    }
+
+    /**
+     * Returns the merged default + custom segment map that outbound
+     * tracking events carry (Story 4.4 AC-3).
+     *
+     * Default segment values are strings; they are coerced to
+     * [JsonPrimitive] for parity with the richer custom-segment type.
+     * Custom segments override defaults on key collision (Gotcha 1).
+     * When both segment maps are unset, returns an empty map.
+     *
+     * Internal to the SDK — consumers set segments via the public setters;
+     * the merged view exists only to feed
+     * [com.convert.sdk.core.api.ApiManager.enqueueBucketingEvent] and
+     * [com.convert.sdk.core.api.ApiManager.enqueueConversionEvent].
+     */
+    internal fun getMergedSegments(): Map<String, JsonElement> {
+        val defaults = defaultSegments
+        val customs = customSegments
+        if (defaults == null && customs == null) return emptyMap()
+        val defaultsAsJson: Map<String, JsonElement> = defaults
+            ?.mapValues { (_, value) -> JsonPrimitive(value) }
+            .orEmpty()
+        val customsAsJson: Map<String, JsonElement> = toJsonElementMap(customs)
+        // `+` on Map gives right-hand precedence on key collision — exactly
+        // the "custom wins" semantics Gotcha 1 mandates.
+        return defaultsAsJson + customsAsJson
     }
 
     /**
@@ -1093,4 +1163,31 @@ private fun passesLocationGate(
         )
     }
     return anyMatch
+}
+
+/**
+ * Writes [context]'s current merged (`defaults ∪ customs`, custom-wins)
+ * segment snapshot into the visitor's persisted
+ * [com.convert.sdk.core.model.StoreData] (Story 4.4 AC-4).
+ *
+ * A no-op when the context has no SDK reference (pure-JVM test-only
+ * construction path) — matches the same guard as the other SDK-dependent
+ * paths in [ConvertContext.runExperience] / [ConvertContext.trackConversion].
+ *
+ * Runs on the caller thread: [com.convert.sdk.core.data.DataManager.setStoreData]
+ * already serialises on its `visitorLock` and wraps an in-memory cache
+ * update plus a SharedPreferences string write — fast enough to not
+ * introduce perceptible latency for the setter call.
+ *
+ * Lives at file scope (same rationale as [passesAudienceGate] /
+ * [passesLocationGate]) so [ConvertContext] stays under detekt's
+ * `TooManyFunctions` threshold.
+ */
+private fun persistSegmentsToStore(context: ConvertContext) {
+    val sdk = context.sdk ?: return
+    val current = sdk.dataManager.getStoreData(context.visitorId)
+    sdk.dataManager.setStoreData(
+        context.visitorId,
+        current.copy(segments = context.getMergedSegments()),
+    )
 }

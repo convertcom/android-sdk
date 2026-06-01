@@ -369,6 +369,7 @@ internal class ConvertContextTrackConversionTest {
         val visitorId: String,
         val goalId: String,
         val goalData: List<GoalData>?,
+        val segments: Map<String, kotlinx.serialization.json.JsonElement> = emptyMap(),
     )
 
     /**
@@ -415,9 +416,10 @@ internal class ConvertContextTrackConversionTest {
             visitorId: String,
             goalId: String,
             goalData: List<GoalData>?,
+            segments: Map<String, kotlinx.serialization.json.JsonElement>,
         ) {
             enqueueConversionCalls.add(
-                EnqueueConversionCall(visitorId, goalId, goalData),
+                EnqueueConversionCall(visitorId, goalId, goalData, segments),
             )
         }
     }
