@@ -57,6 +57,12 @@ kotlin {
 dependencies {
     api(project(":packages:core"))
     implementation(libs.okhttp)
+    // Story 2.2: FileConfigCache serialises/deserialises ConfigResponseData
+    // directly in this module (not through the core ApiManager). The core
+    // module declares kotlinx.serialization-json as `implementation`, so it
+    // does not leak transitively — the sdk module needs its own dep.
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.kotlinx.coroutines.core)
     implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.work.runtime)
     implementation(libs.androidx.startup.runtime)
@@ -64,6 +70,18 @@ dependencies {
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.mockk)
     testImplementation(libs.kotlinx.coroutines.test)
+    // Story 2.3 AC-10: TestLifecycleOwner provides a programmatic LifecycleOwner
+    // whose handleLifecycleEvent() drives ON_START / ON_STOP synchronously,
+    // letting SdkLifecycleObserverTest verify the observer callbacks without
+    // a full Android runtime. Pinned to match lifecycle-process's version to
+    // keep the androidx.lifecycle artifact family ABI-consistent.
+    testImplementation(libs.androidx.lifecycle.runtime.testing)
+    // Story 5.3 AC-10 test dependency: work-testing provides
+    // TestListenableWorkerBuilder (drives CoroutineWorker.doWork under
+    // Robolectric) and WorkManagerTestInitHelper (installs a synchronous
+    // WorkManager implementation so enqueueUniqueWork can be verified
+    // without a real scheduler).
+    testImplementation(libs.androidx.work.testing)
     // Robolectric 4.16 — provides JVM-side shadows for android.util.Log,
     // android.content.Context, SharedPreferences. Required by Story 2.1
     // AC-10 tests (AndroidLoggerTest, SharedPrefsDataStoreTest, ConvertSDKTest).
