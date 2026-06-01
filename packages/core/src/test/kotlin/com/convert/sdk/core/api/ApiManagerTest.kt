@@ -374,6 +374,59 @@ internal class ApiManagerTest {
         assertEquals(1, http.calls.size)
     }
 
+    // --- Enqueue signature smoke tests -------------------------------------
+    //
+    // Story 5.1 replaced the Story 3.2 / 4.2 / 4.4 stubs with real in-memory
+    // batching + flush. The full behavioural surface (queue mechanics, wire
+    // shape, failure paths, concurrency) is covered by
+    // [ApiManagerBatchingTest]. The handful of tests kept here verify the
+    // public signatures remain stable for `:packages:sdk` callers
+    // (`ConvertContext.runExperience`, `ConvertContext.trackConversion`):
+    // they must accept the current argument shape and never throw.
+
+    @Test
+    fun `enqueueBucketingEvent signature accepts (visitorId, experienceId, variationId, segments)`() {
+        // Lock in the public contract consumed by ConvertContext.runExperience
+        // from Story 3.2 onward. No exception, no caller-visible state is the
+        // acceptance bar here; all behavioural assertions live in
+        // ApiManagerBatchingTest which exercises the real enqueue/flush path.
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val api = ApiManager(http, CapturingLogger(), convertConfig(sdkKey = "sk-1"), json)
+
+        val segments: Map<String, kotlinx.serialization.json.JsonElement> = mapOf(
+            "country" to kotlinx.serialization.json.JsonPrimitive("US"),
+        )
+
+        // With-segments + no-segments overloads both compile and don't throw.
+        api.enqueueBucketingEvent("v-1", "e-1", "var-a", segments)
+        api.enqueueBucketingEvent("v-1", "e-2", "var-b")
+    }
+
+    @Test
+    fun `enqueueConversionEvent signature accepts (visitorId, goalId, goalData, segments)`() {
+        // Lock in the public contract consumed by ConvertContext.trackConversion
+        // from Story 4.2 onward (bare + transaction variants + Story 4.4's
+        // segments parameter).
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val api = ApiManager(http, CapturingLogger(), convertConfig(sdkKey = "sk-1"), json)
+
+        val goalData = listOf(
+            com.convert.sdk.core.model.GoalData(
+                key = com.convert.sdk.core.model.GoalDataKey.AMOUNT,
+                value = kotlinx.serialization.json.JsonPrimitive(29.99),
+            ),
+        )
+        val segments: Map<String, kotlinx.serialization.json.JsonElement> = mapOf(
+            "plan" to kotlinx.serialization.json.JsonPrimitive("gold"),
+        )
+
+        // All four call shapes used by ConvertContext must compile and not throw.
+        api.enqueueConversionEvent("v-1", "g-1", goalData = null)
+        api.enqueueConversionEvent("v-1", "g-1", goalData = null, segments = segments)
+        api.enqueueConversionEvent("v-1", "g-1", goalData = goalData)
+        api.enqueueConversionEvent("v-1", "g-1", goalData = goalData, segments = segments)
+    }
+
     // --- Test helpers -------------------------------------------------------
 
     /**

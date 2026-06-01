@@ -83,8 +83,8 @@ import java.io.File
  *
  * The [json] instance is INJECTED by [com.convert.sdk.android.ConvertSDK.Builder.build]
  * — the shared `sharedJson` constructed there registers
- * [com.convert.sdk.core.internal.bigDecimalSerializersModule]
- * (`serializersModule = bigDecimalSerializersModule`) so that the
+ * [com.convert.sdk.core.internal.sharedSerializersModule]
+ * (`serializersModule = sharedSerializersModule`) so that the
  * encode path below does not throw
  * `kotlinx.serialization.SerializationException: Serializer for class
  * 'BigDecimal' is not found` when [ConfigResponseData] carries a
@@ -98,7 +98,7 @@ import java.io.File
  * Json pattern that masked the missing serializer module from the
  * encode path. Tests that construct `FileConfigCache` MUST pass a
  * [Json] whose `serializersModule` includes
- * [com.convert.sdk.core.internal.bigDecimalSerializersModule] (or an
+ * [com.convert.sdk.core.internal.sharedSerializersModule] (or an
  * aggregate that subsumes it).
  *
  * @property context application context — used only for `filesDir`.
@@ -109,7 +109,7 @@ import java.io.File
  * @property json shared [Json] instance from
  *   [com.convert.sdk.android.ConvertSDK.Builder.build]'s `sharedJson`
  *   block. MUST register
- *   [com.convert.sdk.core.internal.bigDecimalSerializersModule] (or
+ *   [com.convert.sdk.core.internal.sharedSerializersModule] (or
  *   any aggregate that subsumes it) — see Story 2.2 AC-12 / F-172.
  */
 internal class FileConfigCache(
