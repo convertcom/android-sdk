@@ -374,6 +374,72 @@ internal class ApiManagerTest {
         assertEquals(1, http.calls.size)
     }
 
+    // --- Story 4.2 SDK-1 — enqueueConversionEvent stub ----------------------
+
+    @Test
+    fun `enqueueConversionEvent stub is a no-op and logs DEBUG with bare goalId`() {
+        // Story 4.2 placeholder for the conversion-event enqueue that
+        // Story 5.1 will implement. Contract for THIS story: public open
+        // method exists, signature matches (visitorId, goalId, goalData?),
+        // body never throws, a DEBUG trace is emitted so operators can
+        // see the stub was reached.
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val logger = CapturingLogger()
+        val api = ApiManager(http, logger, convertConfig(sdkKey = "sk-1"), json)
+
+        // goalData == null is the "bare conversion" case — matches the JS SDK
+        // `sendConversion()` path (data-manager.ts:1050-1066) which builds
+        // `{goalId}` with no transaction payload.
+        api.enqueueConversionEvent(
+            visitorId = "v-1",
+            goalId = "g-42",
+            goalData = null,
+        )
+
+        // No HTTP calls — the stub is a pure no-op; Story 5.1 wires the queue.
+        assertEquals(0, http.calls.size)
+        // DEBUG trace includes all three arg values so operators following
+        // a support ticket can trace the call without needing a verbose
+        // trace at INFO/WARN levels.
+        val debugs = logger.allMessages().filter { it.contains("enqueueConversionEvent") }
+        assertEquals(1, debugs.size, "expected one DEBUG trace; got $debugs")
+        assertTrue(debugs.first().contains("visitorId=v-1"), debugs.first())
+        assertTrue(debugs.first().contains("goalId=g-42"), debugs.first())
+    }
+
+    @Test
+    fun `enqueueConversionEvent stub is a no-op and logs DEBUG with goalData list`() {
+        // Story 4.2 `sendTransaction()`-flavoured call: goalData carries
+        // amount / productsCount / transactionId / customDimensionN.
+        // Still a pure no-op at Story 4.2; the stub distinguishes the two
+        // call variants only by logging the goalData size.
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val logger = CapturingLogger()
+        val api = ApiManager(http, logger, convertConfig(sdkKey = "sk-1"), json)
+
+        val goalData = listOf(
+            com.convert.sdk.core.model.GoalData(
+                key = com.convert.sdk.core.model.GoalDataKey.AMOUNT,
+                value = kotlinx.serialization.json.JsonPrimitive(29.99),
+            ),
+            com.convert.sdk.core.model.GoalData(
+                key = com.convert.sdk.core.model.GoalDataKey.TRANSACTION_ID,
+                value = kotlinx.serialization.json.JsonPrimitive("TX-42"),
+            ),
+        )
+
+        api.enqueueConversionEvent(
+            visitorId = "v-1",
+            goalId = "g-42",
+            goalData = goalData,
+        )
+
+        assertEquals(0, http.calls.size)
+        val debugs = logger.allMessages().filter { it.contains("enqueueConversionEvent") }
+        assertEquals(1, debugs.size)
+        assertTrue(debugs.first().contains("goalDataSize=2"), debugs.first())
+    }
+
     // --- Test helpers -------------------------------------------------------
 
     /**

@@ -404,6 +404,47 @@ public open class ApiManager(
         )
     }
 
+    /**
+     * Stub — Story 4.2 SDK-1 placeholder for the conversion-event enqueue
+     * that Story 5.1 will implement. Called EXACTLY ONCE per
+     * [com.convert.sdk.android.ConvertContext.trackConversion] invocation
+     * (F-008 / F-017 remediation): a single `ConversionEvent` carries
+     * `goalId` plus an optional `goalData` list when revenue /
+     * custom-dimension metadata is present. Matches the OpenAPI-generated
+     * [com.convert.sdk.core.model.generated.ConversionEvent] wire format
+     * and the JS SDK type schema at
+     * `javascript-sdk/packages/types/src/config/types.gen.ts:2749-2757`
+     * which declares only two event types — `'bucketing'` and
+     * `'conversion'`. There is no `'tr'` event type; revenue rides
+     * inside the conversion event's `goalData`.
+     *
+     * Declared `open` so tests in the `:packages:sdk` module can override
+     * it with a recording spy — same pattern as [enqueueBucketingEvent].
+     * The stub body is intentionally empty; Story 5.1 will land the real
+     * payload construction + outbound queue write.
+     *
+     * @param visitorId the visitor whose conversion is being reported.
+     * @param goalId the stable id of the conversion goal (not the goal
+     *   key — tracking payload references the id per
+     *   [com.convert.sdk.core.model.generated.ConversionEvent.goalId]).
+     * @param goalData optional list of payload entries
+     *   ([com.convert.sdk.core.model.GoalData]) — `null` for a bare
+     *   conversion hit, non-null when the caller supplied revenue or
+     *   custom-dimension fields.
+     */
+    public open fun enqueueConversionEvent(
+        visitorId: String,
+        goalId: String,
+        goalData: List<com.convert.sdk.core.model.GoalData>?,
+    ) {
+        // Intentional no-op — Story 5.1 implements.
+        logger.debug(
+            message = "ApiManager.enqueueConversionEvent() stub — " +
+                "visitorId=$visitorId goalId=$goalId goalDataSize=${goalData?.size ?: 0}",
+            tag = TAG,
+        )
+    }
+
     public companion object {
         private const val TAG: String = "ApiManager"
         private const val HEADER_AUTHORIZATION: String = "Authorization"
