@@ -9,6 +9,13 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.convert.sdk.android.adapter.AndroidLogger
 import com.convert.sdk.android.adapter.FileConfigCache
 import com.convert.sdk.android.adapter.FileEventQueue
@@ -16,6 +23,7 @@ import com.convert.sdk.android.adapter.OkHttpClientAdapter
 import com.convert.sdk.android.adapter.SharedPrefsDataStore
 import com.convert.sdk.android.lifecycle.NetworkObserver
 import com.convert.sdk.android.lifecycle.SdkLifecycleObserver
+import com.convert.sdk.android.worker.EventFlushWorker
 import com.convert.sdk.core.api.ApiManager
 import com.convert.sdk.core.bucketing.BucketingManager
 import com.convert.sdk.core.config.ApiConfig
@@ -49,6 +57,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -108,7 +117,13 @@ import java.util.concurrent.atomic.AtomicReference
  * @property scope the SDK-scoped [CoroutineScope]; all internal async
  *   work launches on this scope so the SupervisorJob isolates failures.
  */
-@Suppress("LongParameterList")
+// +2 functions over the 20-function threshold after Story 5.3 added
+// `onProcessStart` / `onProcessStop` / `enqueueFlushWorker` and two
+// test-only hooks for the new lifecycle path. Splitting those out
+// into a helper would force the SDK's DI graph to leak several more
+// references; keeping them on ConvertSDK itself is the clearer
+// expression of the wiring, so the ceiling gets a targeted suppress.
+@Suppress("LongParameterList", "TooManyFunctions")
 public class ConvertSDK internal constructor(
     internal val config: ConvertConfig,
     internal val appContext: Context? = null,
@@ -371,17 +386,175 @@ public class ConvertSDK internal constructor(
 
     /**
      * Posts an [SdkLifecycleObserver] install onto the main-thread handler.
-     * The observer routes ON_START / ON_STOP to [startRefreshLoop] and
-     * [stopRefreshLoop] respectively.
+     *
+     * ### Story 2.3 role
+     *
+     * ON_START → [startRefreshLoop]; ON_STOP → [stopRefreshLoop].
+     *
+     * ### Story 5.3 additions (AC-2, AC-3)
+     *
+     * ON_START additionally runs [onProcessStart]: restores any events
+     * persisted on disk back onto the in-memory queue (the process just
+     * came back to the foreground — either after the OS backgrounded us or
+     * after a full app restart where the worker hadn't yet been able to
+     * run).
+     *
+     * ON_STOP additionally runs [onProcessStop]: flushes the in-memory
+     * queue immediately, persists whatever survived the flush, and
+     * enqueues an [EventFlushWorker] to pick up from where we left off if
+     * the OS kills us.
      */
     private fun postObserverRegistration() {
         Handler(Looper.getMainLooper()).post {
             val observer = SdkLifecycleObserver(
-                onStart = { startRefreshLoop() },
-                onStop = { stopRefreshLoop() },
+                onStart = {
+                    startRefreshLoop()
+                    onProcessStart()
+                },
+                onStop = {
+                    stopRefreshLoop()
+                    onProcessStop()
+                },
             )
             ProcessLifecycleOwner.get().lifecycle.addObserver(observer)
         }
+    }
+
+    /**
+     * Story 5.3 AC-3 — foreground restore.
+     *
+     * Reads [fileEventQueue] and re-enqueues any persisted events onto
+     * the live [apiManager]; the batch timer then flushes them through
+     * the normal foreground retry path. Empty reads short-circuit.
+     *
+     * Mirrors [onNetworkAvailable] structurally — the two paths drive
+     * the same "pull from disk, rehydrate, let flush ship them" sequence
+     * from different triggers (network restore vs foreground resume). Kept
+     * separate rather than folded together so the log lines distinguish
+     * the two paths.
+     */
+    internal fun onProcessStart() {
+        val api = apiManager ?: return
+        val queue = fileEventQueue ?: return
+        scope.launch {
+            val persisted = queue.read()
+            if (persisted.isEmpty()) return@launch
+            api.enqueueAll(persisted)
+            queue.clear()
+        }
+    }
+
+    /**
+     * Story 5.3 AC-2 — background handoff.
+     *
+     * Runs the following in order on the SDK [scope]:
+     *
+     *  1. `apiManager.flushNow()` — attempt an immediate delivery of the
+     *     current queue. On success the queue empties; on IOException or
+     *     transient failure [com.convert.sdk.core.api.ApiManager.flush]
+     *     already persists internally (Story 5.2).
+     *  2. Snapshot whatever is still on the live queue via
+     *     [com.convert.sdk.core.api.ApiManager.snapshotQueue] and persist
+     *     it to [fileEventQueue]. Covers the mid-retry case: step 1's
+     *     flush may have scheduled a backoff retry and returned with
+     *     the snapshot re-prepended to the queue.
+     *  3. Enqueue a unique [EventFlushWorker] via WorkManager with the
+     *     `REPLACE` policy — rapid background/foreground transitions
+     *     collapse into a single pending worker (AC-7).
+     *
+     * The worker runs even if the process is killed between steps 2 and
+     * 3 thanks to WorkManager's durable storage. The `NetworkType.CONNECTED`
+     * constraint (AC-5) keeps the worker idle until a network is
+     * available; the `BackoffPolicy.EXPONENTIAL` setting (AC-6) gives
+     * it a 30s/60s/... retry cadence on failure.
+     */
+    @Suppress("ReturnCount") // 3 early-return guards (apiManager,
+    // fileEventQueue, appContext) keep the launched coroutine readable;
+    // folding them into a single boolean would obscure intent.
+    internal fun onProcessStop() {
+        val api = apiManager ?: return
+        val queue = fileEventQueue ?: return
+        val ctx = appContext ?: return
+        scope.launch {
+            // Step 1 — flush what's already in memory.
+            api.flushNow()
+            // Step 2 — persist anything that's still there after the flush
+            // (mid-retry snapshots, or events that arrived since).
+            val snapshot = api.snapshotQueue()
+            if (snapshot.isNotEmpty()) {
+                queue.persist(snapshot)
+            }
+            // Step 3 — enqueue the WorkManager flush job.
+            enqueueFlushWorker(ctx)
+        }
+    }
+
+    /**
+     * Enqueues an [EventFlushWorker] with the per-session config values
+     * (sdkKey, accountId, projectId, trackEndpoint) packed into the
+     * work request's [androidx.work.Data] bundle. The worker pulls
+     * the persisted event list off disk and POSTs it when the
+     * network constraint is satisfied.
+     */
+    @Suppress("ReturnCount") // 3 early-return guards — sdkKey / projectId /
+    // accountId all required for a meaningful enqueue; without any one of
+    // them the worker has nothing useful to POST. Coalescing into a
+    // compound boolean would hide which field was missing.
+    private fun enqueueFlushWorker(context: Context) {
+        val sdkKey = config.sdkKey ?: return
+        val projectId = config.data?.project?.id ?: return
+        val accountId = config.data?.accountId ?: return
+        val trackEndpoint = (
+            config.api?.endpoint?.track
+                ?: com.convert.sdk.core.config.ConfigDefaults.DEFAULT_TRACK_ENDPOINT
+            ).replace(TEMPLATE_PROJECT_ID, projectId)
+
+        val inputData = Data.Builder()
+            .putString(EventFlushWorker.KEY_SDK_KEY, sdkKey)
+            .putString(EventFlushWorker.KEY_PROJECT_ID, projectId)
+            .putString(EventFlushWorker.KEY_ACCOUNT_ID, accountId)
+            .putString(EventFlushWorker.KEY_TRACK_ENDPOINT, trackEndpoint)
+            .build()
+
+        val request = OneTimeWorkRequestBuilder<EventFlushWorker>()
+            .setInputData(inputData)
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build(),
+            )
+            .setBackoffCriteria(
+                BackoffPolicy.EXPONENTIAL,
+                WORKER_BACKOFF_DELAY_SECONDS,
+                TimeUnit.SECONDS,
+            )
+            .build()
+
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            EventFlushWorker.UNIQUE_WORK_NAME,
+            ExistingWorkPolicy.REPLACE,
+            request,
+        )
+    }
+
+    /**
+     * Test-only hook — lets
+     * [com.convert.sdk.android.ConvertSDKLifecycleHooksTest] drive the
+     * Story 5.3 AC-2 path without reaching into
+     * [androidx.lifecycle.ProcessLifecycleOwner]. Production code never
+     * calls this.
+     */
+    internal fun onProcessStopForTest() {
+        onProcessStop()
+    }
+
+    /**
+     * Test-only hook — lets
+     * [com.convert.sdk.android.ConvertSDKLifecycleHooksTest] drive the
+     * Story 5.3 AC-3 path. See [onProcessStopForTest].
+     */
+    internal fun onProcessStartForTest() {
+        onProcessStart()
     }
 
     /**
@@ -762,6 +935,24 @@ public class ConvertSDK internal constructor(
          * SDK controls its own SharedPreferences schema.
          */
         internal const val VISITOR_ID_KEY: String = "visitor_id"
+
+        /**
+         * Template literal in the default tracking endpoint URL that
+         * holds the merchant project id; replaced at enqueue time in
+         * [enqueueFlushWorker]. Must match the constant ApiManager uses
+         * for the foreground flush path so both paths hit the same URL.
+         */
+        private const val TEMPLATE_PROJECT_ID: String = "[project_id]"
+
+        /**
+         * Initial delay (seconds) for the [BackoffPolicy.EXPONENTIAL]
+         * retry cadence on [EventFlushWorker] (Story 5.3 AC-6).
+         * 10s aligns with the foreground retry base (architecture:
+         * 10s → 20s → 40s), is WorkManager's minimum backoff, and is
+         * cited in the patched spec (F-071 option a). [Source:
+         * https://developer.android.com/reference/androidx/work/WorkRequest.Builder#setBackoffCriteria(androidx.work.BackoffPolicy,%20java.time.Duration)]
+         */
+        private const val WORKER_BACKOFF_DELAY_SECONDS: Long = 10L
 
         /**
          * Creates a new [Builder].
