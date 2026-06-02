@@ -7,8 +7,10 @@ package com.convert.sdk.android
 
 import android.content.Context
 import com.convert.sdk.android.adapter.AndroidLogger
+import com.convert.sdk.android.adapter.FileConfigCache
 import com.convert.sdk.android.adapter.OkHttpClientAdapter
 import com.convert.sdk.android.adapter.SharedPrefsDataStore
+import com.convert.sdk.core.api.ApiManager
 import com.convert.sdk.core.config.ApiConfig
 import com.convert.sdk.core.config.ApiEndpoint
 import com.convert.sdk.core.config.BucketingConfig
@@ -21,6 +23,7 @@ import com.convert.sdk.core.config.RulesConfig
 import com.convert.sdk.core.data.DataManager
 import com.convert.sdk.core.event.EventManager
 import com.convert.sdk.core.event.SystemEvents
+import com.convert.sdk.core.internal.bigDecimalSerializersModule
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.port.DataStore
@@ -31,6 +34,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -618,6 +622,38 @@ public class ConvertSDK internal constructor(
                 environment = assembled.environment,
             )
 
+            // 6. Story 2.2 collaborators: ApiManager for the CDN fetch,
+            // FileConfigCache for the offline cold-start fallback. The
+            // shared Json instance has `ignoreUnknownKeys = true` +
+            // `explicitNulls = false` so that the fetch and the cache see
+            // the same set of fields (NFR12: forward-compatible schemas).
+            //
+            // Story 2.2 AC-12 (F-172): the shared Json must register
+            // [bigDecimalSerializersModule] so that the encode path on
+            // FileConfigCache.write does not throw
+            // `kotlinx.serialization.SerializationException: Serializer
+            // for class 'BigDecimal' is not found` when ConfigResponseData
+            // carries a non-null `@Contextual java.math.BigDecimal?` field
+            // (e.g. ConfigProjectSettings.minOrderValue / maxOrderValue).
+            // FileConfigCache MUST receive this Json by injection — it
+            // must NOT instantiate its own.
+            val sharedJson = Json {
+                ignoreUnknownKeys = true
+                explicitNulls = false
+                serializersModule = bigDecimalSerializersModule
+            }
+            val apiManager = ApiManager(
+                httpClient = httpClient,
+                logger = logger,
+                config = assembled,
+                json = sharedJson,
+            )
+            val fileConfigCache = FileConfigCache(
+                context = appContext,
+                logger = logger,
+                json = sharedJson,
+            )
+
             val sdk = ConvertSDK(
                 config = assembled,
                 appContext = appContext,
@@ -628,18 +664,20 @@ public class ConvertSDK internal constructor(
                 initialDataManager = dataManager,
             )
 
-            // Direct-data mode (AC-3). We delay the setData call onto the
-            // SDK's scope so consumers can register `onReady { ... }` after
-            // `build()` returns and still be notified (Gotcha 8, option b).
-            val prefetched = assembled.data
-            if (prefetched != null) {
-                sdk.scope.launch {
-                    dataManager.setData(prefetched)
-                }
-            }
-            // sdk-key mode: Story 2.2 launches the config fetch here; for
-            // Story 2.1 the fetch is not yet wired. onReady will not fire
-            // until Story 2.2's ApiManager resolves.
+            // Direct-data mode (AC-3) or sdk-key mode (AC-5/6/7) — delegate
+            // to the file-private seeding helper so that `build()` stays
+            // under the detekt LongMethod threshold and the seeding logic
+            // is readable as a single unit. The helper lives at file scope
+            // (not inside Builder) so the Builder's function count stays
+            // under the TooManyFunctions threshold with headroom.
+            launchInitialDataSeed(
+                sdk = sdk,
+                dataManager = dataManager,
+                apiManager = apiManager,
+                fileConfigCache = fileConfigCache,
+                logger = logger,
+                assembled = assembled,
+            )
 
             return sdk
         }
@@ -741,3 +779,80 @@ public class ConvertSDK internal constructor(
         }
     }
 }
+
+/**
+ * Schedules the SDK's initial configuration seed on the SDK scope.
+ *
+ * Three branches per the Story 2.2 wiring:
+ *  - Direct-data (`data != null`): launch `setData(prefetched)` so
+ *    consumers can register `onReady { ... }` after `build()` returns
+ *    and still see the READY broadcast (Story 2.1 Gotcha 8, option b).
+ *  - sdk-key (`sdkKey != null`, `data == null`): launch the network
+ *    fetch; on success seed + write-cache fire-and-forget; on failure
+ *    try the local cache; if both fail, log a WARN and stay unready
+ *    (AC-7).
+ *  - Neither: no-op — the Builder already logged a WARN. The SDK stays
+ *    unready; consumer code will see null returns.
+ *
+ * ### Why file-scope private
+ *
+ * Extracted out of `Builder.build()` to keep the `build` method under
+ * detekt's `LongMethod` ceiling (60 lines). Kept at file scope (not
+ * inside Builder) so Builder stays under the `TooManyFunctions`
+ * threshold with headroom; the helper is conceptually SDK-scope — it
+ * operates on an already-built `ConvertSDK` — and Builder's 17+ fluent
+ * setters are the only reason the class sits near the function limit at
+ * all.
+ */
+@Suppress("LongParameterList")
+private fun launchInitialDataSeed(
+    sdk: ConvertSDK,
+    dataManager: DataManager,
+    apiManager: ApiManager,
+    fileConfigCache: FileConfigCache,
+    logger: Logger,
+    assembled: ConvertConfig,
+) {
+    val prefetched = assembled.data
+    if (prefetched != null) {
+        sdk.scope.launch {
+            dataManager.setData(prefetched)
+        }
+        return
+    }
+    if (assembled.sdkKey == null) return
+
+    sdk.scope.launch {
+        val fetched = apiManager.fetchConfig()
+        if (fetched != null) {
+            dataManager.setData(fetched)
+            // Fire-and-forget cache write — the cache is strictly a
+            // fallback, so a failure here must not block the main flow
+            // (AC-5).
+            sdk.scope.launch { fileConfigCache.write(fetched) }
+        } else {
+            val cached = fileConfigCache.read()
+            if (cached != null) {
+                // AC-6 — mirror the story's literal log phrasing so
+                // operators grep consistently across SDK versions.
+                logger.info(
+                    message = "ApiManager: network fetch failed, loaded config from cache",
+                    tag = INIT_SEED_TAG,
+                )
+                dataManager.setData(cached)
+            } else {
+                // AC-7 — again, matching the story's literal phrasing so
+                // this canonical warning is easy to find in aggregated
+                // logs.
+                logger.warn(
+                    message = "ApiManager: no cached config available, SDK will return null " +
+                        "from public methods until network fetch succeeds",
+                    tag = INIT_SEED_TAG,
+                )
+            }
+        }
+    }
+}
+
+/** Log tag for [launchInitialDataSeed] messages. */
+private const val INIT_SEED_TAG: String = "ConvertSDK"

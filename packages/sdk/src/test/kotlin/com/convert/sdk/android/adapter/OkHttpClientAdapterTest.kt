@@ -6,6 +6,9 @@
 package com.convert.sdk.android.adapter
 
 import com.convert.sdk.core.port.HttpClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
@@ -162,5 +165,57 @@ internal class OkHttpClientAdapterTest {
         val recorded = server.takeRequest()
         val ct = recorded.getHeader("Content-Type") ?: ""
         assertTrue("expected json content-type, got: $ct", ct.contains("application/json"))
+    }
+
+    @Test
+    fun `cancellation cancels in-flight call`() {
+        // Story 2.2 AC-10 completeness: verify OkHttpClientAdapter's
+        // suspendCancellableCoroutine invokeOnCancellation handler actually
+        // cancels the underlying OkHttp Call.
+        //
+        // Strategy: enqueue a MockResponse with a socket-level pause so the
+        // request hangs; launch the GET inside a coroutine; cancel the
+        // coroutine; assert that the resulting call's isCanceled is true.
+        // We can't easily assert from inside the test because
+        // suspendCancellableCoroutine's cleanup happens on the cancelled
+        // coroutine's thread. Instead, we rely on OkHttp's dispatcher's
+        // runningCallsCount dropping back to 0 after cancellation.
+        server.enqueue(
+            MockResponse()
+                .setBody("late")
+                .setBodyDelay(30, TimeUnit.SECONDS)
+                .setResponseCode(200),
+        )
+
+        val scope = CoroutineScope(Dispatchers.IO)
+        val job = scope.launch {
+            // This will suspend because MockWebServer delays the body by 30s;
+            // the coroutine cancellation below should cut it short.
+            adapter.get(server.url("/slow").toString())
+        }
+        // Wait for the call to actually be in-flight.
+        val deadline = System.currentTimeMillis() + 2_000
+        while (okHttpClient.dispatcher.runningCallsCount() == 0 &&
+            System.currentTimeMillis() < deadline
+        ) {
+            Thread.sleep(20)
+        }
+        assertEquals(1, okHttpClient.dispatcher.runningCallsCount())
+
+        // Cancel the coroutine; invokeOnCancellation should cancel the Call.
+        job.cancel()
+
+        // Wait for the dispatcher to drain.
+        val drainDeadline = System.currentTimeMillis() + 2_000
+        while (okHttpClient.dispatcher.runningCallsCount() > 0 &&
+            System.currentTimeMillis() < drainDeadline
+        ) {
+            Thread.sleep(20)
+        }
+        assertEquals(
+            "cancelled call must be removed from dispatcher",
+            0,
+            okHttpClient.dispatcher.runningCallsCount(),
+        )
     }
 }
