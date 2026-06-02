@@ -24,6 +24,12 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Story 7.1 AC-3 (F-166) — Application subclass that initialises the
@@ -60,6 +66,14 @@ import kotlinx.coroutines.launch
  * `"demo-sdk-key"` is used; the SDK initialises, the first config
  * fetch fails quietly, and the rest of the demo still launches
  * cleanly (plenty for scaffolding / AC-10).
+ *
+ * Story 7.7 — the deployment environment is ALSO sourced from
+ * `local.properties` via [BuildConfig.convertEnvironment]. When the
+ * value is blank (the default — fallback literal is `""`), the
+ * `ConvertSDK.Builder.environment(...)` call is skipped entirely and
+ * the Config screen's Environment row renders `(not set)`. When
+ * populated (e.g. `convertEnvironment=staging`), the value is passed
+ * through to the builder and surfaced in the Config snapshot.
  */
 class DemoApplication : Application() {
 
@@ -93,12 +107,34 @@ class DemoApplication : Application() {
      * createContext call itself touches disk for visitor-id
      * persistence and so must not run on the main thread either.
      *
+     * After construction the context is seeded with:
+     *  - **Visitor attributes** from [BuildConfig.convertVisitorAttributes]
+     *    (a JSON object string, e.g. `{"mobile":true}`). The staging
+     *    project's "adv-audience" rule requires `mobile=true` OR
+     *    `(desktop=true AND browser!="CH")` — setting `mobile=true` here
+     *    satisfies the mobile branch, which is correct for any Android target.
+     *  - **Location properties** from [BuildConfig.convertLocationProperties]
+     *    (a JSON object string, e.g. `{"location":"pricing"}`). The staging
+     *    project's "pricing-location" rule requires `location=pricing` —
+     *    the default value satisfies that gate. Both values are tunable
+     *    via `local.properties` without rebuilding the source.
+     *
+     * Empty JSON objects (`{}`) are treated as "no attributes / no location
+     * properties" so the test build (which reads `test.properties` pins of
+     * `{}` for both fields) never injects staging-specific state into the
+     * fake-runner unit-test path.
+     *
      * Kept `internal` for the same reason as [sdkDeferred] — future
      * runners (features, conversions) can compose against it directly.
      */
     internal val contextDeferred: Deferred<ConvertContext> by lazy {
         applicationScope.async(Dispatchers.Default, start = CoroutineStart.LAZY) {
-            sdkDeferred.await().createContext()
+            val ctx = sdkDeferred.await().createContext()
+            val attrs = parseJsonObjectToMap(BuildConfig.convertVisitorAttributes)
+            if (attrs.isNotEmpty()) ctx.setAttributes(attrs)
+            val locationProps = parseJsonObjectToMap(BuildConfig.convertLocationProperties)
+            if (locationProps.isNotEmpty()) ctx.setLocationProperties(locationProps)
+            ctx
         }
     }
 
@@ -117,11 +153,24 @@ class DemoApplication : Application() {
      * [sdkDeferred] coroutine on [Dispatchers.Default]. Extracted so
      * the dispatcher hop happens at exactly one point and the build
      * chain stays readable.
+     *
+     * Story 7.7 — assembles the builder via a step-by-step `var` so
+     * `.environment(...)` is applied only when the `local.properties`
+     * override is non-blank. The empty-string fallback for
+     * [BuildConfig.convertEnvironment] signals "not configured" and
+     * MUST NOT be forwarded to the builder (doing so would set a
+     * real but invalid environment tag on the SDK).
      */
-    private fun buildSdk(): ConvertSDK = ConvertSDK.builder(this)
-        .sdkKey(BuildConfig.convertSdkKey)
-        .logLevel(LogLevel.DEBUG)
-        .build()
+    private fun buildSdk(): ConvertSDK {
+        var builder = ConvertSDK.builder(this)
+            .sdkKey(BuildConfig.convertSdkKey)
+            .logLevel(LogLevel.DEBUG)
+        val environment = BuildConfig.convertEnvironment
+        if (environment.isNotBlank()) {
+            builder = builder.environment(environment)
+        }
+        return builder.build()
+    }
 
     /**
      * Builds an [EventSubscriber] that bridges the demo ViewModel's
@@ -288,10 +337,50 @@ class DemoApplication : Application() {
         val tracking = sdk?.let { runCatching { it.isTrackingEnabled() }.getOrNull() }
         ConfigSnapshot(
             sdkKey = BuildConfig.convertSdkKey,
-            environment = null,
+            environment = BuildConfig.convertEnvironment.takeIf { it.isNotBlank() },
             experienceKeys = experiences.mapNotNull { it.experienceKey },
             featureKeys = features.mapNotNull { it.key },
             trackingEnabled = tracking,
         )
     }
+}
+
+/**
+ * Parses a JSON object string (e.g. `{"mobile":true,"browser":"CH"}`) into
+ * a `Map<String, Any?>` suitable for [com.convert.sdk.android.ConvertContext.setAttributes]
+ * and [com.convert.sdk.android.ConvertContext.setLocationProperties].
+ *
+ * Coercion rules for JSON primitive values:
+ *  - Boolean JSON values → Kotlin [Boolean]
+ *  - Numeric JSON values that are exact integers → Kotlin [Int]
+ *  - Other numeric JSON values → Kotlin [Double]
+ *  - String JSON values → Kotlin [String]
+ *
+ * An empty JSON object (`{}`) or a blank string returns [emptyMap], which
+ * the [DemoApplication] contextDeferred treats as "no attributes to set" —
+ * this is intentional so the `test.properties` pin of `{}` for both
+ * attribute fields is a clean no-op in the unit-test path.
+ *
+ * Any parse error is swallowed and returns [emptyMap] — the demo must not
+ * crash if a developer puts a malformed string in `local.properties`.
+ */
+private fun parseJsonObjectToMap(jsonString: String): Map<String, Any?> {
+    if (jsonString.isBlank()) return emptyMap()
+    return runCatching {
+        val obj = Json.parseToJsonElement(jsonString) as? JsonObject
+            ?: return@runCatching emptyMap()
+        obj.entries.associate { (key, element) ->
+            val primitive = runCatching { element.jsonPrimitive }.getOrNull()
+            val value: Any? = when {
+                primitive == null -> element.toString()
+                primitive.booleanOrNull != null -> primitive.boolean
+                primitive.doubleOrNull != null -> {
+                    val d = primitive.doubleOrNull!!
+                    if (d % 1.0 == 0.0 && !d.isInfinite()) d.toInt() else d
+                }
+                else -> primitive.content
+            }
+            key to value
+        }
+    }.getOrDefault(emptyMap())
 }
