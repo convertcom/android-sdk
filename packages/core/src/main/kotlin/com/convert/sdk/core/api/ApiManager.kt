@@ -13,6 +13,7 @@ import com.convert.sdk.core.port.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -390,16 +391,25 @@ public open class ApiManager(
      * @param experienceId the experience id (not key — tracking payload
      *   references the stable id).
      * @param variationId the id of the selected variation.
+     * @param segments merged default + custom segments snapshot from the
+     *   calling [com.convert.sdk.android.ConvertContext] (Story 4.4 AC-3).
+     *   Defaults to empty so legacy call sites predating segment wiring
+     *   keep compiling. Story 5.1 will fold this value into the outbound
+     *   `Visitor` payload — the stub today just logs the size for
+     *   observability.
      */
+    @JvmOverloads
     public open fun enqueueBucketingEvent(
         visitorId: String,
         experienceId: String,
         variationId: String,
+        segments: Map<String, JsonElement> = emptyMap(),
     ) {
         // Intentional no-op — Story 5.1 implements.
         logger.debug(
             message = "ApiManager.enqueueBucketingEvent() stub — " +
-                "visitorId=$visitorId experienceId=$experienceId variationId=$variationId",
+                "visitorId=$visitorId experienceId=$experienceId variationId=$variationId " +
+                "segmentsSize=${segments.size}",
             tag = TAG,
         )
     }
@@ -431,16 +441,25 @@ public open class ApiManager(
      *   ([com.convert.sdk.core.model.GoalData]) — `null` for a bare
      *   conversion hit, non-null when the caller supplied revenue or
      *   custom-dimension fields.
+     * @param segments merged default + custom segments snapshot from the
+     *   calling [com.convert.sdk.android.ConvertContext] (Story 4.4 AC-3).
+     *   Defaults to empty so legacy call sites predating segment wiring
+     *   keep compiling. Story 5.1 will fold this value into the outbound
+     *   `Visitor` payload — the stub today just logs the size for
+     *   observability.
      */
+    @JvmOverloads
     public open fun enqueueConversionEvent(
         visitorId: String,
         goalId: String,
         goalData: List<com.convert.sdk.core.model.GoalData>?,
+        segments: Map<String, JsonElement> = emptyMap(),
     ) {
         // Intentional no-op — Story 5.1 implements.
         logger.debug(
             message = "ApiManager.enqueueConversionEvent() stub — " +
-                "visitorId=$visitorId goalId=$goalId goalDataSize=${goalData?.size ?: 0}",
+                "visitorId=$visitorId goalId=$goalId goalDataSize=${goalData?.size ?: 0} " +
+                "segmentsSize=${segments.size}",
             tag = TAG,
         )
     }
