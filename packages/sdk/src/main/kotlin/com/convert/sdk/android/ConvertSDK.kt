@@ -11,8 +11,10 @@ import android.os.Looper
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.convert.sdk.android.adapter.AndroidLogger
 import com.convert.sdk.android.adapter.FileConfigCache
+import com.convert.sdk.android.adapter.FileEventQueue
 import com.convert.sdk.android.adapter.OkHttpClientAdapter
 import com.convert.sdk.android.adapter.SharedPrefsDataStore
+import com.convert.sdk.android.lifecycle.NetworkObserver
 import com.convert.sdk.android.lifecycle.SdkLifecycleObserver
 import com.convert.sdk.core.api.ApiManager
 import com.convert.sdk.core.bucketing.BucketingManager
@@ -32,6 +34,7 @@ import com.convert.sdk.core.internal.sharedSerializersModule
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.port.DataStore
+import com.convert.sdk.core.port.EventQueue
 import com.convert.sdk.core.port.HttpClient
 import com.convert.sdk.core.port.Logger
 import com.convert.sdk.core.rules.RuleManager
@@ -116,10 +119,20 @@ public class ConvertSDK internal constructor(
     initialDataManager: DataManager? = null,
     apiManager: ApiManager? = null,
     internal val fileConfigCache: FileConfigCache? = null,
+    internal val fileEventQueue: EventQueue? = null,
+    networkObserver: NetworkObserver? = null,
     initialBucketingManager: BucketingManager? = null,
     initialRuleManager: RuleManager? = null,
     scope: CoroutineScope? = null,
 ) {
+
+    /**
+     * Optional [NetworkObserver] that triggers an offline-queue drain
+     * whenever the OS default network becomes available again (Story 5.2
+     * AC-4). Null in pure-JVM tests that do not need the android system
+     * service. Kept `internal` so tests can inspect / swap if needed.
+     */
+    internal val networkObserver: NetworkObserver? = networkObserver
 
     /**
      * Mutable [ApiManager] reference — Story 3.2 SDK-4 introduces a
@@ -282,6 +295,48 @@ public class ConvertSDK internal constructor(
         // out-of-order ON_START fired during the initial READY burst.
         if (appContext != null && apiManager != null) {
             registerLifecycleObserverWhenReady()
+        }
+        // Story 5.2 AC-4: NetworkObserver registration deliberately does
+        // NOT happen here in the init block — it is called by
+        // [Builder.build] after it has assigned its `sdkRef[0] = sdk`
+        // holder. If we registered here, the OS may synchronously fire
+        // `onAvailable` on a binder thread before the Builder's
+        // late-bound reference is assigned, and the
+        // `sdkRef[0]?.onNetworkAvailable()` callback no-ops against a
+        // null. Deferring to the Builder avoids the race.
+    }
+
+    /**
+     * Registers the [NetworkObserver] once the SDK reference is fully
+     * assembled. Callable only from [Builder.build] to preserve the
+     * late-binding contract described in the init-block comment.
+     */
+    internal fun registerNetworkObserver() {
+        networkObserver?.register()
+    }
+
+    /**
+     * Re-enqueues any events persisted offline and kicks a flush —
+     * driven by [NetworkObserver] on default-network restore (Story 5.2
+     * AC-4). Reading the queue is cheap when the file is absent (returns
+     * an empty list), so this runs unconditionally on every `onAvailable`
+     * tick and short-circuits when there's nothing to drain.
+     *
+     * Runs on the SDK [scope]; [EventQueue.read] and [EventQueue.clear]
+     * both suspend on [Dispatchers.IO] inside
+     * [com.convert.sdk.android.adapter.FileEventQueue].
+     */
+    internal fun onNetworkAvailable() {
+        val api = apiManager ?: return
+        val queue = fileEventQueue ?: return
+        scope.launch {
+            val persisted = queue.read()
+            if (persisted.isEmpty()) return@launch
+            api.reenqueuePersisted(persisted)
+            queue.clear()
+            // Re-use the existing flush() path — it already handles
+            // retry + re-persist if the network is flaky again.
+            api.flushNow()
         }
     }
 
@@ -903,6 +958,9 @@ public class ConvertSDK internal constructor(
          *
          * @return a new [ConvertSDK] ready for use.
          */
+        @Suppress("LongMethod") // +6 over 60 after Story 5.2 wiring — extraction
+        // would spread ConvertSDK's all-at-once DI graph across several
+        // helpers and obscure the construction order comments. Acceptable.
         public fun build(): ConvertSDK {
             val assembled = assembleConfig()
 
@@ -961,13 +1019,24 @@ public class ConvertSDK internal constructor(
                 json = sharedJson,
             )
 
-            // 6. Story 2.2 / 5.1 collaborators: ApiManager (CDN fetch +
-            // outbound tracking queue) and FileConfigCache (offline cold-start
-            // fallback). See [buildApiManager] for the full wiring rationale.
-            // Story 2.2 AC-12 (F-172): FileConfigCache must receive the
-            // shared Json so its encode path does not throw on @Contextual
+            // 6. Story 2.2 / 5.1 / 5.2 collaborators: FileEventQueue
+            // (offline persistence of undelivered events) is wired into
+            // ApiManager so the retry + persist path (Story 5.2 AC-2/3)
+            // has a durable fallback store; FileConfigCache provides the
+            // offline cold-start config fallback.
+            // Story 2.2 AC-12 (F-172): FileConfigCache receives the shared
+            // Json so its encode path does not throw on @Contextual
             // BigDecimal fields.
-            val apiManager = buildApiManager(httpClient, logger, assembled, sharedJson, eventManager, sdkScope)
+            val fileEventQueue: EventQueue = FileEventQueue(context = appContext, logger = logger)
+            val apiManager = buildApiManager(
+                httpClient,
+                logger,
+                assembled,
+                sharedJson,
+                eventManager,
+                sdkScope,
+                fileEventQueue,
+            )
             val fileConfigCache = FileConfigCache(
                 context = appContext,
                 logger = logger,
@@ -983,6 +1052,18 @@ public class ConvertSDK internal constructor(
             val bucketingManager = BucketingManager(config = assembled, logger = logger)
             val ruleManager = RuleManager(config = assembled, logger = logger)
 
+            // Story 5.2 AC-4: NetworkObserver wraps
+            // ConnectivityManager.NetworkCallback. The constructed
+            // observer captures the final `sdk` reference via a late
+            // closure so the onNetworkAvailable hook can reach into the
+            // built SDK's onNetworkAvailable() method. Using a mutable
+            // holder (lateInitSdk) because `sdk` has not been constructed
+            // yet at the point NetworkObserver is wired.
+            val sdkRef: Array<ConvertSDK?> = arrayOfNulls(1)
+            val networkObserver = NetworkObserver(context = appContext) {
+                sdkRef[0]?.onNetworkAvailable()
+            }
+
             val sdk = ConvertSDK(
                 config = assembled,
                 appContext = appContext,
@@ -993,10 +1074,20 @@ public class ConvertSDK internal constructor(
                 initialDataManager = dataManager,
                 apiManager = apiManager,
                 fileConfigCache = fileConfigCache,
+                fileEventQueue = fileEventQueue,
+                networkObserver = networkObserver,
                 initialBucketingManager = bucketingManager,
                 initialRuleManager = ruleManager,
                 scope = sdkScope,
             )
+            sdkRef[0] = sdk
+            // Now that the late-bound sdkRef is populated, it is safe to
+            // register the NetworkObserver. The callback closure uses
+            // sdkRef[0]?.onNetworkAvailable(); any synchronous OS-fired
+            // onAvailable tick during register() would have observed a
+            // null sdkRef[0] if we had registered inside ConvertSDK.init
+            // (see the commentary there).
+            sdk.registerNetworkObserver()
 
             // Direct-data mode (AC-3) or sdk-key mode (AC-5/6/7) — delegate
             // to the file-private seeding helper so that `build()` stays
@@ -1304,6 +1395,7 @@ private fun buildApiManager(
     sharedJson: Json,
     eventManager: com.convert.sdk.core.event.EventManager,
     sdkScope: CoroutineScope,
+    eventQueue: EventQueue,
 ): ApiManager = ApiManager(
     httpClient = httpClient,
     logger = logger,
@@ -1311,6 +1403,7 @@ private fun buildApiManager(
     json = sharedJson,
     eventManager = eventManager,
     scope = sdkScope,
+    eventQueue = eventQueue,
 )
 
 private fun buildSdkScope(logger: Logger): CoroutineScope =
