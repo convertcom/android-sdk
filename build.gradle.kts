@@ -5,6 +5,7 @@ plugins {
     // com.android.library modules. See gradle/libs.versions.toml for the rationale.
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.android.library) apply false
+    alias(libs.plugins.kover) apply false
 }
 
 // Resolve the detekt version from the version catalog at configuration time

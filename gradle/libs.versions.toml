@@ -13,6 +13,7 @@ detekt = "1.23.6"
 vanniktechMavenPublish = "0.36.0"
 junitJupiter = "5.11.4"
 mockk = "1.13.13"
+kover = "0.9.8"
 
 [libraries]
 # Core module runtime dependencies (pure JVM — no Android)
@@ -45,3 +46,4 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
 vanniktech-maven-publish = { id = "com.vanniktech.maven.publish", version.ref = "vanniktechMavenPublish" }
+kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
