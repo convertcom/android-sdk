@@ -159,6 +159,18 @@ dependencies {
     // to developers reading this file).
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
+    // Story 7.4 — kotlinx-serialization-json. The SDK's public
+    // [com.convert.sdk.core.model.Feature.variables] field is typed
+    // `Map<String, JsonElement>?`, but `packages/core` declares
+    // serialization as an `implementation` dependency (not `api`) so
+    // the `JsonElement` / `JsonPrimitive` types do NOT transitively land
+    // on the demo's compile classpath. The Features screen inspects
+    // variables' primitive shape to emit user-facing type labels
+    // (`[String]`, `[Int]`, etc. per AC-4) — that inspection requires
+    // the types be visible here. Version pinned to match the SDK's
+    // version catalog (`gradle/libs.versions.toml` → `kotlinxSerialization`).
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.10.0")
+
     // Debug-only Compose tooling
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

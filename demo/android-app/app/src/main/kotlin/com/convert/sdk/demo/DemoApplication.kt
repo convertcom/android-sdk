@@ -8,10 +8,12 @@ package com.convert.sdk.demo
 import android.app.Application
 import com.convert.sdk.android.ConvertContext
 import com.convert.sdk.android.ConvertSDK
+import com.convert.sdk.core.model.Feature
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.Variation
 import com.convert.sdk.demo.viewmodel.EventSubscriber
 import com.convert.sdk.demo.viewmodel.ExperienceRunner
+import com.convert.sdk.demo.viewmodel.FeatureRunner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
@@ -162,6 +164,40 @@ class DemoApplication : Application() {
         override fun runExperiences(): List<Variation> =
             if (contextDeferred.isCompleted) {
                 contextDeferred.getCompleted().runExperiences()
+            } else {
+                emptyList()
+            }
+    }
+
+    /**
+     * Story 7.4 — builds a [FeatureRunner] that delegates to the
+     * pre-warmed per-visitor [ConvertContext] from [contextDeferred].
+     *
+     * Same off-main-thread + null-on-not-ready discipline as
+     * [experienceRunner]: an O(1) `isCompleted` check against
+     * [contextDeferred] guards the SDK access; when the context has
+     * not landed yet, [runFeature] returns `null` and [runFeatures]
+     * returns an empty list — exactly matching the [FeatureRunner]
+     * contract ("when the feature is unknown or the SDK is not
+     * ready" / "when no features are configured or the config is not
+     * loaded").
+     *
+     * Sharing [contextDeferred] across both runners is intentional:
+     * `ConvertSDK.createContext()` reads the auto-persisted visitor id
+     * once per process, so re-creating it would be wasteful. The two
+     * runners observe the same sticky bucketing.
+     */
+    fun featureRunner(): FeatureRunner = object : FeatureRunner {
+        override fun runFeature(featureKey: String): Feature? =
+            if (contextDeferred.isCompleted) {
+                contextDeferred.getCompleted().runFeature(featureKey)
+            } else {
+                null
+            }
+
+        override fun runFeatures(): List<Feature> =
+            if (contextDeferred.isCompleted) {
+                contextDeferred.getCompleted().runFeatures()
             } else {
                 emptyList()
             }

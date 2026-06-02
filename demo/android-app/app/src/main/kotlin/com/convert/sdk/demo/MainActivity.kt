@@ -149,6 +149,7 @@ private class SdkViewModelFactory(private val demoApp: DemoApplication) : ViewMo
             eventSubscriber = demoApp.eventSubscriber(),
             initialNetworkOnline = true,
             experienceRunner = demoApp.experienceRunner(),
+            featureRunner = demoApp.featureRunner(),
         ) as T
     }
 }

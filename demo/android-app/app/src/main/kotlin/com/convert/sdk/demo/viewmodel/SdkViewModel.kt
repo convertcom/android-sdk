@@ -7,6 +7,7 @@ package com.convert.sdk.demo.viewmodel
 
 import androidx.lifecycle.ViewModel
 import com.convert.sdk.core.event.SystemEvents
+import com.convert.sdk.core.model.Feature
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.Variation
 import com.convert.sdk.core.port.Logger
@@ -69,6 +70,7 @@ class SdkViewModel(
     eventSubscriber: EventSubscriber,
     initialNetworkOnline: Boolean = true,
     private val experienceRunner: ExperienceRunner = NoOpExperienceRunner,
+    private val featureRunner: FeatureRunner = NoOpFeatureRunner,
 ) : ViewModel() {
 
     private val _events = MutableStateFlow<List<InspectorEvent>>(emptyList())
@@ -114,6 +116,16 @@ class SdkViewModel(
      * roll off the tail when a new one is prepended.
      */
     val results: StateFlow<List<ExperienceResult>> = _results.asStateFlow()
+
+    private val _featureResults = MutableStateFlow<List<FeatureResult>>(emptyList())
+
+    /**
+     * Story 7.4 — newest-first list of Features-screen outcomes.
+     * Independent of [results] so the developer can freely tap
+     * either screen's buttons without the two lists interfering.
+     * Capped at [RESULTS_CAP]; older entries roll off the tail.
+     */
+    val featureResults: StateFlow<List<FeatureResult>> = _featureResults.asStateFlow()
 
     /**
      * Internal logger that both forwards to any delegate the caller
@@ -263,6 +275,118 @@ class SdkViewModel(
         }
     }
 
+    /**
+     * Story 7.4 AC-2 / AC-5 — evaluates [featureKey] via the injected
+     * [FeatureRunner] and prepends a [FeatureResult] to [featureResults].
+     *
+     * A non-null return (ENABLED or DISABLED, both valid outcomes) → a
+     * non-error result carrying the evaluated state, the resolving
+     * experience key when present, and every typed variable mapped to
+     * a [TypedVariable] row via [TypedVariable.fromJson].
+     *
+     * A `null` return → error result (AC-5) whose title tells the
+     * developer the feature produced no evaluation and whose hint
+     * nudges them to check feature config or audience rules.
+     *
+     * Side-effect: the underlying SDK fires [SystemEvents.BUCKETING]
+     * on its pub/sub bus (features resolve through experience
+     * bucketing per Story 4.1 AC-3) which this same ViewModel already
+     * subscribes to — so the Events tab lights up automatically. No
+     * manual [onSdkEvent] call is needed from this method.
+     */
+    fun runFeature(featureKey: String) {
+        val feature = featureRunner.runFeature(featureKey)
+        val result = buildFeatureResult(requestedKey = featureKey, feature = feature)
+        appendFeatureResult(result)
+    }
+
+    /**
+     * Story 7.4 AC-3 — evaluates every configured feature for this
+     * visitor via the injected [FeatureRunner] and prepends one
+     * [FeatureResult] per returned [Feature].
+     *
+     * An empty return (no features / config not ready) yields a
+     * single hint result so the developer sees an actionable card
+     * rather than a silent no-op — symmetric with
+     * [runAllExperiences]'s empty-list handling.
+     *
+     * Results are prepended in emission order, which means the last
+     * feature in the returned list ends up at the head of
+     * [featureResults] (newest-first convention — matches the Events
+     * inspector and the Experiences screen).
+     */
+    fun runFeatures() {
+        val features = featureRunner.runFeatures()
+        if (features.isEmpty()) {
+            appendFeatureResult(
+                FeatureResult(
+                    id = FeatureResult.nextId(),
+                    featureKey = "(none)",
+                    enabled = false,
+                    isError = true,
+                    errorMessage = "No eligible features",
+                    errorHint = "Visitor did not match any feature's audience " +
+                        "or config has not loaded yet.",
+                ),
+            )
+            return
+        }
+        features.forEach { feature ->
+            appendFeatureResult(
+                buildFeatureResult(
+                    requestedKey = feature.key ?: "(unknown)",
+                    feature = feature,
+                ),
+            )
+        }
+    }
+
+    /** Story 7.4 — drops every FeatureResult card from the screen. */
+    fun clearFeatureResults() {
+        _featureResults.value = emptyList()
+    }
+
+    private fun appendFeatureResult(result: FeatureResult) {
+        _featureResults.update { current ->
+            val prepended = listOf(result) + current
+            if (prepended.size <= RESULTS_CAP) prepended else prepended.take(RESULTS_CAP)
+        }
+    }
+
+    /**
+     * Shared mapping: `Feature?` (SDK shape) → `FeatureResult` (demo UI
+     * shape). Centralised so [runFeature] and [runFeatures] produce
+     * identical-looking cards for the same underlying feature.
+     *
+     * [requestedKey] is the key the developer asked about — used as
+     * the card title when [feature] is null (AC-5) and as a fallback
+     * when [Feature.key] is absent (null) in the API response.
+     */
+    private fun buildFeatureResult(requestedKey: String, feature: Feature?): FeatureResult {
+        if (feature == null) {
+            return FeatureResult(
+                id = FeatureResult.nextId(),
+                featureKey = requestedKey,
+                enabled = false,
+                isError = true,
+                errorMessage = "No feature for key $requestedKey",
+                errorHint = "Check feature config or audience eligibility.",
+            )
+        }
+        // Preserve insertion order — LinkedHashMap iteration matches
+        // the Convert config's declared order when the API uses one.
+        val typedVariables = feature.variables.orEmpty().map { (name, element) ->
+            TypedVariable.fromJson(name = name, element = element)
+        }
+        return FeatureResult(
+            id = FeatureResult.nextId(),
+            featureKey = requestedKey,
+            enabled = feature.enabled,
+            experienceKey = feature.experienceKey,
+            variables = typedVariables,
+        )
+    }
+
     private fun onSdkEvent(event: String, payload: Map<String, Any?>) {
         // Route API_QUEUE_RELEASED through the resolver — it is a
         // meta-signal (not user-visible content) that drives lifecycle
@@ -360,4 +484,18 @@ class SdkViewModel(
 private object NoOpExperienceRunner : ExperienceRunner {
     override fun runExperience(experienceKey: String): Variation? = null
     override fun runExperiences(): List<Variation> = emptyList()
+}
+
+/**
+ * Story 7.4 — default [FeatureRunner] used by the production
+ * constructor when the caller does not supply one. Mirrors
+ * [NoOpExperienceRunner] exactly — the real SDK-backed impl is
+ * wired in [com.convert.sdk.demo.DemoApplication]; the no-op
+ * exists so existing tests (e.g. [com.convert.sdk.demo.ui.EventInspectorSheetTest])
+ * keep working unchanged and the [SdkViewModel] stays constructable
+ * with a minimal parameter list.
+ */
+private object NoOpFeatureRunner : FeatureRunner {
+    override fun runFeature(featureKey: String): Feature? = null
+    override fun runFeatures(): List<Feature> = emptyList()
 }
