@@ -110,7 +110,10 @@ internal class EventFlushWorker(
         val checkedAccountId: String = accountId!!
         val checkedTrackEndpoint: String = trackEndpoint!!
 
-        val events = fileEventQueue.read()
+        // Atomic claim: drain() reads and removes in one locked step (TD-1).
+        // On delivery failure we re-persist the drained events before returning
+        // Result.retry() so they survive for the next WorkManager attempt.
+        val events = fileEventQueue.drain()
         if (events.isEmpty()) return Result.success()
 
         // Build a minimal ConvertConfig carrying only the fields
@@ -118,7 +121,7 @@ internal class EventFlushWorker(
         // `source` is deliberately omitted — foreground flushes from the
         // host app's ApiManager drive it via NetworkConfig; the background
         // worker path has no equivalent (the foreground ApiManager's
-        // enqueueAll/flush would have tagged the event with its source
+        // reenqueuePersisted/flush would have tagged the event with its source
         // already through the segments map, which this worker preserves).
         val workerConfig = ConvertConfig(
             sdkKey = checkedSdkKey,
@@ -141,15 +144,20 @@ internal class EventFlushWorker(
             try {
                 WorkerHttpClient.instance.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
-                        fileEventQueue.clear()
+                        // Events already removed by drain() — nothing to clear.
                         Result.success()
                     } else {
                         Log.w(TAG, "track POST non-2xx: ${response.code}")
+                        // Re-persist the drained events so the next retry can
+                        // pick them up (AC-1.3: drain → failure → re-persist).
+                        fileEventQueue.persist(events)
                         Result.retry()
                     }
                 }
             } catch (t: IOException) {
                 Log.w(TAG, "track POST failed (${t::class.simpleName}: ${t.message})")
+                // Re-persist the drained events before signalling retry.
+                fileEventQueue.persist(events)
                 Result.retry()
             }
         }

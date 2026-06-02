@@ -24,7 +24,9 @@ import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.port.EventQueue
 import com.convert.sdk.core.port.HttpClient
 import com.convert.sdk.core.port.Logger
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -76,12 +78,21 @@ internal class ConvertSDKLifecycleHooksTest {
 
     @After
     fun tearDown() {
-        // WorkManager holds a singleton per process — cancelling uniqueWork by
-        // name keeps the singleton alive (required because tests share the
-        // Robolectric application) but makes sure no stale enqueue leaks
-        // across tests in the same JVM run.
+        // AC-6.2 WorkManager isolation: cancel all work and close the internal
+        // WorkManager database between tests. Without closeWorkDatabase(), the
+        // SQLite-backed queue leaks enqueued work across tests in the same JVM
+        // run — the "exactly one job" assertion would accumulate jobs from prior
+        // test cases and fail non-deterministically. The @Before re-initialises
+        // the singleton via initializeTestWorkManager, which calls
+        // WorkManagerImpl.setDelegate() to replace the singleton — but that alone
+        // does not flush the on-disk state that the previous instance wrote.
+        // closeWorkDatabase() releases the connection so the next init starts
+        // with a clean database.
         runCatching {
-            WorkManager.getInstance(context).cancelUniqueWork(EventFlushWorker.UNIQUE_WORK_NAME)
+            WorkManager.getInstance(context).cancelAllWork()
+        }
+        runCatching {
+            WorkManagerTestInitHelper.closeWorkDatabase()
         }
     }
 
@@ -90,7 +101,10 @@ internal class ConvertSDKLifecycleHooksTest {
     // ---------------------------------------------------------------
 
     @Test
-    fun `onStop flushes and enqueues worker`() = runBlocking {
+    fun `onStop flushes and enqueues worker`() {
+        // AC-6.2: drive the SDK coroutine via an injected TestScope so the test
+        // is deterministic — no fixed Thread.sleep / wall-clock waits.
+        val testScope = TestScope()
         val events = listOf(
             VisitorEvent(
                 visitorId = "v-1",
@@ -103,36 +117,21 @@ internal class ConvertSDKLifecycleHooksTest {
         val sdk = buildSdk(
             apiManager = recordingApi,
             eventQueue = recordingQueue,
+            scope = testScope,
         )
 
-        // Drive the lifecycle hook we care about.
+        // Drive the lifecycle hook — launches a coroutine on sdk.scope (= testScope).
         sdk.onProcessStopForTest()
-        // onProcessStop launches a coroutine on sdk.scope; wait for each
-        // observable milestone to tick through before asserting. The
-        // Thread.sleeps are tiny — the entire chain runs within tens of
-        // milliseconds on a Default dispatcher.
-        val deadline = System.currentTimeMillis() + 5_000
-        while (!recordingApi.flushCalled.get() && System.currentTimeMillis() < deadline) {
-            Thread.sleep(10)
-        }
-        while (recordingApi.snapshotQueueCalled.get() < 1 && System.currentTimeMillis() < deadline) {
-            Thread.sleep(10)
-        }
-        while (recordingQueue.persisted.size < 1 && System.currentTimeMillis() < deadline) {
-            Thread.sleep(10)
-        }
-        // Drain main-looper runnables so WorkManager's enqueueUniqueWork
-        // observable sees the scheduled work. Robolectric runs main-looper
-        // work in paused mode; without this, getWorkInfos returns an empty
-        // list even though enqueueUniqueWork was called.
+
+        // Drain all coroutines launched on testScope: flushNow, snapshotQueue,
+        // persist, and enqueueFlushWorker all run to completion synchronously
+        // before advanceUntilIdle() returns.
+        testScope.advanceUntilIdle()
+
+        // Drain main-looper runnables posted by WorkManager's enqueueUniqueWork
+        // (Robolectric runs main-looper in paused mode; a single idle() call is
+        // sufficient — no sleep loop needed).
         shadowOf(Looper.getMainLooper()).idle()
-        // Small final idle loop — WorkManager sync is async and may need
-        // a couple of looper ticks before getWorkInfosForUniqueWork
-        // reflects the enqueue.
-        repeat(5) {
-            shadowOf(Looper.getMainLooper()).idle()
-            Thread.sleep(20)
-        }
 
         assertTrue("flushNow must be called on onStop", recordingApi.flushCalled.get())
         assertEquals(
@@ -149,11 +148,17 @@ internal class ConvertSDKLifecycleHooksTest {
     }
 
     // ---------------------------------------------------------------
-    // AC-3 — onStart restores persisted events
+    // AC-3 — onStart restores persisted events (PR #39 H1 fix)
+    // onProcessStart now uses drain() + reenqueuePersisted() (atomic
+    // read-and-remove with visitorId-aware dedup) instead of
+    // read() + enqueueAll() + clear().
     // ---------------------------------------------------------------
 
     @Test
-    fun `onStart restores persisted events`() = runBlocking {
+    fun `onStart restores persisted events via drain and reenqueuePersisted`() {
+        // AC-6.2: drive the SDK coroutine via an injected TestScope so the test
+        // is deterministic — no fixed Thread.sleep / wall-clock waits.
+        val testScope = TestScope()
         val persisted = listOf(
             VisitorEvent(
                 visitorId = "v-restored",
@@ -166,44 +171,55 @@ internal class ConvertSDKLifecycleHooksTest {
         val sdk = buildSdk(
             apiManager = recordingApi,
             eventQueue = recordingQueue,
+            scope = testScope,
         )
 
+        // Drive the lifecycle hook — launches a coroutine on sdk.scope (= testScope).
         sdk.onProcessStartForTest()
-        // Wait for the coroutine.
-        while (!recordingApi.enqueueAllCalled.get()) { Thread.sleep(5) }
 
-        assertEquals(
-            "persisted events must be re-enqueued onto the ApiManager",
-            persisted.size,
-            recordingApi.enqueueAllReceived.size,
-        )
-        assertEquals("v-restored", recordingApi.enqueueAllReceived.first().visitorId)
+        // Drain all coroutines launched on testScope: drain() and reenqueuePersisted()
+        // both run to completion synchronously before advanceUntilIdle() returns.
+        testScope.advanceUntilIdle()
+
         assertTrue(
-            "persisted queue must be cleared after restoration",
-            recordingQueue.cleared.get(),
+            "reenqueuePersisted must be called on onStart (not enqueueAll)",
+            recordingApi.reenqueuePersistedCalled.get(),
+        )
+        assertEquals(
+            "persisted events must be passed to reenqueuePersisted",
+            persisted.size,
+            recordingApi.reenqueuePersistedReceived.size,
+        )
+        assertEquals("v-restored", recordingApi.reenqueuePersistedReceived.first().visitorId)
+        assertTrue(
+            "drain() must have been called (atomically removes the persisted queue)",
+            recordingQueue.drained.get(),
         )
     }
 
     @Test
-    fun `onStart is a no-op when persisted queue is empty`() = runBlocking {
+    fun `onStart is a no-op when persisted queue is empty`() {
+        // AC-6.2: drive the SDK coroutine via an injected TestScope so the test
+        // is deterministic — no fixed Thread.sleep / wall-clock waits.
+        val testScope = TestScope()
         val recordingQueue = RecordingEventQueue(initial = emptyList())
         val recordingApi = RecordingApiManager()
         val sdk = buildSdk(
             apiManager = recordingApi,
             eventQueue = recordingQueue,
+            scope = testScope,
         )
 
+        // Drive the lifecycle hook — launches a coroutine on sdk.scope (= testScope).
         sdk.onProcessStartForTest()
-        // Give the launched coroutine a chance to observe the empty read.
-        Thread.sleep(50)
+
+        // Drain all coroutines launched on testScope: drain() runs, observes an
+        // empty list, and returns without calling reenqueuePersisted.
+        testScope.advanceUntilIdle()
 
         assertFalse(
-            "enqueueAll must NOT be called when there are no persisted events",
-            recordingApi.enqueueAllCalled.get(),
-        )
-        assertFalse(
-            "clear must NOT be called when there was nothing to read",
-            recordingQueue.cleared.get(),
+            "reenqueuePersisted must NOT be called when there are no persisted events",
+            recordingApi.reenqueuePersistedCalled.get(),
         )
     }
 
@@ -214,6 +230,7 @@ internal class ConvertSDKLifecycleHooksTest {
     private fun buildSdk(
         apiManager: ApiManager,
         eventQueue: EventQueue,
+        scope: CoroutineScope? = null,
     ): ConvertSDK {
         val config = ConvertConfig(
             sdkKey = "sk-test",
@@ -230,17 +247,19 @@ internal class ConvertSDKLifecycleHooksTest {
             logger = Logger.NoOp,
             apiManager = apiManager,
             fileEventQueue = eventQueue,
+            scope = scope,
         )
     }
 
     /**
      * [EventQueue] recorder that starts with a seeded list (simulates
      * events left on disk from a previous session) and records every
-     * mutation.
+     * mutation. Implements [drain] as an atomic read-and-remove per TD-1.
      */
     private class RecordingEventQueue(initial: List<VisitorEvent> = emptyList()) : EventQueue {
         val persisted: MutableList<VisitorEvent> = initial.toMutableList()
         val cleared: AtomicBoolean = AtomicBoolean(false)
+        val drained: AtomicBoolean = AtomicBoolean(false)
         override suspend fun persist(events: List<VisitorEvent>) {
             persisted.addAll(events)
         }
@@ -250,14 +269,19 @@ internal class ConvertSDKLifecycleHooksTest {
             persisted.clear()
         }
         override suspend fun size(): Int = persisted.size
+        override suspend fun drain(): List<VisitorEvent> {
+            drained.set(true)
+            val snap = persisted.toList()
+            persisted.clear()
+            return snap
+        }
     }
 
     /**
-     * [ApiManager] subclass that records flush / enqueueAll / snapshotQueue
-     * invocations for the test assertions. Uses a no-op HTTP client so
-     * the superclass's `flush()` would be a no-op on its own; we override
-     * `flushNow` and `snapshotQueue` directly to keep the test fully
-     * deterministic.
+     * [ApiManager] subclass that records flush / reenqueuePersisted /
+     * snapshotQueue invocations for the test assertions. Uses a no-op
+     * HTTP client; we override `flushNow`, `snapshotQueue`, and
+     * `reenqueuePersisted` directly to keep tests deterministic.
      */
     private class RecordingApiManager(
         private val snapshotReturns: List<VisitorEvent> = emptyList(),
@@ -281,8 +305,10 @@ internal class ConvertSDKLifecycleHooksTest {
     ) {
         val flushCalled: AtomicBoolean = AtomicBoolean(false)
         val enqueueAllCalled: AtomicBoolean = AtomicBoolean(false)
+        val reenqueuePersistedCalled: AtomicBoolean = AtomicBoolean(false)
         val snapshotQueueCalled: AtomicInteger = AtomicInteger(0)
         val enqueueAllReceived: MutableList<VisitorEvent> = mutableListOf()
+        val reenqueuePersistedReceived: MutableList<VisitorEvent> = mutableListOf()
 
         override suspend fun flushNow() {
             flushCalled.set(true)
@@ -296,6 +322,11 @@ internal class ConvertSDKLifecycleHooksTest {
         override fun enqueueAll(events: List<VisitorEvent>) {
             enqueueAllCalled.set(true)
             enqueueAllReceived.addAll(events)
+        }
+
+        override fun reenqueuePersisted(events: List<VisitorEvent>) {
+            reenqueuePersistedCalled.set(true)
+            reenqueuePersistedReceived.addAll(events)
         }
     }
 }

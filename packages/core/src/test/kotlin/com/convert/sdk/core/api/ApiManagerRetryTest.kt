@@ -306,6 +306,11 @@ internal class ApiManagerRetryTest {
             persisted.clear()
         }
         override suspend fun size(): Int = persisted.size
+        override suspend fun drain(): List<VisitorEvent> {
+            val snap = persisted.toList()
+            persisted.clear()
+            return snap
+        }
     }
 
     private class CapturingLogger : Logger {

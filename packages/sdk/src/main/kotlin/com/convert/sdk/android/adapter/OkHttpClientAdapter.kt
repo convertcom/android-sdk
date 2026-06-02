@@ -18,6 +18,7 @@ import okhttp3.Response
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * [HttpClient] adapter backed by OkHttp.
@@ -115,6 +116,13 @@ internal class OkHttpClientAdapter(
                 call.cancel()
             }
             call.enqueue(object : Callback {
+                // TD-3 / AC-3.1: catch Throwable (not just Exception) so that
+                // Error subclasses (e.g. OutOfMemoryError mid-body-read) also
+                // resume the continuation instead of leaving it hanging forever.
+                // OkHttp does NOT call onFailure when the body read throws, so
+                // this catch is the only recovery path. @Suppress follows the
+                // same pattern as FileEventQueue.acquireFileLockAndRun.
+                @Suppress("TooGenericExceptionCaught")
                 override fun onResponse(call: Call, response: Response) {
                     try {
                         val bodyText = response.body?.string().orEmpty()
@@ -126,6 +134,13 @@ internal class OkHttpClientAdapter(
                                 headers = headerMap,
                             ),
                         )
+                    } catch (t: Throwable) {
+                        // AC-3.1: body?.string() can throw (e.g. connection reset
+                        // mid-body). OkHttp does NOT call onFailure in that case,
+                        // so the catch here is the only way to resume the
+                        // continuation. Guard with isActive so a cancellation
+                        // that raced this path does not throw "already resumed".
+                        if (continuation.isActive) continuation.resumeWithException(t)
                     } finally {
                         response.close()
                     }

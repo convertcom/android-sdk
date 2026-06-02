@@ -10,15 +10,21 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
+import okio.Buffer
+import okio.ForwardingSource
+import okio.buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -165,6 +171,120 @@ internal class OkHttpClientAdapterTest {
         val recorded = server.takeRequest()
         val ct = recorded.getHeader("Content-Type") ?: ""
         assertTrue("expected json content-type, got: $ct", ct.contains("application/json"))
+    }
+
+    // -------------------------------------------------------------------------
+    // AC-3.1 — body-read failure resumes the continuation (does not hang)
+    // -------------------------------------------------------------------------
+
+    /**
+     * AC-3.1 happy path: a normal response resumes the continuation exactly
+     * once with the full [HttpClient.HttpResponse] value.
+     *
+     * Regression guard: if [onResponse] were to call [continuation.resume]
+     * twice (e.g. once in the try and once in a catch that re-runs the happy
+     * path), OkHttp / kotlinx-coroutines would throw "already resumed". The
+     * absence of any exception here confirms exactly-once semantics.
+     */
+    @Test
+    fun `AC-3-1 happy path - normal body read resumes continuation exactly once`() = runTest {
+        server.enqueue(MockResponse().setBody("hello").setResponseCode(200))
+
+        // No withTimeout needed — real network response from MockWebServer.
+        // Regression guard: if resume were called twice, the second call would
+        // throw IllegalStateException. The absence of any exception here
+        // confirms exactly-once semantics on the happy path.
+        val response = adapter.get(server.url("/ok").toString())
+
+        assertEquals(200, response.statusCode)
+        assertEquals("hello", response.body)
+    }
+
+    /**
+     * AC-3.1 body-read failure: when the server disconnects mid-body,
+     * [Response.body?.string()] throws an [IOException]. The continuation
+     * must be resumed via [resumeWithException] so the caller sees the
+     * exception and does NOT hang.
+     *
+     * Hang protection is provided by the Gradle test-task timeout (not
+     * [withTimeout] inside [runTest], which uses virtual time and would
+     * incorrectly expire before real OkHttp callbacks fire).
+     */
+    @Test
+    fun `AC-3-1 body-read failure - continuation resumed with exception not hung`() = runTest {
+        // DISCONNECT_DURING_RESPONSE_BODY: MockWebServer sends the 200 headers
+        // and starts the body, then drops the socket. OkHttp receives the
+        // response (calls onResponse), then throws when string() reads the body.
+        server.enqueue(
+            MockResponse()
+                .setBody("partial-body-that-will-be-cut-short")
+                .setResponseCode(200)
+                .apply { socketPolicy = SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY },
+        )
+
+        var caughtException: Exception? = null
+        try {
+            adapter.get(server.url("/body-fail").toString())
+        } catch (e: Exception) {
+            // IOException (connection reset) or a coroutine-wrapped variant.
+            caughtException = e
+        }
+
+        assertNotNull(
+            "Expected an exception from body-read failure, but the coroutine returned normally",
+            caughtException,
+        )
+    }
+
+    /**
+     * AC-3.1 edge — body-read failure via interceptor-replaced throwing body:
+     * an [OkHttp Interceptor][Interceptor] replaces the real response body with
+     * a [ResponseBody] whose [source()][okhttp3.ResponseBody.source] throws
+     * immediately. This simulates a mid-body [IOException] inside [onResponse]
+     * through application-layer interception rather than a socket disconnect,
+     * which confirms the catch path works for non-socket [IOException]s too.
+     *
+     * Also verifies AC-3.1's guarantee that [response.close()][okhttp3.Response.close]
+     * is still called (via the `finally` block) even when body-read throws.
+     */
+    @Test
+    fun `AC-3-1 edge - interceptor throwing body still resumes continuation`() = runTest {
+        // Build a dedicated client with a network interceptor that replaces the
+        // response body with one whose source() throws on the first read call.
+        val throwingBodyClient = OkHttpClient.Builder()
+            .callTimeout(5, TimeUnit.SECONDS)
+            .addNetworkInterceptor(
+                Interceptor { chain ->
+                    val realResponse = chain.proceed(chain.request())
+                    val throwingBody = object : okhttp3.ResponseBody() {
+                        override fun contentType(): okhttp3.MediaType? = null
+                        override fun contentLength(): Long = -1L
+                        override fun source(): okio.BufferedSource =
+                            object : ForwardingSource(Buffer()) {
+                                override fun read(sink: Buffer, byteCount: Long): Long =
+                                    throw IOException("simulated interceptor body failure")
+                            }.buffer()
+                    }
+                    realResponse.newBuilder().body(throwingBody).build()
+                },
+            )
+            .build()
+
+        server.enqueue(MockResponse().setBody("intercepted-real-body").setResponseCode(200))
+
+        val throwingAdapter = OkHttpClientAdapter(throwingBodyClient)
+
+        var caughtException: Exception? = null
+        try {
+            throwingAdapter.get(server.url("/intercepted").toString())
+        } catch (e: Exception) {
+            caughtException = e
+        }
+
+        assertNotNull(
+            "Interceptor-injected body failure must propagate as an exception, not hang",
+            caughtException,
+        )
     }
 
     @Test

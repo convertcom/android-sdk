@@ -44,6 +44,14 @@ import kotlinx.serialization.json.doubleOrNull
  *    [Regex.containsMatchIn] so partial matches satisfy the rule.
  *  - `isIn` — pipe-separated value versus pipe-separated test string OR
  *    a [JsonArray] of candidates. Both sides lowercased for comparison.
+ *  - `exists` — `true` when the attribute value is present and non-empty.
+ *    Matches JS SDK `Comparisons.exists`: `value !== undefined && value !==
+ *    null && value !== ''`. Neither this operator nor `doesNotExist`
+ *    requires a `value` field on the rule element; [RuleManager] dispatches
+ *    them even when the attribute key is absent (passing [JsonNull]) —
+ *    exactly as JS `_processRuleItem` calls the comparator with `undefined`.
+ *  - `doesNotExist` — logical inverse of `exists` (`not_exists` alias in
+ *    JS SDK).
  *
  * ### Negation (`matching.negated: boolean`)
  *
@@ -54,12 +62,11 @@ import kotlinx.serialization.json.doubleOrNull
  *
  * ### JsonNull handling
  *
- * All operators return `false` when the `value` side is [JsonNull] (the
- * attribute was passed in as `null`). The `exists` / `not_exists`
- * operators from the story are not JS SDK operators and are handled at
- * the [RuleManager] level (missing attribute key → `false`, with the
- * `matching.negated` flag flipping that to `true` for "doesn't exist"
- * semantics).
+ * All operators except `exists`/`doesNotExist` return `false` when the
+ * `value` side is [JsonNull]. `exists` and `doesNotExist` must still be
+ * dispatched when `value` is [JsonNull] (the attribute key was absent or
+ * the lookup returned null) — they short-circuit the early [JsonNull]
+ * guard and proceed to their own implementations.
  *
  * ### Unknown operators
  *
@@ -88,6 +95,8 @@ internal object Comparisons {
         "startsWith",
         "endsWith",
         "regexMatches",
+        "exists",
+        "doesNotExist",
     )
 
     /**
@@ -121,9 +130,15 @@ internal object Comparisons {
         testAgainst: JsonElement,
         negation: Boolean,
     ): Boolean? {
+        // `exists` and `doesNotExist` must be dispatched even when value is
+        // JsonNull (attribute key absent / lookup returned null) — this is
+        // what makes `doesNotExist` return true for a missing key, mirroring
+        // JS SDK `_processRuleItem` calling the comparator with `undefined`.
+        if (matchType == "exists") return exists(value, negation)
+        if (matchType == "doesNotExist") return doesNotExist(value, negation)
+
         // JsonNull on the value side: nothing to compare against. JS SDK
-        // returns false here for every operator except the never-present
-        // `exists` check which is handled one level up in RuleManager.
+        // returns false here for all remaining operators.
         if (value is JsonNull) {
             return applyNegation(result = false, negation = negation)
         }
@@ -273,6 +288,21 @@ internal object Comparisons {
      *    `|`; otherwise the empty list.
      *  - Both sides lowercased.
      *  - Returns `true` if ANY value token matches ANY testAgainst token.
+     *
+     * ### INTENTIONAL PARITY EXCEPTION vs JS SDK (`comparisons.ts:89-115`)
+     *
+     * The Android SDK lowercases **both** the value side and the
+     * `testAgainst` side, making `isIn` fully case-insensitive. The JS SDK
+     * (`comparisons.ts:106-108`) only lowercases the `testAgainst` (rule)
+     * side; the value side retains its original casing, so `"US"` vs
+     * `"us|ca"` would **not** match in JS but **does** match here.
+     *
+     * This is a documented, intentional divergence (Direction B) chosen for
+     * consistency with Android's other string operators (all of which
+     * lowercase both sides). The JS value-side case-sensitivity is likely an
+     * unintended quirk; it is a candidate for a separate JS-side fix ticket.
+     * Do **not** remove this lowercasing to "fix" parity — doing so would
+     * break AC-4.4 and the Android-specific test coverage.
      */
     private fun isIn(
         value: JsonElement,
@@ -286,6 +316,44 @@ internal object Comparisons {
         }
         val result = lhsTokens.any { it in rhsTokens }
         return applyNegation(result, negation)
+    }
+
+    /**
+     * `exists` operator — mirrors JS SDK `Comparisons.exists`
+     * (`comparisons.ts:154-161`):
+     *
+     *   `value !== undefined && value !== null && value !== ''`
+     *
+     * [JsonNull] is the Android equivalent of JS `undefined`/`null`.
+     * An empty string (`""`) also counts as non-existent, matching JS
+     * semantics. This operator is dispatched even when the attribute key is
+     * absent from the visitor attributes (the caller passes [JsonNull]) —
+     * which is what makes `exists=false` correct for a missing key without
+     * a separate short-circuit in [RuleManager].
+     *
+     * Does **not** require a `value` field on the rule element; [apply]
+     * ignores the [testAgainst] parameter for this operator.
+     */
+    private fun exists(value: JsonElement, negation: Boolean): Boolean {
+        val valueExists = value !is JsonNull && value.asRawString() != ""
+        return applyNegation(valueExists, negation)
+    }
+
+    /**
+     * `doesNotExist` operator — logical inverse of [exists]. Mirrors JS SDK
+     * `Comparisons.not_exists` / `doesNotExist` alias
+     * (`comparisons.ts:163-172`):
+     *
+     *   `value === undefined || value === null || value === ''`
+     *
+     * Dispatched even when the attribute key is absent ([JsonNull] value),
+     * so `doesNotExist=true` for a missing key is the natural result.
+     *
+     * Does **not** require a `value` field on the rule element.
+     */
+    private fun doesNotExist(value: JsonElement, negation: Boolean): Boolean {
+        val valueNotExists = value is JsonNull || value.asRawString() == ""
+        return applyNegation(valueNotExists, negation)
     }
 
     /**
