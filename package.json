@@ -1,0 +1,18 @@
+{
+  "name": "convert-android-sdk-release-tooling",
+  "private": true,
+  "type": "module",
+  "description": "Release automation tooling for the Convert Android SDK (semantic-release + vanniktech maven-publish).",
+  "scripts": {
+    "release": "semantic-release",
+    "release:dry-run": "semantic-release --dry-run --no-ci"
+  },
+  "devDependencies": {
+    "@semantic-release/changelog": "^6.0.0",
+    "@semantic-release/exec": "^7.0.0",
+    "@semantic-release/git": "^10.0.0",
+    "@semantic-release/release-notes-generator": "^14.0.0",
+    "conventional-changelog-conventionalcommits": "^8.0.0",
+    "semantic-release": "^24.0.0"
+  }
+}

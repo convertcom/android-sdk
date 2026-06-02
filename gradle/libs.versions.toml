@@ -1,5 +1,11 @@
 [versions]
 # Verified Technology Versions (as of 2026-03-23) — do not deviate without an architecture revision.
+# Story 1.4 seeds the SDK publish version at 0.0.0; semantic-release bumps
+# it to 1.0.0 on the first conventional feat: commit on main after release.yml
+# lands (semantic-release uses 1.0.0 as the first-release default when no
+# prior tag exists). The Kotlin DSL accessor is `libs.versions.sdkVersion.get()`
+# (kebab-case → dotted-camelCase conversion).
+sdk-version = "0.0.0"
 kotlin = "2.3.20"
 agp = "9.1.0"
 kotlinxCoroutines = "1.10.2"
