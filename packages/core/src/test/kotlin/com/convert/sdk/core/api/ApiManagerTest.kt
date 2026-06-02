@@ -7,6 +7,7 @@ package com.convert.sdk.core.api
 
 import com.convert.sdk.core.config.ApiConfig
 import com.convert.sdk.core.config.ApiEndpoint
+import com.convert.sdk.core.config.ConfigDefaults
 import com.convert.sdk.core.config.ConvertConfig
 import com.convert.sdk.core.config.NetworkConfig
 import com.convert.sdk.core.port.HttpClient
@@ -304,6 +305,75 @@ internal class ApiManagerTest {
         assertEquals(0, http.calls.size)
     }
 
+    // --- Story 2.3 AC-5 — tracking toggle pre-wiring ------------------------
+
+    @Test
+    fun `isTrackingEnabled defaults to DEFAULT_TRACKING_ENABLED when network is null`() {
+        // When NetworkConfig is absent, the flag initialises to the compile-
+        // time default so that downstream event-enqueue paths (Story 5.4) see
+        // a non-null, deterministic value.
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val api = ApiManager(http, CapturingLogger(), convertConfig(sdkKey = "sk-1"), json)
+
+        assertEquals(ConfigDefaults.DEFAULT_TRACKING_ENABLED, api.isTrackingEnabled())
+    }
+
+    @Test
+    fun `isTrackingEnabled echoes NetworkConfig tracking when provided`() {
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val api = ApiManager(
+            http,
+            CapturingLogger(),
+            convertConfig(sdkKey = "sk-1", tracking = false),
+            json,
+        )
+
+        assertFalse(api.isTrackingEnabled(), "tracking=false from config should propagate")
+    }
+
+    @Test
+    fun `setTrackingEnabled flips the flag atomically and survives a get`() {
+        // The architecture chose AtomicBoolean for this flag; AC-5 asks us to
+        // verify that flipping the value via setTrackingEnabled is observed
+        // by a subsequent isTrackingEnabled call — exercise both transitions.
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val api = ApiManager(
+            http,
+            CapturingLogger(),
+            convertConfig(sdkKey = "sk-1", tracking = true),
+            json,
+        )
+
+        assertTrue(api.isTrackingEnabled())
+
+        api.setTrackingEnabled(false)
+        assertFalse(api.isTrackingEnabled())
+
+        api.setTrackingEnabled(true)
+        assertTrue(api.isTrackingEnabled())
+    }
+
+    @Test
+    fun `setTrackingEnabled does not disable fetchConfig (bucketing path)`() = runTest {
+        // AC-5 guarantee: flipping tracking off pre-wires the Story 5.4 enqueue
+        // bypass but does NOT gate the config fetch itself (bucketing depends
+        // on fetched config). Story 2.3 only pre-wires state; this test locks
+        // that invariant in place so future refactors can't silently break it.
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val api = ApiManager(
+            http,
+            CapturingLogger(),
+            convertConfig(sdkKey = "sk-1", tracking = false),
+            json,
+        )
+
+        val result = api.fetchConfig()
+
+        // Even with tracking disabled, the config fetch still runs and parses.
+        assertNotNull(result, "fetchConfig must still run when tracking is disabled")
+        assertEquals(1, http.calls.size)
+    }
+
     // --- Test helpers -------------------------------------------------------
 
     /**
@@ -320,6 +390,7 @@ internal class ApiManagerTest {
         sdkKey: String? = null,
         sdkKeySecret: String? = null,
         environment: String = "staging",
+        tracking: Boolean? = null,
         network: TestNetworkConfig? = null,
     ): ConvertConfig {
         val api = if (network?.configEndpoint != null) {
@@ -327,8 +398,8 @@ internal class ApiManagerTest {
         } else {
             null
         }
-        val networkConfig = if (network?.cacheLevel != null) {
-            NetworkConfig(cacheLevel = network.cacheLevel)
+        val networkConfig = if (network?.cacheLevel != null || tracking != null) {
+            NetworkConfig(cacheLevel = network?.cacheLevel, tracking = tracking)
         } else {
             null
         }
