@@ -9,7 +9,10 @@ import com.convert.sdk.core.event.SystemEvents
 import com.convert.sdk.core.model.Feature
 import com.convert.sdk.core.model.GoalData
 import com.convert.sdk.core.model.Variation
+import com.convert.sdk.core.model.generated.ConfigAudience
 import com.convert.sdk.core.model.generated.ConfigExperience
+import com.convert.sdk.core.model.generated.ConfigLocation
+import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
 import com.convert.sdk.core.model.generated.VariationStatuses
 import kotlinx.serialization.json.JsonElement
@@ -192,7 +195,19 @@ public class ConvertContext internal constructor(
         // when enableTracking is false (F-134).
         resolveSticky(sdk, experience, experienceKey, enableTracking)?.let { return it }
 
-        // Steps 4-8 — rule-eval (Story 3.4), bucketing, persist, enqueue, fire.
+        // Step 4 — audience / location rule evaluation (Story 3.4).
+        // Gate BEFORE bucketing: visitors failing either gate must not
+        // affect traffic-allocation counts (JS SDK parity — filter then
+        // bucket, never bucket and then discard).
+        val data = sdk.dataManager.data
+        if (data == null ||
+            !passesAudienceGate(sdk, this, experience, experienceKey, data) ||
+            !passesLocationGate(sdk, this, experience, experienceKey, data)
+        ) {
+            return null
+        }
+
+        // Steps 5-8 — bucketing, persist, enqueue, fire.
         return allocateAndRecord(sdk, experience, experienceKey, enableTracking)
     }
 
@@ -688,4 +703,115 @@ public class ConvertContext internal constructor(
             else -> JsonPrimitive(value.toString())
         }
     }
+}
+
+/**
+ * Tag used by the gate helpers below when emitting DEBUG messages.
+ * Matches the `ConvertContext.TAG` constant so operators see a single,
+ * consistent tag regardless of whether the DEBUG came from
+ * [ConvertContext.runExperience] or one of these helpers.
+ */
+private const val GATE_TAG: String = "ConvertContext"
+
+/**
+ * Audience gate (Story 3.4 AC-5) — resolves each ID in
+ * `experience.audiences` against `data.audiences`, evaluates each
+ * resolved [ConfigAudience]'s rules against [context]'s
+ * `currentAttributes`, returns `true` when ANY audience matches (JS SDK
+ * parity — `data-manager.ts:1110-1143`'s `selectAudiences` uses OR
+ * semantics across the audience list).
+ *
+ * Empty / null `experience.audiences` skips the gate (no-constraint
+ * semantics). A referenced ID missing from the audiences lookup counts
+ * as a failed audience (DEBUG-logged — config is malformed).
+ *
+ * Lives at file scope so [ConvertContext] stays under detekt's
+ * `TooManyFunctions` threshold — same rationale as
+ * [launchInitialDataSeed] in [ConvertSDK].
+ */
+private fun passesAudienceGate(
+    sdk: ConvertSDK,
+    context: ConvertContext,
+    experience: ConfigExperience,
+    experienceKey: String,
+    data: ConfigResponseData,
+): Boolean {
+    val audienceIds = experience.audiences
+    if (audienceIds.isNullOrEmpty()) return true
+    val audiencesById = data.audiences
+        ?.mapNotNull { audience -> audience.id?.let { id -> id to audience } }
+        ?.toMap()
+        .orEmpty()
+    val anyMatch = audienceIds.any { audienceId ->
+        val audience = audiencesById[audienceId]
+        if (audience == null) {
+            sdk.logger.debug(
+                message = "ConvertContext.runExperience: audience '$audienceId' referenced by " +
+                    "experience '$experienceKey' not found in config",
+                tag = GATE_TAG,
+            )
+            false
+        } else {
+            sdk.ruleManager.evaluate(audience.rules, context.currentAttributes())
+        }
+    }
+    if (!anyMatch) {
+        sdk.logger.debug(
+            message = "ConvertContext.runExperience: visitor not in audience for '$experienceKey'",
+            tag = GATE_TAG,
+        )
+    }
+    return anyMatch
+}
+
+/**
+ * Location gate (Story 3.4 AC-6) — same shape as [passesAudienceGate]
+ * but resolves [ConfigLocation] from `data.locations` and evaluates
+ * against [context]'s `currentLocationProperties`. Additional special
+ * case: non-empty `experience.locations` but no location properties on
+ * the context → fail with DEBUG.
+ */
+@Suppress("ReturnCount")
+private fun passesLocationGate(
+    sdk: ConvertSDK,
+    context: ConvertContext,
+    experience: ConfigExperience,
+    experienceKey: String,
+    data: ConfigResponseData,
+): Boolean {
+    val locationIds = experience.locations
+    if (locationIds.isNullOrEmpty()) return true
+    val locationProps = context.currentLocationProperties()
+    if (locationProps.isEmpty()) {
+        sdk.logger.debug(
+            message = "ConvertContext.runExperience: experience '$experienceKey' has " +
+                "location rules but no location properties set on context",
+            tag = GATE_TAG,
+        )
+        return false
+    }
+    val locationsById = data.locations
+        ?.mapNotNull { location -> location.id?.let { id -> id to location } }
+        ?.toMap()
+        .orEmpty()
+    val anyMatch = locationIds.any { locationId ->
+        val location = locationsById[locationId]
+        if (location == null) {
+            sdk.logger.debug(
+                message = "ConvertContext.runExperience: location '$locationId' referenced by " +
+                    "experience '$experienceKey' not found in config",
+                tag = GATE_TAG,
+            )
+            false
+        } else {
+            sdk.ruleManager.evaluate(location.rules, locationProps)
+        }
+    }
+    if (!anyMatch) {
+        sdk.logger.debug(
+            message = "ConvertContext.runExperience: no location match for '$experienceKey'",
+            tag = GATE_TAG,
+        )
+    }
+    return anyMatch
 }
