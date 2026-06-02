@@ -276,35 +276,63 @@ public open class ApiManager(
         scope?.let { startTimerLoop(it) }
     }
 
+    /**
+     * Returns the current tracking-enabled state for outbound events.
+     *
+     * Story 5.4 introduced this accessor so that the live server config
+     * (`config.network.tracking`) can be consulted at the call site
+     * without every caller reaching into [ConvertConfig]. `true` means
+     * [enqueueBucketingEvent] and [enqueueConversionEvent] accept new
+     * events; `false` means they short-circuit and log at DEBUG.
+     *
+     * This method does not throw; it performs a single volatile read.
+     *
+     * @return `true` when tracking is currently enabled, `false` otherwise.
+     */
     public fun isTrackingEnabled(): Boolean = trackingEnabled.get()
 
+    /**
+     * Updates the tracking-enabled state.
+     *
+     * Story 5.4 exposes this entry point so that [DataManager] can
+     * reapply `config.network.tracking` every time a fresh server config
+     * is loaded (the config fetch is the authoritative source of truth).
+     * Flipping from `false` to `true` does **not** replay events that
+     * were dropped while tracking was disabled — dropped events stay
+     * dropped. Flipping from `true` to `false` does **not** flush the
+     * live queue; callers drive [flushEvents] explicitly when needed.
+     *
+     * This method does not throw; it performs a single volatile write.
+     *
+     * @param enabled `true` to accept new events, `false` to drop them
+     *   at enqueue time until the next flip.
+     */
     public fun setTrackingEnabled(enabled: Boolean) {
         trackingEnabled.set(enabled)
     }
 
     /**
-     * Enqueues a bucketing event for a visitor. Called by
-     * [com.convert.sdk.android.ConvertContext.runExperience] after a
-     * non-sticky bucketing decision. When the queue reaches [batchSize]
-     * the flush is triggered on [scope]; if no scope was supplied the
-     * caller (or the periodic timer via [flushForTest] in tests) drives
-     * the flush explicitly.
+     * Enqueues a bucketing event for the given visitor.
      *
-     * The bucketing event's wire shape:
+     * Called by [com.convert.sdk.android.ConvertContext.runExperience] once
+     * per successful bucketing decision. The event is appended to the
+     * in-memory live queue; delivery to `POST /track/{sdkKey}` happens
+     * asynchronously when the queue reaches `config.events.batchSize`
+     * events or the release-interval timer ticks (whichever comes first).
+     * When tracking is disabled via [setTrackingEnabled], the call is
+     * recorded at DEBUG and otherwise becomes a no-op — no event is
+     * enqueued and no network activity occurs.
      *
-     * ```
-     * { "eventType": "bucketing",
-     *   "data": { "experienceId": "...", "variationId": "..." } }
-     * ```
+     * This method does not throw; enqueue failures (capacity, lock
+     * acquisition) are logged internally and the call returns normally.
      *
-     * Declared `open` so tests in `:packages:sdk` can override with a
-     * recording spy (unchanged from Story 3.2 SDK-4).
-     *
-     * @param visitorId the visitor whose bucketing is being reported.
-     * @param experienceId the stable experience id.
-     * @param variationId the selected variation id.
-     * @param segments merged default + custom segments (Story 4.4); may
-     *   be empty.
+     * @param visitorId stable visitor identifier captured on the calling
+     *   [com.convert.sdk.android.ConvertContext].
+     * @param experienceId the experience the visitor was bucketed into.
+     * @param variationId the variation returned from bucketing.
+     * @param segments the visitor segment snapshot to attach to the
+     *   outbound payload. Defaults to an empty map when the context has
+     *   no resolved segments.
      */
     @JvmOverloads
     public open fun enqueueBucketingEvent(
@@ -330,29 +358,24 @@ public open class ApiManager(
     }
 
     /**
-     * Enqueues a conversion event for a visitor. Called by
-     * [com.convert.sdk.android.ConvertContext.trackConversion] twice:
-     * once with `goalData = null` for the bare hit, and (when present)
-     * once with the full goalData list for the transaction payload.
+     * Enqueues a conversion event for the given visitor and goal.
      *
-     * Wire shape:
+     * Called by [com.convert.sdk.android.ConvertContext.trackConversion].
+     * Follows the same queuing / batch / tracking-toggle contract as
+     * [enqueueBucketingEvent]: appended to the live queue, delivered
+     * asynchronously on `batchSize` or `releaseInterval`, skipped with a
+     * DEBUG log when [isTrackingEnabled] is `false`.
      *
-     * ```
-     * { "eventType": "conversion",
-     *   "data": { "goalId": "...", "goalData": [...]? } }
-     * ```
+     * This method does not throw; enqueue failures are logged internally.
      *
-     * [goalData] is serialized entry-by-entry — each [GoalData.value]
-     * is a [JsonElement] so numbers stay numeric, strings stay
-     * stringly-typed, and the JS SDK's union of `number | string |
-     * Array<string>` survives the wire round-trip. When `goalData` is
-     * null or empty the field is omitted (bare conversion hit).
-     *
-     * @param visitorId the visitor whose conversion is being reported.
-     * @param goalId the stable goal id.
-     * @param goalData optional transaction-payload entries; null or
-     *   empty → bare conversion.
-     * @param segments merged default + custom segments (Story 4.4).
+     * @param visitorId stable visitor identifier captured on the calling
+     *   [com.convert.sdk.android.ConvertContext].
+     * @param goalId the goal the visitor converted on.
+     * @param goalData optional list of `GoalData` entries (amount,
+     *   productsCount, transactionId, customDimension1..5). Nullable
+     *   because the tracking API accepts a bare goal id with no data.
+     * @param segments the visitor segment snapshot to attach to the
+     *   outbound payload. Defaults to an empty map.
      */
     @JvmOverloads
     public open fun enqueueConversionEvent(
@@ -870,6 +893,26 @@ public open class ApiManager(
     // Story 2.2 — config fetch (unchanged — kept verbatim below).
     // ---------------------------------------------------------------
 
+    /**
+     * Fetches the current project configuration from the CDN endpoint.
+     *
+     * Story 2.2 contract: GET the configured `api.endpoint.config` URL
+     * with the visitor-scope `sdkKey` query parameter, parse a 2xx
+     * response body into a [ConfigResponseData], and return it. On any
+     * error — null `sdkKey`, non-https endpoint, network failure,
+     * non-2xx status, malformed JSON — return `null` after logging the
+     * reason via the configured [Logger]. Callers (Story 2.3 lifecycle
+     * refresh, Story 5.5 full-chain integration) treat `null` as
+     * "retain the last known good config" and never surface the failure
+     * to consumer code.
+     *
+     * Runs on [Dispatchers.IO]; this method suspends but does not
+     * throw — every caught exception is logged and `null` returned.
+     *
+     * @return the parsed [ConfigResponseData] on a 2xx response with a
+     *   valid body, or `null` if any precondition fails or the fetch
+     *   errored out. Never throws.
+     */
     @Suppress("ReturnCount", "TooGenericExceptionCaught")
     public suspend fun fetchConfig(): ConfigResponseData? = withContext(Dispatchers.IO) {
         val url = buildConfigUrl() ?: return@withContext null

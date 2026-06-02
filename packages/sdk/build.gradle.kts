@@ -14,6 +14,25 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.kover)
     alias(libs.plugins.vanniktech.maven.publish)
+    // Story 6.1: Dokka generates HTML API reference under build/dokka/html/
+    // for the public Android SDK surface. Vanniktech's
+    // `JavadocJar.Dokka("dokkaHtml")` hook below feeds this into the
+    // published Javadoc JAR.
+    alias(libs.plugins.dokka)
+}
+
+// Story 6.1 [F-079]: pin Dokka's analyser to JDK 17 so it matches the
+// `jvmToolchain(17)` configured below (Story 1.1). Without this, Dokka
+// runs under whatever JDK the Gradle daemon picked, which can diverge
+// from the Kotlin compiler's target on dev machines that auto-pick a
+// higher JDK. CI is already on Temurin 17 (Story 1-3) so this is a
+// dev-environment guard. `configureEach` is used because AGP-derived
+// source sets are named after the published variant (e.g. `release`),
+// not `main` as on a Kotlin-JVM module.
+dokka {
+    dokkaSourceSets.configureEach {
+        jdkVersion.set(17)
+    }
 }
 
 android {
@@ -103,14 +122,16 @@ dependencies {
 // the new Central Portal (the legacy OSSRH endpoint was retired June 2025).
 mavenPublishing {
     // Configure the Android library publication: publish only the `release`
-    // variant, build a sources JAR and a stub Javadoc JAR (vanniktech generates
-    // an empty Javadoc JAR since we don't run Dokka — meets the Central
-    // Portal's "sources + javadoc" requirement without needing Dokka wiring).
+    // variant, build a sources JAR, and a Dokka-generated Javadoc JAR
+    // (Story 6.1). `JavadocJar.Dokka("dokkaGenerateHtml")` wires vanniktech
+    // to the Dokka V2 task output so consumers browsing Maven Central get
+    // real API reference docs (not an empty stub). Task name is the V2 form
+    // — the V1 alias `dokkaHtml` was removed in Dokka 2.2.0.
     // The (String, Boolean, Boolean) constructor is deprecated in 0.36.0;
     // the canonical form is (JavadocJar, SourcesJar, variant).
     configure(
         AndroidSingleVariantLibrary(
-            javadocJar = JavadocJar.Empty(),
+            javadocJar = JavadocJar.Dokka("dokkaGenerateHtml"),
             sourcesJar = SourcesJar.Sources(),
             variant = "release",
         ),

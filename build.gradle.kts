@@ -6,6 +6,10 @@ plugins {
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.android.library) apply false
     alias(libs.plugins.kover) apply false
+    // Story 6.1: Dokka is not applied at the root but declared here with
+    // `apply false` so subprojects can `alias(libs.plugins.dokka)` without
+    // a second version.ref. :packages:core and :packages:sdk apply it.
+    alias(libs.plugins.dokka) apply false
 }
 
 // Resolve the detekt version from the version catalog at configuration time
