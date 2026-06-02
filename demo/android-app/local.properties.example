@@ -1,0 +1,17 @@
+# Convert Android SDK Demo App — local.properties example
+#
+# Copy this file to `local.properties` and fill in your values. Both
+# `local.properties` and `.idea/` are git-ignored by Android Studio's
+# default .gitignore, so your real SDK key never hits version control.
+#
+# Android SDK path (Android Studio normally populates this automatically
+# when you first open the project — the line below is here only as a
+# template).
+# sdk.dir=/Users/you/Library/Android/sdk
+#
+# Convert SDK key — override the `"demo-sdk-key"` default wired into
+# BuildConfig. See `app/build.gradle.kts` for the read-and-inject logic.
+# When this entry is absent, `assembleDebug` still succeeds (the SDK
+# initialises with the placeholder key and the first config fetch fails
+# quietly — plenty for the scaffolding story's launch-verification gate).
+# convertSdkKey=your-staging-sdk-key-here

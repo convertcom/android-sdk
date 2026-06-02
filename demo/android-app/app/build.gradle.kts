@@ -1,0 +1,156 @@
+/*
+ * Convert Android SDK Demo App — :app module build
+ * Copyright (c) 2026 Convert Insights, Inc.
+ * License: Apache-2.0
+ *
+ * Story 7.1 AC-2 — standard Compose application module. The
+ * `com.convert:sdk-android` dependency resolves against the composite
+ * include in `settings.gradle.kts` (`includeBuild("../../")`) — Gradle
+ * substitutes the locally-built AAR at sync time.
+ *
+ * ### Plugin choices
+ *
+ * AGP 9.1.0's `com.android.application` ships with Kotlin support
+ * built-in — applying `org.jetbrains.kotlin.android` is no longer
+ * required AND is rejected at apply time with a hard error (not just
+ * a warning). See `packages/sdk/build.gradle.kts` for the canonical
+ * comment and https://kotl.in/gradle/agp-built-in-kotlin for the
+ * upstream announcement.
+ *
+ * `org.jetbrains.kotlin.plugin.compose` IS still required on Kotlin
+ * 2.x — the legacy `composeOptions { kotlinCompilerExtensionVersion
+ * = ... }` block was retired when the Compose compiler moved out of
+ * AGP and into its own plugin (released with Kotlin 2.0).
+ */
+
+import java.util.Properties
+
+plugins {
+    id("com.android.application") version "9.1.0"
+    id("org.jetbrains.kotlin.plugin.compose") version "2.3.20"
+}
+
+// Read the convertSdkKey from local.properties (git-ignored) so devs can
+// point the demo at their own Convert account. AC-3 prefers this path
+// over a hard-coded key. When the entry is missing we fall back to the
+// placeholder `"demo-sdk-key"` so `assembleDebug` succeeds cleanly in CI
+// and on fresh clones — the SDK initialises, the first config fetch
+// fails silently, and the scaffolding launch-verification gate still
+// passes (AC-10).
+val convertSdkKey: String = run {
+    val localProps = Properties().apply {
+        val f = rootProject.file("local.properties")
+        if (f.exists()) {
+            f.inputStream().use { load(it) }
+        }
+    }
+    localProps.getProperty("convertSdkKey") ?: "demo-sdk-key"
+}
+
+android {
+    namespace = "com.convert.sdk.demo"
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = "com.convert.sdk.demo"
+        minSdk = 24
+        // targetSdk 35 — Play Store's current requirement (API 35 = Android
+        // 15) and aligns with the SDK module's compileSdk so we share one
+        // toolchain surface.
+        targetSdk = 35
+        versionCode = 1
+        versionName = "0.1.0"
+
+        buildConfigField("String", "convertSdkKey", "\"$convertSdkKey\"")
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
+    // AGP 9 source set layout — kotlin source lives under `src/main/kotlin`
+    // (the project uses the same convention as the SDK modules).
+    sourceSets {
+        getByName("main") {
+            java.srcDirs("src/main/kotlin")
+        }
+        getByName("test") {
+            java.srcDirs("src/test/kotlin")
+        }
+    }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+
+    // Use JUnit 5 for unit tests — matches the SDK module's stack and lets
+    // the demo consume the same junit-jupiter + mockk + coroutines-test
+    // version train without a second testing paradigm for devs to learn.
+    testOptions {
+        unitTests.all {
+            it.useJUnitPlatform()
+        }
+    }
+}
+
+kotlin {
+    jvmToolchain(17)
+}
+
+dependencies {
+    // The SDK — resolved via composite build to the locally-built AAR.
+    // Coordinates mirror `packages/sdk/build.gradle.kts` mavenPublishing.
+    implementation("com.convert:sdk-android")
+
+    // AndroidX core + lifecycle + activity. Versions pinned to the last
+    // compileSdk-35-compatible release of each library (later releases
+    // force compileSdk 36+). When Android Studio bumps the installed
+    // platforms to 36, this project can raise compileSdk + these
+    // versions in lockstep without any other change.
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.0")
+    implementation("androidx.activity:activity-compose:1.10.0")
+
+    // Compose BOM — pinned to 2025.04.00 in the demo's own version
+    // catalog (`gradle/libs.versions.toml`) per Story 7.1 AC-2 (F-075 +
+    // F-144 audit remediation). Story Gotcha 2 ties this version to
+    // Kotlin 2.3.20: the Compose compiler plugin (applied above at
+    // Kotlin 2.3.20) governs compiler compatibility while the BOM
+    // governs runtime artifact versions. Catalog reference rather than
+    // an inline string keeps the version definition in one place — the
+    // catalog — for future bumps.
+    implementation(platform(libs.compose.bom))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+
+    // Navigation Compose — 2.8.x is the last line compatible with
+    // compileSdk 35.
+    implementation("androidx.navigation:navigation-compose:2.8.5")
+
+    // Kotlinx coroutines (the Compose runtime pulls a recent core in
+    // transitively, but we declare it explicitly so the version is obvious
+    // to developers reading this file).
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+
+    // Debug-only Compose tooling
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+
+    // Tests — match the SDK module's stack
+    testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
+    testImplementation("io.mockk:mockk:1.13.13")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
