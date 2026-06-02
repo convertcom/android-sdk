@@ -8,6 +8,7 @@ package com.convert.sdk.demo.viewmodel
 import androidx.lifecycle.ViewModel
 import com.convert.sdk.core.event.SystemEvents
 import com.convert.sdk.core.model.LogLevel
+import com.convert.sdk.core.model.Variation
 import com.convert.sdk.core.port.Logger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -67,6 +68,7 @@ import kotlinx.coroutines.flow.update
 class SdkViewModel(
     eventSubscriber: EventSubscriber,
     initialNetworkOnline: Boolean = true,
+    private val experienceRunner: ExperienceRunner = NoOpExperienceRunner,
 ) : ViewModel() {
 
     private val _events = MutableStateFlow<List<InspectorEvent>>(emptyList())
@@ -102,6 +104,16 @@ class SdkViewModel(
      * composable would reset whenever the user changes screens.
      */
     val selectedTab: StateFlow<InspectorTab> = _selectedTab.asStateFlow()
+
+    private val _results = MutableStateFlow<List<ExperienceResult>>(emptyList())
+
+    /**
+     * Story 7.3 — newest-first list of Experience-screen outcomes.
+     * Each entry is the result of a single `Run Experience` /
+     * `Run Experiences` tap. Capped at [RESULTS_CAP]; older entries
+     * roll off the tail when a new one is prepended.
+     */
+    val results: StateFlow<List<ExperienceResult>> = _results.asStateFlow()
 
     /**
      * Internal logger that both forwards to any delegate the caller
@@ -162,6 +174,93 @@ class SdkViewModel(
     /** Story 7.2 AC-2 — updates the active inspector tab. */
     fun selectTab(tab: InspectorTab) {
         _selectedTab.value = tab
+    }
+
+    /**
+     * Story 7.3 AC-2 / AC-4 — buckets [experienceKey] via the injected
+     * [ExperienceRunner] and prepends an [ExperienceResult] to
+     * [results].
+     *
+     * A non-null return → non-error result carrying [Variation.key] as
+     * the displayed variation. A `null` return → error result whose
+     * title tells the developer the experience produced no variation
+     * and whose hint nudges them to check the experience config or
+     * audience rules.
+     *
+     * Side-effect: the underlying SDK fires
+     * [SystemEvents.BUCKETING] on the pub/sub bus which this same
+     * ViewModel is subscribed to — so the Events tab lights up
+     * automatically. No manual `addEvent` call is needed.
+     */
+    fun runSingleExperience(experienceKey: String) {
+        val variation = experienceRunner.runExperience(experienceKey)
+        val result = if (variation != null) {
+            ExperienceResult(
+                id = ExperienceResult.nextId(),
+                experienceKey = experienceKey,
+                variationKey = variation.key,
+            )
+        } else {
+            ExperienceResult(
+                id = ExperienceResult.nextId(),
+                experienceKey = experienceKey,
+                isError = true,
+                errorMessage = "No variation for experience $experienceKey",
+                errorHint = "Check experience config or audience eligibility.",
+            )
+        }
+        appendResult(result)
+    }
+
+    /**
+     * Story 7.3 AC-3 / AC-4 — buckets every eligible experience via
+     * the injected [ExperienceRunner] and prepends one
+     * [ExperienceResult] per resolved [Variation].
+     *
+     * An empty return (no eligible experiences / config not ready)
+     * yields a single hint result so the developer sees an
+     * actionable card instead of a silent no-op.
+     *
+     * Results are prepended in emission order, which means the last
+     * variation in the returned list ends up at the head of [results]
+     * (newest-first convention — matches the Events inspector).
+     */
+    fun runAllExperiences() {
+        val variations = experienceRunner.runExperiences()
+        if (variations.isEmpty()) {
+            appendResult(
+                ExperienceResult(
+                    id = ExperienceResult.nextId(),
+                    experienceKey = "(none)",
+                    isError = true,
+                    errorMessage = "No eligible experiences",
+                    errorHint = "Visitor did not match any experience's audience " +
+                        "or config has not loaded yet.",
+                ),
+            )
+            return
+        }
+        variations.forEach { variation ->
+            appendResult(
+                ExperienceResult(
+                    id = ExperienceResult.nextId(),
+                    experienceKey = variation.experienceKey ?: "(unknown)",
+                    variationKey = variation.key,
+                ),
+            )
+        }
+    }
+
+    /** Story 7.3 — drops every ExperienceResult card from the screen. */
+    fun clearResults() {
+        _results.value = emptyList()
+    }
+
+    private fun appendResult(result: ExperienceResult) {
+        _results.update { current ->
+            val prepended = listOf(result) + current
+            if (prepended.size <= RESULTS_CAP) prepended else prepended.take(RESULTS_CAP)
+        }
     }
 
     private fun onSdkEvent(event: String, payload: Map<String, Any?>) {
@@ -241,5 +340,24 @@ class SdkViewModel(
             SystemEvents.CONVERSION,
             SystemEvents.API_QUEUE_RELEASED,
         )
+
+        /**
+         * Story 7.3 Gotcha 2 — bound on the results list so a developer
+         * mashing the run buttons cannot create an unbounded `LazyColumn`.
+         */
+        const val RESULTS_CAP: Int = 20
     }
+}
+
+/**
+ * Story 7.3 — default [ExperienceRunner] used by the production
+ * constructor when the caller does not supply one. In real use
+ * [com.convert.sdk.demo.DemoApplication] passes a runner backed by
+ * the SDK; this no-op lets the Robolectric
+ * [com.convert.sdk.demo.ui.EventInspectorSheetTest] keep its
+ * two-arg constructor call working unchanged.
+ */
+private object NoOpExperienceRunner : ExperienceRunner {
+    override fun runExperience(experienceKey: String): Variation? = null
+    override fun runExperiences(): List<Variation> = emptyList()
 }
