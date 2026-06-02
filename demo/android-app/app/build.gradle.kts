@@ -67,6 +67,14 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // Story 7.2 — EventInspectorSheet renders event timestamps with
+        // `java.time.DateTimeFormatter` (Gotcha 2: "use
+        // DateTimeFormatter.ofPattern(\"HH:mm:ss.SSS\") from java.time").
+        // `java.time` was added in API 26; minSdk is 24. Core-library
+        // desugaring backports the API set so these calls are safe on
+        // API 24/25 devices. This is the single-dependency
+        // standard-library shim recommended by Google for new code.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     buildFeatures {
@@ -94,7 +102,14 @@ android {
     // Use JUnit 5 for unit tests — matches the SDK module's stack and lets
     // the demo consume the same junit-jupiter + mockk + coroutines-test
     // version train without a second testing paradigm for devs to learn.
+    //
+    // `includeAndroidResources = true` is required by Robolectric Compose
+    // UI tests: `createComposeRule()` stands up an `androidx.activity.
+    // ComponentActivity` via `ActivityScenario`, and that activity is
+    // declared in the `ui-test-manifest` artifact's AndroidManifest.xml
+    // — the resource merger only picks it up when this flag is on.
     testOptions {
+        unitTests.isIncludeAndroidResources = true
         unitTests.all {
             it.useJUnitPlatform()
         }
@@ -148,9 +163,35 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
+    // Story 7.2 — core-library desugaring runtime. Ships the API 26+
+    // `java.time` classes back-compat to API 24. Required by the
+    // `isCoreLibraryDesugaringEnabled = true` flag above.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+
     // Tests — match the SDK module's stack
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
     testImplementation("io.mockk:mockk:1.13.13")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+    // Story 7.2 AC-8 — Compose UI tests for EventInspectorSheet.
+    //
+    // `ui-test-junit4` is a JUnit-4 rule library (`createComposeRule` /
+    // `createAndroidComposeRule`). This module runs on JUnit 5, but
+    // the junit-vintage-engine below lets JUnit 4 tests cohabit with
+    // JUnit Jupiter tests (same pattern `:packages:sdk` uses for its
+    // Robolectric suite).
+    //
+    // `ui-test-manifest` is already added to `debugImplementation`
+    // above (that's the AGP-recommended configuration for a
+    // dependency that's only used by tests but needs to be on the
+    // packaged resource path).
+    //
+    // Robolectric provides the Android shadow runtime so the Compose
+    // rule can stand up a `ComponentActivity` without an instrumented
+    // device. The project already uses Robolectric 4.16 in the SDK
+    // module's version catalog.
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("org.robolectric:robolectric:4.16")
+    testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.11.4")
 }
