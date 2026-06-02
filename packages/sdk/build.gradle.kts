@@ -24,12 +24,21 @@ android {
         minSdk = 24
         consumerProguardFiles("consumer-rules.pro")
     }
+
     // No compileOptions / kotlinOptions.jvmTarget here — JDK level is set by the
     // explicit kotlin { jvmToolchain(17) } block below. Per the Kotlin Gradle plugin
     // docs (https://kotlinlang.org/docs/gradle-configure-project.html#gradle-java-toolchains-support),
     // jvmToolchain(17) automatically derives jvmTarget AND sourceCompatibility/
     // targetCompatibility = VERSION_17 for AGP 8+; any duplicate declaration produces
     // a Gradle warning and must be omitted.
+
+    // Robolectric (Story 2.1) reads `testOptions.unitTests.isIncludeAndroidResources`
+    // to hand the shadow android.content.Context a real resources/assets surface.
+    // Without this, ShadowLog works but any test that materialises resources
+    // via getSystemService/getSharedPreferences hits a NotFoundException.
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 // Vendor is pinned to Eclipse Adoptium (Temurin) so Gradle's toolchain resolver does NOT
@@ -53,10 +62,22 @@ dependencies {
     implementation(libs.androidx.startup.runtime)
 
     testImplementation(libs.junit.jupiter)
+    testImplementation(libs.mockk)
+    testImplementation(libs.kotlinx.coroutines.test)
+    // Robolectric 4.16 — provides JVM-side shadows for android.util.Log,
+    // android.content.Context, SharedPreferences. Required by Story 2.1
+    // AC-10 tests (AndroidLoggerTest, SharedPrefsDataStoreTest, ConvertSDKTest).
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.okhttp.mockwebserver)
     // Gradle 9+ needs the launcher wired explicitly; the junit-jupiter aggregator
     // no longer brings it in transitively. Without it, `gradle test` fails with
     // "Failed to load JUnit Platform".
     testRuntimeOnly(libs.junit.platform.launcher)
+    // Robolectric itself ships as a JUnit 4 runner. JUnit 5 loads it via
+    // the vintage engine. Without this, @RunWith(RobolectricTestRunner::class)
+    // tests silently don't execute.
+    testRuntimeOnly(libs.junit.vintage.engine)
 }
 
 // Maven Central publishing (Story 1.4). vanniktech 0.36.0 removed the
@@ -142,16 +163,18 @@ kover {
     reports {
         verify {
             rule {
-                // NFR19 targets 70% for packages/sdk. Until the Robolectric-
-                // backed test suites land with the HTTP/adapter wiring
-                // (Story 2.2+), the only testable code is the pure-JVM
-                // surface of ConvertSDK/ConvertContext — ConvertSDK.Builder
-                // cannot be driven from a pure-JVM test because every setter
-                // that matters lives behind `ConvertSDK.builder(Context)`.
-                // Keep the bound at an achievable floor for now and ratchet
-                // it back up to 70 once Robolectric tests arrive. Tracked
-                // for restore in Story 2.2.
-                minBound(50)
+                // NFR19 target: 70% for packages/sdk. Story 2.1 lands the
+                // Robolectric-backed tests (ConvertSDKTest, AndroidLoggerTest,
+                // SharedPrefsDataStoreTest, OkHttpClientAdapterTest) that
+                // exercise the full Builder path, the coroutine scope, and
+                // every adapter. Measured line coverage after Story 2.1:
+                // 244/(244+12) = 95.3% — comfortably above the NFR floor.
+                // The bound is ratcheted to 70 (not 95) to leave headroom
+                // for Story 2.2+ code that may land alongside incomplete
+                // test coverage during the RED phase of each subsequent
+                // story; 70 matches the NFR target, and any regression
+                // below 70 fails the build.
+                minBound(70)
             }
         }
     }
