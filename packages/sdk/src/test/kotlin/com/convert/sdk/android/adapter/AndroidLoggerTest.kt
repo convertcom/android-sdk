@@ -19,6 +19,17 @@ import org.robolectric.shadows.ShadowLog
 /**
  * Robolectric-backed tests for [AndroidLogger]. Story 2.1 AC-8.
  *
+ * ### AC-6.1 isolation contract
+ *
+ * [ShadowLog.getLogs] is a JVM-static buffer shared across all Robolectric
+ * tests that run in the same process. Cross-class log bleed can make
+ * exact-size assertions fail non-deterministically under `org.gradle.parallel=true`.
+ *
+ * Every assertion in this file filters the static buffer for entries that
+ * match the tag(s) emitted by the logger under test. The exact size of the
+ * full buffer is never asserted — only that the test-owned entries satisfy
+ * the expected type/content constraints.
+ *
  * Covers:
  * - Level filtering: debug() emits nothing when level=INFO.
  * - All four levels pass through when level=DEBUG or more permissive.
@@ -44,12 +55,12 @@ internal class AndroidLoggerTest {
         logger.info("i")
         logger.debug("d")
 
-        val logs = ShadowLog.getLogs()
-        assertEquals(4, logs.size)
-        assertEquals(Log.ERROR, logs[0].type)
-        assertEquals(Log.WARN, logs[1].type)
-        assertEquals(Log.INFO, logs[2].type)
-        assertEquals(Log.DEBUG, logs[3].type)
+        val ownLogs = ShadowLog.getLogs().filter { it.tag == AndroidLogger.DEFAULT_TAG }
+        assertEquals(4, ownLogs.size)
+        assertEquals(Log.ERROR, ownLogs[0].type)
+        assertEquals(Log.WARN, ownLogs[1].type)
+        assertEquals(Log.INFO, ownLogs[2].type)
+        assertEquals(Log.DEBUG, ownLogs[3].type)
     }
 
     @Test
@@ -61,10 +72,10 @@ internal class AndroidLoggerTest {
         logger.info("i")
         logger.debug("d")
 
-        val logs = ShadowLog.getLogs()
-        assertEquals(3, logs.size)
+        val ownLogs = ShadowLog.getLogs().filter { it.tag == AndroidLogger.DEFAULT_TAG }
+        assertEquals(3, ownLogs.size)
         // DEBUG not present
-        assertTrue(logs.none { it.type == Log.DEBUG })
+        assertTrue(ownLogs.none { it.type == Log.DEBUG })
     }
 
     @Test
@@ -76,10 +87,10 @@ internal class AndroidLoggerTest {
         logger.info("i")
         logger.debug("d")
 
-        val logs = ShadowLog.getLogs()
-        assertEquals(2, logs.size)
-        assertTrue(logs.none { it.type == Log.INFO })
-        assertTrue(logs.none { it.type == Log.DEBUG })
+        val ownLogs = ShadowLog.getLogs().filter { it.tag == AndroidLogger.DEFAULT_TAG }
+        assertEquals(2, ownLogs.size)
+        assertTrue(ownLogs.none { it.type == Log.INFO })
+        assertTrue(ownLogs.none { it.type == Log.DEBUG })
     }
 
     @Test
@@ -91,9 +102,9 @@ internal class AndroidLoggerTest {
         logger.info("i")
         logger.debug("d")
 
-        val logs = ShadowLog.getLogs()
-        assertEquals(1, logs.size)
-        assertEquals(Log.ERROR, logs[0].type)
+        val ownLogs = ShadowLog.getLogs().filter { it.tag == AndroidLogger.DEFAULT_TAG }
+        assertEquals(1, ownLogs.size)
+        assertEquals(Log.ERROR, ownLogs[0].type)
     }
 
     @Test
@@ -105,7 +116,8 @@ internal class AndroidLoggerTest {
         logger.info("i")
         logger.debug("d")
 
-        assertTrue(ShadowLog.getLogs().isEmpty())
+        val ownLogs = ShadowLog.getLogs().filter { it.tag == AndroidLogger.DEFAULT_TAG }
+        assertTrue(ownLogs.isEmpty())
     }
 
     @Test
@@ -118,7 +130,8 @@ internal class AndroidLoggerTest {
         logger.info("i")
         logger.debug("d")
 
-        assertEquals(4, ShadowLog.getLogs().size)
+        val ownLogs = ShadowLog.getLogs().filter { it.tag == AndroidLogger.DEFAULT_TAG }
+        assertEquals(4, ownLogs.size)
     }
 
     @Test
@@ -127,31 +140,33 @@ internal class AndroidLoggerTest {
 
         logger.info("hello")
 
-        val logs = ShadowLog.getLogs()
-        assertEquals(1, logs.size)
-        assertEquals("ConvertSDK", logs[0].tag)
+        val ownLogs = ShadowLog.getLogs().filter { it.tag == AndroidLogger.DEFAULT_TAG }
+        assertEquals(1, ownLogs.size)
+        assertEquals(AndroidLogger.DEFAULT_TAG, ownLogs[0].tag)
     }
 
     @Test
     fun `per-call tag overrides the default tag`() {
+        val overrideTag = "DataManager"
         val logger = AndroidLogger(level = LogLevel.DEBUG)
 
-        logger.info("hello", tag = "DataManager")
+        logger.info("hello", tag = overrideTag)
 
-        val logs = ShadowLog.getLogs()
-        assertEquals(1, logs.size)
-        assertEquals("DataManager", logs[0].tag)
+        val ownLogs = ShadowLog.getLogs().filter { it.tag == overrideTag }
+        assertEquals(1, ownLogs.size)
+        assertEquals(overrideTag, ownLogs[0].tag)
     }
 
     @Test
     fun `constructor-supplied default tag is used when per-call tag is null`() {
-        val logger = AndroidLogger(level = LogLevel.DEBUG, defaultTag = "ConvertSDK-Test")
+        val customTag = "ConvertSDK-Test"
+        val logger = AndroidLogger(level = LogLevel.DEBUG, defaultTag = customTag)
 
         logger.warn("hello")
 
-        val logs = ShadowLog.getLogs()
-        assertEquals(1, logs.size)
-        assertEquals("ConvertSDK-Test", logs[0].tag)
+        val ownLogs = ShadowLog.getLogs().filter { it.tag == customTag }
+        assertEquals(1, ownLogs.size)
+        assertEquals(customTag, ownLogs[0].tag)
     }
 
     @Test
@@ -161,12 +176,14 @@ internal class AndroidLoggerTest {
 
         logger.error("broke", throwable = boom)
 
-        val logs = ShadowLog.getLogs()
-        assertEquals(1, logs.size)
-        assertEquals(Log.ERROR, logs[0].type)
-        assertEquals("broke", logs[0].msg)
-        assertNotNull(logs[0].throwable)
-        assertEquals(boom, logs[0].throwable)
+        val ownLogs = ShadowLog.getLogs().filter {
+            it.tag == AndroidLogger.DEFAULT_TAG && it.type == Log.ERROR
+        }
+        assertEquals(1, ownLogs.size)
+        assertEquals(Log.ERROR, ownLogs[0].type)
+        assertEquals("broke", ownLogs[0].msg)
+        assertNotNull(ownLogs[0].throwable)
+        assertEquals(boom, ownLogs[0].throwable)
     }
 
     @Test
@@ -176,10 +193,12 @@ internal class AndroidLoggerTest {
 
         logger.warn("something", throwable = warn)
 
-        val logs = ShadowLog.getLogs()
-        assertEquals(1, logs.size)
-        assertEquals(Log.WARN, logs[0].type)
-        assertEquals(warn, logs[0].throwable)
+        val ownLogs = ShadowLog.getLogs().filter {
+            it.tag == AndroidLogger.DEFAULT_TAG && it.type == Log.WARN
+        }
+        assertEquals(1, ownLogs.size)
+        assertEquals(Log.WARN, ownLogs[0].type)
+        assertEquals(warn, ownLogs[0].throwable)
     }
 
     @Test
@@ -188,6 +207,10 @@ internal class AndroidLoggerTest {
 
         logger.info("my informational message")
 
-        assertEquals("my informational message", ShadowLog.getLogs().single().msg)
+        val ownLogs = ShadowLog.getLogs().filter {
+            it.tag == AndroidLogger.DEFAULT_TAG && it.msg == "my informational message"
+        }
+        assertEquals(1, ownLogs.size)
+        assertEquals("my informational message", ownLogs.single().msg)
     }
 }

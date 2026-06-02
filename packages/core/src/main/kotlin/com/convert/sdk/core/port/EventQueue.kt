@@ -49,4 +49,24 @@ public interface EventQueue {
      * @return queue size.
      */
     suspend fun size(): Int
+
+    /**
+     * Atomically reads all events from the queue **and** removes them in a
+     * single critical section so no concurrent [persist] call can interleave
+     * between the read and the deletion.
+     *
+     * Atomicity property: because read + delete happen under one lock that
+     * [persist] also contends, no [persist] can interleave between the read
+     * and the delete.  The returned set equals the removed set; a [persist]
+     * arriving mid-drain blocks, then appends to the freshly-emptied queue.
+     *
+     * On corruption / absent / blank file: returns [emptyList] and deletes
+     * the bad file — the same recovery branches as [read].  No exception
+     * escapes this call.
+     *
+     * @return the list of events that were in the queue at the moment of the
+     *   atomic claim, in enqueue order.  Empty when the queue was already
+     *   empty or contained only corrupt data.
+     */
+    suspend fun drain(): List<VisitorEvent>
 }

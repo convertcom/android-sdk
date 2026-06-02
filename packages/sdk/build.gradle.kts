@@ -207,8 +207,15 @@ mavenPublishing {
 
 // AGP's generated unit-test tasks don't default to JUnit 5. Opt every
 // `test*UnitTest` task into JUnit Platform so JUnit Jupiter gets used.
+//
+// AC-6.1 isolation: forkEvery=1 spawns a fresh JVM for each test class so
+// Robolectric's JVM-static singletons (ShadowLog, WorkManager, etc.) are
+// fully reset between classes — no cross-class pollution under parallel
+// execution. The per-fork JVM startup cost is acceptable for the test suite
+// size; if it becomes a bottleneck, raise forkEvery to 5–10 and re-verify.
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
+    forkEvery = 1
 }
 
 kover {

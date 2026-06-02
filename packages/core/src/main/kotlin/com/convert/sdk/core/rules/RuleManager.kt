@@ -156,17 +156,33 @@ public class RuleManager(
     /**
      * Evaluates a list of audience AND-inner blocks. Returns `true`
      * only when EVERY block matches. A missing / empty `AND` list is
-     * treated as "no inner constraints" → `true`, aligning with the
-     * JS SDK's warn-and-skip behaviour.
+     * treated as an INVALID rule → log WARN + return `false`, matching
+     * JS SDK `_processAND` (`rule-manager.ts:196-219`): an absent/empty
+     * `AND` property warns and returns `false` (not "no constraints").
+     * Likewise, a missing / empty `OR_WHEN` within a block warns and
+     * short-circuits that block to `false`, matching JS SDK `_processORWHEN`
+     * (`rule-manager.ts:229-254`).
      */
     private fun evaluateAndBlock(
         andBlocks: List<com.convert.sdk.core.model.generated.RuleObjectAudienceORInnerANDInner>?,
         attributes: Map<String, JsonElement>,
     ): Boolean {
-        if (andBlocks.isNullOrEmpty()) return true
+        if (andBlocks.isNullOrEmpty()) {
+            logger.warn(
+                message = "RuleManager._processAND(): rule not valid (missing or empty AND property)",
+                tag = TAG,
+            )
+            return false
+        }
         return andBlocks.all { block ->
             val orWhen = block.OR_WHEN
-            if (orWhen.isNullOrEmpty()) return@all true
+            if (orWhen.isNullOrEmpty()) {
+                logger.warn(
+                    message = "RuleManager._processORWHEN(): rule not valid (missing or empty OR_WHEN property)",
+                    tag = TAG,
+                )
+                return@all false
+            }
             orWhen.any { element ->
                 evaluateRawElement(asRawObject(element, audience = true), attributes)
             }
@@ -178,10 +194,22 @@ public class RuleManager(
         andBlocks: List<com.convert.sdk.core.model.generated.RuleObjectORInnerANDInner>?,
         attributes: Map<String, JsonElement>,
     ): Boolean {
-        if (andBlocks.isNullOrEmpty()) return true
+        if (andBlocks.isNullOrEmpty()) {
+            logger.warn(
+                message = "RuleManager._processAND(): rule not valid (missing or empty AND property)",
+                tag = TAG,
+            )
+            return false
+        }
         return andBlocks.all { block ->
             val orWhen = block.OR_WHEN
-            if (orWhen.isNullOrEmpty()) return@all true
+            if (orWhen.isNullOrEmpty()) {
+                logger.warn(
+                    message = "RuleManager._processORWHEN(): rule not valid (missing or empty OR_WHEN property)",
+                    tag = TAG,
+                )
+                return@all false
+            }
             orWhen.any { element ->
                 evaluateRawElement(asRawObject(element, audience = false), attributes)
             }
@@ -268,6 +296,21 @@ public class RuleManager(
 
         val attrValue = lookupAttribute(attributes, ruleKey)
         if (attrValue == null) {
+            // `exists` and `doesNotExist` are dispatched even when the
+            // attribute key is absent — the comparator receives JsonNull
+            // (equivalent to JS `undefined`), so `exists=false` and
+            // `doesNotExist=true` are the natural results. This mirrors
+            // JS SDK `_processRuleItem` calling the comparator with
+            // `undefined` after exhausting the key search loop
+            // (`rule-manager.ts:323-333`).
+            if (matchType == "exists" || matchType == "doesNotExist") {
+                return Comparisons.apply(
+                    matchType = matchType,
+                    value = JsonNull,
+                    testAgainst = ruleValue,
+                    negation = negation,
+                ) ?: false
+            }
             logger.warn(
                 message = "RuleManager.evaluate(): missing attribute \"$ruleKey\" " +
                     "for match_type \"$matchType\"; treating as not eligible",

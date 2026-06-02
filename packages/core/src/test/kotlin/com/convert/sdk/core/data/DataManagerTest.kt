@@ -89,11 +89,14 @@ internal class DataManagerTest {
     }
 
     @Test
-    fun `second setData overwrites and re-fires READY`() = runTest {
+    fun `second setData overwrites config and fires CONFIG_UPDATED, not READY`() = runTest {
+        // AC-5.1: first call → READY; subsequent calls → CONFIG_UPDATED.
         val eventManager = EventManager(scope = this)
         val manager = DataManager(eventManager, environment = "staging")
         var readyFires = 0
+        var configUpdatedFires = 0
         eventManager.on(SystemEvents.READY) { readyFires++ }
+        eventManager.on(SystemEvents.CONFIG_UPDATED) { configUpdatedFires++ }
 
         val first = ConfigResponseData()
         val second = ConfigResponseData()
@@ -104,7 +107,122 @@ internal class DataManagerTest {
         advanceUntilIdle()
 
         assertEquals(second, manager.data)
-        assertEquals(2, readyFires)
+        // READY fires exactly once (first seed); second call fires CONFIG_UPDATED.
+        assertEquals(1, readyFires)
+        assertEquals(1, configUpdatedFires)
+    }
+
+    // --- Cluster 5 / AC-5.1: READY fires once, CONFIG_UPDATED per refresh.
+
+    @Test
+    fun `AC-5-1 READY fires exactly once across N setData calls`() = runTest {
+        val eventManager = EventManager(scope = this)
+        val manager = DataManager(eventManager, environment = "prod")
+        var readyFires = 0
+        var configUpdatedFires = 0
+        eventManager.on(SystemEvents.READY) { readyFires++ }
+        eventManager.on(SystemEvents.CONFIG_UPDATED) { configUpdatedFires++ }
+
+        // First seed (simulates cache or initial fetch).
+        manager.setData(ConfigResponseData())
+        advanceUntilIdle()
+
+        // Three subsequent refreshes.
+        repeat(3) {
+            manager.setData(ConfigResponseData())
+            advanceUntilIdle()
+        }
+
+        assertEquals(
+            1,
+            readyFires,
+            "READY must fire exactly once across the SDK lifetime",
+        )
+        assertEquals(
+            3,
+            configUpdatedFires,
+            "CONFIG_UPDATED must fire once per refresh (3 refreshes)",
+        )
+    }
+
+    @Test
+    fun `AC-5-1 cache-then-fetch — cache seed fires READY, first fetch fires CONFIG_UPDATED`() =
+        runTest {
+            val eventManager = EventManager(scope = this)
+            val manager = DataManager(eventManager, environment = "staging")
+            var readyFires = 0
+            var configUpdatedFires = 0
+            eventManager.on(SystemEvents.READY) { readyFires++ }
+            eventManager.on(SystemEvents.CONFIG_UPDATED) { configUpdatedFires++ }
+
+            // Simulate cache seed on cold start.
+            manager.setData(ConfigResponseData())
+            advanceUntilIdle()
+
+            assertEquals(1, readyFires, "cache seed must fire READY")
+            assertEquals(0, configUpdatedFires, "no CONFIG_UPDATED yet after cache seed")
+
+            // Simulate first network fetch completing after the cache was used.
+            manager.setData(ConfigResponseData())
+            advanceUntilIdle()
+
+            assertEquals(1, readyFires, "READY must not fire again after cache seed")
+            assertEquals(
+                1,
+                configUpdatedFires,
+                "first network fetch after cache fires CONFIG_UPDATED",
+            )
+        }
+
+    @Test
+    fun `AC-5-1 no double CONFIG_UPDATED — exactly N fires for N refreshes`() = runTest {
+        val eventManager = EventManager(scope = this)
+        val manager = DataManager(eventManager, environment = "prod")
+        val refreshCount = 5
+        var configUpdatedFires = 0
+        eventManager.on(SystemEvents.CONFIG_UPDATED) { configUpdatedFires++ }
+
+        // Seed once (READY).
+        manager.setData(ConfigResponseData())
+        advanceUntilIdle()
+
+        // N subsequent refreshes, each must fire CONFIG_UPDATED exactly once.
+        repeat(refreshCount) {
+            manager.setData(ConfigResponseData())
+            advanceUntilIdle()
+        }
+
+        assertEquals(
+            refreshCount,
+            configUpdatedFires,
+            "exactly $refreshCount CONFIG_UPDATED fires expected (one per refresh, not 2N)",
+        )
+    }
+
+    @Test
+    fun `AC-5-1 CONFIG_UPDATED payload contains timestamp`() = runTest {
+        val eventManager = EventManager(scope = this)
+        val manager = DataManager(eventManager, environment = "prod")
+        var configUpdatedPayload: Map<String, Any?>? = null
+        eventManager.on(SystemEvents.CONFIG_UPDATED) { configUpdatedPayload = it }
+
+        // Seed (fires READY, not CONFIG_UPDATED).
+        manager.setData(ConfigResponseData())
+        advanceUntilIdle()
+
+        // Refresh (fires CONFIG_UPDATED).
+        val before = System.currentTimeMillis()
+        manager.setData(ConfigResponseData())
+        advanceUntilIdle()
+        val after = System.currentTimeMillis()
+
+        assertNotNull(configUpdatedPayload)
+        val ts = configUpdatedPayload?.get("timestamp") as? Long
+        assertNotNull(ts, "CONFIG_UPDATED payload must contain a 'timestamp' Long")
+        assertTrue(
+            ts!! in before..after,
+            "timestamp must be within the test's window",
+        )
     }
 
     @Test

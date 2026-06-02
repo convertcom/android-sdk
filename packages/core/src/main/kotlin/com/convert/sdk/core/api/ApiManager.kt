@@ -445,22 +445,24 @@ public open class ApiManager(
      *
      * Called by [com.convert.sdk.android.ConvertSDK] when the
      * [NetworkObserver][com.convert.sdk.android.lifecycle.NetworkObserver]
-     * fires on network restore.
+     * fires on network restore, or when the app returns to the foreground
+     * via [com.convert.sdk.android.ConvertSDK.onProcessStart].
      *
-     * Dedup (Story 5.2 AC-6, F-002/F-014 option c): events are compared
-     * against the live queue by [TrackingEvent] content equality (Kotlin
-     * data class `equals()`/`hashCode()` over payload fields). Any event
-     * whose [TrackingEvent] is already present in the live queue is silently
-     * dropped.
+     * **Dedup key (Story 5.2 AC-6 / PR #39 TD-2):** events are compared
+     * against the live queue by a per-subtype fingerprint that includes
+     * `visitorId`:
      *
-     * Known MVP tradeoff: two legitimately separate but payload-identical
-     * events for the same visitor are deduped. Documented as accepted
-     * limitation in the patched 5-2 spec Dev Notes.
+     * - `BucketingEvent` → `(visitorId, "bucketing", experienceId + "+" + variationId)`
+     * - `ConversionEvent` → `(visitorId, "conversion", goalId + "+" + goalData.toString())`
+     *
+     * This ensures that two *different* visitors with identical payloads are
+     * **both** kept (their `visitorId` components differ), while a true
+     * duplicate from the same visitor is dropped once.
      *
      * @param events [com.convert.sdk.core.model.VisitorEvent]s read from
-     *   the [EventQueue] disk store by the NetworkObserver path. Each
-     *   carries a [com.convert.sdk.core.model.TrackingEvent] that is
-     *   re-serialized into the ApiManager's internal wire-JSON format.
+     *   the [EventQueue] disk store. Each carries a
+     *   [com.convert.sdk.core.model.TrackingEvent] that is re-serialized
+     *   into the ApiManager's internal wire-JSON format.
      */
     public open fun reenqueuePersisted(events: List<com.convert.sdk.core.model.VisitorEvent>) {
         if (events.isEmpty()) return
@@ -474,16 +476,46 @@ public open class ApiManager(
             return
         }
         synchronized(queueLock) {
-            // Build a dedup set from the live queue's TrackingEvent payloads.
-            val liveSet: MutableSet<TrackingEvent> =
-                eventQueueInternal.mapTo(HashSet()) { it.trackingEvent }
+            // Seed the dedup set from the live queue's current entries.
+            val liveSet: MutableSet<Triple<String, String, String>> =
+                eventQueueInternal.mapTo(HashSet()) { visitorEventFingerprint(it) }
             events.forEach { ve ->
-                if (liveSet.add(ve.event)) {
+                val fingerprint = persistedEventFingerprint(ve)
+                if (liveSet.add(fingerprint)) {
                     val internalEvent = toInternalVisitorEvent(ve)
                     eventQueueInternal += internalEvent
                 }
             }
         }
+    }
+
+    /**
+     * Computes a `(visitorId, eventType, payloadFingerprint)` triple for
+     * a live-queue [VisitorEvent] (internal format). Used to seed the dedup
+     * set in [reenqueuePersisted].
+     */
+    private fun visitorEventFingerprint(
+        ve: VisitorEvent,
+    ): Triple<String, String, String> = when (val te = ve.trackingEvent) {
+        is BucketingEvent ->
+            Triple(ve.visitorId, EVENT_TYPE_BUCKETING, "${te.experienceId}+${te.variationId}")
+        is ConversionEvent ->
+            Triple(ve.visitorId, EVENT_TYPE_CONVERSION, "${te.goalId}+${te.goalData}")
+    }
+
+    /**
+     * Computes a `(visitorId, eventType, payloadFingerprint)` triple for
+     * a port-model [com.convert.sdk.core.model.VisitorEvent] (persisted format).
+     * Used to check incoming persisted events against [reenqueuePersisted]'s
+     * dedup set.
+     */
+    private fun persistedEventFingerprint(
+        ve: com.convert.sdk.core.model.VisitorEvent,
+    ): Triple<String, String, String> = when (val te = ve.event) {
+        is BucketingEvent ->
+            Triple(ve.visitorId, EVENT_TYPE_BUCKETING, "${te.experienceId}+${te.variationId}")
+        is ConversionEvent ->
+            Triple(ve.visitorId, EVENT_TYPE_CONVERSION, "${te.goalId}+${te.goalData}")
     }
 
     /**

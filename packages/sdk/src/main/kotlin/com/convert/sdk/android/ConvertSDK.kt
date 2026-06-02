@@ -335,22 +335,27 @@ public class ConvertSDK internal constructor(
     /**
      * Re-enqueues any events persisted offline and kicks a flush —
      * driven by [NetworkObserver] on default-network restore (Story 5.2
-     * AC-4). Reading the queue is cheap when the file is absent (returns
-     * an empty list), so this runs unconditionally on every `onAvailable`
-     * tick and short-circuits when there's nothing to drain.
+     * AC-4).
      *
-     * Runs on the SDK [scope]; [EventQueue.read] and [EventQueue.clear]
-     * both suspend on [Dispatchers.IO] inside
+     * Uses [com.convert.sdk.core.port.EventQueue.drain] (atomic
+     * read-and-remove) instead of the former `read() → reenqueuePersisted()
+     * → clear()` sequence, which had a window where a `persist()` call
+     * landing between `read()` and `clear()` would be silently wiped
+     * (PR #39 C1). `drain()` eliminates that window: the file is removed
+     * atomically under the same lock that `persist()` contends, so no
+     * persisted event can be lost.
+     *
+     * Runs on the SDK [scope]; [com.convert.sdk.core.port.EventQueue.drain]
+     * suspends on [Dispatchers.IO] inside
      * [com.convert.sdk.android.adapter.FileEventQueue].
      */
     internal fun onNetworkAvailable() {
         val api = apiManager ?: return
         val queue = fileEventQueue ?: return
         scope.launch {
-            val persisted = queue.read()
+            val persisted = queue.drain()
             if (persisted.isEmpty()) return@launch
             api.reenqueuePersisted(persisted)
-            queue.clear()
             // Re-use the existing flush() path — it already handles
             // retry + re-persist if the network is flaky again.
             api.flushNow()
@@ -423,26 +428,32 @@ public class ConvertSDK internal constructor(
     }
 
     /**
-     * Story 5.3 AC-3 — foreground restore.
+     * Story 5.3 AC-3 — foreground restore (PR #39 H1 fix).
      *
-     * Reads [fileEventQueue] and re-enqueues any persisted events onto
-     * the live [apiManager]; the batch timer then flushes them through
-     * the normal foreground retry path. Empty reads short-circuit.
+     * Drains [fileEventQueue] and re-enqueues any persisted events onto
+     * the live [apiManager] using the visitorId-aware dedup from
+     * [com.convert.sdk.core.api.ApiManager.reenqueuePersisted], so that
+     * persisted events for *different* visitors with identical payloads are
+     * both kept, while true duplicates (same visitor + same payload already
+     * in the live queue) are dropped.
      *
-     * Mirrors [onNetworkAvailable] structurally — the two paths drive
-     * the same "pull from disk, rehydrate, let flush ship them" sequence
-     * from different triggers (network restore vs foreground resume). Kept
-     * separate rather than folded together so the log lines distinguish
-     * the two paths.
+     * Uses [com.convert.sdk.core.port.EventQueue.drain] (atomic
+     * read-and-remove) instead of the former `read() → enqueueAll() →
+     * clear()` sequence, which had two defects:
+     *  1. A `persist()` landing between `read()` and `clear()` was wiped.
+     *  2. `enqueueAll` applied no dedup — persisted duplicates of live-queue
+     *     events would ship twice.
+     *
+     * Mirrors [onNetworkAvailable] structurally — kept separate rather than
+     * folded together so the log lines distinguish the two paths.
      */
     internal fun onProcessStart() {
         val api = apiManager ?: return
         val queue = fileEventQueue ?: return
         scope.launch {
-            val persisted = queue.read()
+            val persisted = queue.drain()
             if (persisted.isEmpty()) return@launch
-            api.enqueueAll(persisted)
-            queue.clear()
+            api.reenqueuePersisted(persisted)
         }
     }
 
@@ -565,8 +576,10 @@ public class ConvertSDK internal constructor(
      * milliseconds the loop:
      *
      *  1. Calls [ApiManager.fetchConfig]. On success:
-     *     - Updates [dataManager] via `setData(...)`
-     *     - Fires [SystemEvents.CONFIG_UPDATED] with a `timestamp` payload
+     *     - Updates [dataManager] via `setData(...)`, which fires
+     *       [SystemEvents.CONFIG_UPDATED] (payload `{timestamp}`) because
+     *       the config is already seeded (Cluster 5 / TD-5 — the ternary
+     *       lives in `setData`, not here).
      *     - Spawns a fire-and-forget cache write
      *  2. On failure (null return), logs no additional WARN here —
      *     [ApiManager] already logged the transport/parse failure; the
@@ -606,11 +619,12 @@ public class ConvertSDK internal constructor(
                 delay(config.dataRefreshInterval)
                 val fetched = checkedApi.fetchConfig()
                 if (fetched != null) {
+                    // setData now owns the READY-vs-CONFIG_UPDATED ternary
+                    // (Cluster 5 / TD-5): it fires READY on the first seed
+                    // and CONFIG_UPDATED on every subsequent call. No
+                    // separate fire here — that would double-fire
+                    // CONFIG_UPDATED on every refresh.
                     dataManager.setData(fetched)
-                    eventManager.fire(
-                        event = SystemEvents.CONFIG_UPDATED,
-                        data = mapOf("timestamp" to System.currentTimeMillis()),
-                    )
                     // Fire-and-forget cache refresh. Failures inside write()
                     // are absorbed by FileConfigCache's own try/catch.
                     fileConfigCache?.let { cache ->

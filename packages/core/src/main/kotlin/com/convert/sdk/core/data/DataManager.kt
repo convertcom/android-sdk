@@ -117,20 +117,37 @@ public class DataManager(
     private val visitorLock: Any = Any()
 
     /**
-     * Stores the supplied [data] and fires [SystemEvents.READY] with a
-     * payload of `{ "environment": environment }`.
+     * Stores the supplied [data] and fires the appropriate lifecycle event:
      *
-     * Calling [setData] a second time is legal — the stored config is
-     * overwritten and READY fires again. Story 2.3's refresh loop will
-     * switch this second fire to [SystemEvents.CONFIG_UPDATED] once
-     * deferred-replay is in place.
+     *  - [SystemEvents.READY] (payload `{ "environment": environment }`) on
+     *    the **first** call — i.e. when [data] is still `null` before this
+     *    call. This is the single READY broadcast across the SDK lifetime,
+     *    whether the first seed comes from direct-data mode, a network fetch,
+     *    or the local config cache.
+     *  - [SystemEvents.CONFIG_UPDATED] (payload `{ "timestamp": <epoch-ms> }`)
+     *    on every **subsequent** call — each successful background refresh.
+     *
+     * This mirrors the JS SDK's single ternary per fetch in `core.ts`:
+     * ```
+     * objectNotEmpty(this._dataManager.data) ? CONFIG_UPDATED : READY
+     * ```
+     * so `onReady` fires exactly once across the SDK lifetime and
+     * `on(CONFIG_UPDATED)` fires once per successful background refresh.
      */
     public fun setData(data: ConfigResponseData) {
+        val isFirstSeed = this.data == null
         this.data = data
-        eventManager.fire(
-            event = SystemEvents.READY,
-            data = mapOf("environment" to environment),
-        )
+        if (isFirstSeed) {
+            eventManager.fire(
+                event = SystemEvents.READY,
+                data = mapOf("environment" to environment),
+            )
+        } else {
+            eventManager.fire(
+                event = SystemEvents.CONFIG_UPDATED,
+                data = mapOf("timestamp" to System.currentTimeMillis()),
+            )
+        }
     }
 
     /**

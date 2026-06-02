@@ -6,6 +6,7 @@
 package com.convert.sdk.core.rules
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -14,6 +15,10 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.Arguments
+import org.junit.jupiter.params.provider.MethodSource
+import java.util.stream.Stream
 
 /**
  * Tests for [Comparisons] — Story 3.4 AC-2, AC-3, AC-4, AC-8, AC-9.
@@ -414,6 +419,8 @@ internal class ComparisonsTest {
             "startsWith",
             "endsWith",
             "regexMatches",
+            "exists",
+            "doesNotExist",
         )
         for (op in supported) {
             assertTrue(Comparisons.isKnown(op), "Expected $op to be known")
@@ -439,5 +446,98 @@ internal class ComparisonsTest {
         assertNotNull(r1)
         assertEquals(r1, r2)
         assertEquals(r1, r3)
+    }
+
+    // --- AC-4.2 / AC-4.3: exists / doesNotExist (parametrized) -----------
+    //
+    // Covers the full present/empty/absent matrix for both operators and
+    // their negated variants — table-driven to avoid CPD duplication.
+    //
+    // Input matrix:
+    //   (matchType, value, negation) → expectedResult
+    //
+    // AC-4.2 (present / empty-string value):
+    //   exists(non-empty)      → true
+    //   doesNotExist(non-empty)→ false
+    //   exists(empty "")       → false  (empty string counts as non-existent)
+    //   doesNotExist(empty "") → true
+    //
+    // AC-4.3 (absent key → JsonNull — operator dispatched, NOT short-circuited):
+    //   exists(JsonNull)       → false
+    //   doesNotExist(JsonNull) → true
+    //
+    // Negation variants: each result inverts with negation=true.
+
+    @ParameterizedTest(name = "{0}(value={1}, negation={2}) → {3}")
+    @MethodSource("existsMatrix")
+    fun `exists and doesNotExist — present empty and absent matrix`(
+        matchType: String,
+        value: JsonElement,
+        negation: Boolean,
+        expected: Boolean,
+    ) {
+        val result = Comparisons.apply(
+            matchType = matchType,
+            value = value,
+            testAgainst = JsonNull, // no rule value field required
+            negation = negation,
+        )
+        assertEquals(expected, result, "$matchType(value=$value, negation=$negation)")
+    }
+
+    // --- AC-4.4: isIn case-insensitive — documented parity exception ------
+    //
+    // Android lowercases BOTH sides (Direction B — intentional parity
+    // exception vs JS SDK). "US" vs rule "us|ca" must match.
+
+    @ParameterizedTest(name = "isIn: value={0} in {1} → {2}")
+    @MethodSource("isInCaseMatrix")
+    fun `isIn — fully case-insensitive (intentional parity exception vs JS SDK)`(
+        rawValue: String,
+        rawRule: String,
+        expected: Boolean,
+    ) {
+        // Both sides lowercased on Android (Direction B). JS only lowercases
+        // the rule side — see Comparisons.isIn KDoc for the full explanation.
+        val result = Comparisons.apply(
+            matchType = "isIn",
+            value = JsonPrimitive(rawValue),
+            testAgainst = JsonPrimitive(rawRule),
+            negation = false,
+        )
+        assertEquals(expected, result, "isIn($rawValue, $rawRule)")
+    }
+
+    companion object {
+        @JvmStatic
+        fun existsMatrix(): Stream<Arguments> = Stream.of(
+            // AC-4.2: present non-empty value
+            Arguments.of("exists", JsonPrimitive("hello"), false, true),
+            Arguments.of("exists", JsonPrimitive("hello"), true, false), // negated
+            Arguments.of("doesNotExist", JsonPrimitive("hello"), false, false),
+            Arguments.of("doesNotExist", JsonPrimitive("hello"), true, true), // negated
+            // AC-4.2 edge: present empty string → counts as non-existent
+            Arguments.of("exists", JsonPrimitive(""), false, false),
+            Arguments.of("exists", JsonPrimitive(""), true, true), // negated
+            Arguments.of("doesNotExist", JsonPrimitive(""), false, true),
+            Arguments.of("doesNotExist", JsonPrimitive(""), true, false), // negated
+            // AC-4.3: absent key → JsonNull — operator STILL dispatched (not short-circuited)
+            Arguments.of("exists", JsonNull, false, false),
+            Arguments.of("exists", JsonNull, true, true), // negated
+            Arguments.of("doesNotExist", JsonNull, false, true),
+            Arguments.of("doesNotExist", JsonNull, true, false), // negated
+        )
+
+        @JvmStatic
+        fun isInCaseMatrix(): Stream<Arguments> = Stream.of(
+            // AC-4.4: value-side uppercase, rule-side lowercase → matches (Android Direction B)
+            Arguments.of("US", "us|ca", true),
+            Arguments.of("CA", "us|ca", true),
+            Arguments.of("DE", "us|ca", false),
+            // Both sides mixed-case — still matches because both lowercased
+            Arguments.of("United States", "united states|canada", true),
+            // JS SDK would fail this (doesn't lowercase value side); Android passes
+            Arguments.of("APPLE", "apple|banana", true),
+        )
     }
 }
