@@ -23,6 +23,10 @@ dependencies {
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.mockk)
     testImplementation(libs.kotlinx.coroutines.test)
+    // Gradle 9+ needs the launcher wired explicitly; the junit-jupiter aggregator
+    // no longer brings it in transitively. Without it, `gradle test` fails with
+    // "Failed to load JUnit Platform".
+    testRuntimeOnly(libs.junit.platform.launcher)
 }
 
 tasks.test {

@@ -27,12 +27,12 @@ config:
 
 processors:
   active: true
-  exclusions:
+  exclude:
     - 'DetektProgressListener'
 
 console-reports:
   active: true
-  exclusions:
+  exclude:
     - 'ProjectStatisticsReport'
     - 'ComplexityReport'
     - 'NotificationReport'
@@ -47,3 +47,17 @@ formatting:
   active: true
   android: true
   autoCorrect: false
+
+# --- Rule-set overrides ------------------------------------------------------
+# The Story 1.2 public-API skeleton has a Builder with a fluent setter per
+# ConvertConfig field. The JS-SDK reference lists 14 setters (plus build()),
+# each a one-line `apply { field = value }` — they are a deliberate ergonomic
+# surface, not a smell. The default `TooManyFunctions` threshold of 11 is
+# therefore raised to 20 for classes and objects only; files keep the default
+# limit so organically growing modules still get flagged.
+# (Story 1.2 AC-9 forbids @Suppress — config-level override is the
+# prescribed mechanism.)
+complexity:
+  TooManyFunctions:
+    thresholdInClasses: 20
+    thresholdInObjects: 20
