@@ -5,9 +5,13 @@
  */
 package com.convert.sdk.android
 
+import com.convert.sdk.core.event.SystemEvents
 import com.convert.sdk.core.model.Feature
 import com.convert.sdk.core.model.GoalData
 import com.convert.sdk.core.model.Variation
+import com.convert.sdk.core.model.generated.ConfigExperience
+import com.convert.sdk.core.model.generated.ExperienceVariationConfig
+import com.convert.sdk.core.model.generated.VariationStatuses
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
@@ -61,6 +65,7 @@ import kotlinx.serialization.json.JsonPrimitive
  */
 public class ConvertContext internal constructor(
     public val visitorId: String,
+    internal val sdk: ConvertSDK? = null,
 ) {
 
     /**
@@ -80,25 +85,317 @@ public class ConvertContext internal constructor(
 
     /**
      * Evaluates a single experience for this visitor and returns the
-     * bucketed [Variation].
+     * bucketed [Variation] — Story 3.2 AC-6 / AC-7 / AC-9 / AC-10.
+     *
+     * ### Algorithm
+     *
+     *  1. **Config-ready gate (AC-6 step 1).** If the SDK has no loaded
+     *     configuration ([com.convert.sdk.core.data.DataManager.hasData]
+     *     is `false`), return `null` after a DEBUG trace. This happens
+     *     when the caller reaches the context before the initial config
+     *     fetch completes — correct fallback is to act as if the
+     *     experience is not running.
+     *  2. **Experience lookup (AC-6 step 2, AC-9).** Find the
+     *     [ConfigExperience] by [experienceKey]. Missing key (including
+     *     empty-string key) → WARN, return `null`. Also covers the
+     *     `experiences == null` and `experiences == []` cases.
+     *  3. **Sticky bucketing (AC-6 step 3, AC-7).** If the visitor's
+     *     [com.convert.sdk.core.model.StoreData.bucketing] map already
+     *     holds an entry for [experienceKey], look up the matching
+     *     variation by id within the experience's variations list, fire
+     *     [SystemEvents.BUCKETING] when [enableTracking] is `true` (the
+     *     internal observation event mirrors the new-bucketing path so
+     *     debug observers see ALL bucketing activity — Story 3.2 AC-6
+     *     step 3 with the F-035 remediation), and return the resolved
+     *     variation. Sticky never enqueues a network bucketing event
+     *     (matches Story 3.2 AC-7) and never fires when
+     *     [enableTracking] is `false` (Story 3.2 AC-10 with the F-134
+     *     remediation). This is the "returning visitor" path that
+     *     NFR2's <5ms bound relies on (sticky lookup is O(1)).
+     *  4. **Rule evaluation (AC-6 step 4).** Story 3.4 lands the real
+     *     audience/location gate. For this story we assume the visitor
+     *     passes all gates — the caller gets the bucketed variation.
+     *  5. **Bucketing (AC-6 step 5).** Derive the `Map<variationId, Double>`
+     *     wheel from `experience.variations` — filter out non-RUNNING
+     *     variations (and zero-allocation variations — same semantics as
+     *     the JS SDK's `data-manager.ts:620-637`); call
+     *     [com.convert.sdk.core.bucketing.BucketingManager.getBucketForVisitor].
+     *     A `null` allocation means the visitor was not bucketed (common
+     *     when the sum of traffic allocations is below 100); log DEBUG
+     *     and return `null`.
+     *  6. **Persist (AC-6 step 6, AC-7).** Write the sticky decision via
+     *     [com.convert.sdk.core.data.DataManager.updateBucketing].
+     *     Atomicity is handled inside `updateBucketing` (Story 3.2 SDK-3).
+     *  7. **Tracking enqueue (AC-6 step 6, AC-10).** When [enableTracking]
+     *     is `true`, enqueue a bucketing tracking event via
+     *     [com.convert.sdk.core.api.ApiManager.enqueueBucketingEvent].
+     *     The real payload construction is Story 5.1 — the current stub
+     *     is a no-op.
+     *  8. **Internal event fire (AC-6 step 6, AC-10).** Fire
+     *     [SystemEvents.BUCKETING] **only when [enableTracking] is
+     *     `true`** — the internal bus is also gated by the per-call
+     *     tracking flag so observers do not receive misleading
+     *     bucketing signals during silent evaluation runs (Story 3.2
+     *     AC-10 with the F-134 remediation: setting
+     *     `enableTracking = false` suppresses both the network enqueue
+     *     AND the internal event fire).
+     *
+     * ### Never throws
+     *
+     * Every failure mode returns `null` (or in the sticky/fresh-bucket
+     * cases, the resolved variation). An unset [sdk] reference (pure-JVM
+     * test construction path) also yields `null`.
      *
      * @param experienceKey the merchant-defined key of the experience.
      * @param enableTracking when `true`, the bucketing emits a
      *   `viewExp` tracking event. Pass `false` to inspect the result
      *   without reporting. Defaults to `true`.
      * @return the selected [Variation], or `null` when the visitor is not
-     *   bucketed into any variation.
+     *   bucketed, the experience is unknown, or the SDK is not yet ready.
      */
     @JvmOverloads
+    @Suppress("ReturnCount")
     public fun runExperience(
         experienceKey: String,
         enableTracking: Boolean = true,
     ): Variation? {
-        // TODO(Story 3.2/3.3): wire to BucketingManager and EventManager
         lastExperienceKey = experienceKey
         lastRunWithTracking = enableTracking
-        return null
+
+        val sdk = this.sdk ?: return null
+
+        // Step 1 — config-ready gate.
+        if (!sdk.dataManager.hasData()) {
+            sdk.logger.debug(
+                message = "ConvertContext.runExperience: config not loaded, returning null",
+                tag = TAG,
+            )
+            return null
+        }
+
+        // Step 2 — experience lookup.
+        val experience = sdk.dataManager.data?.experiences
+            ?.firstOrNull { it.key == experienceKey }
+        if (experience == null) {
+            sdk.logger.warn(
+                message = "ConvertContext.runExperience: experience not found for key " +
+                    "'$experienceKey'",
+                tag = TAG,
+            )
+            return null
+        }
+
+        // Step 3 — sticky lookup. Fires SystemEvents.BUCKETING when
+        // enableTracking is true (F-035: sticky parity with new-bucketing
+        // path so observers see ALL bucketing activity); never enqueues a
+        // network event on the sticky path (AC-7); never fires anything
+        // when enableTracking is false (F-134).
+        resolveSticky(sdk, experience, experienceKey, enableTracking)?.let { return it }
+
+        // Steps 4-8 — rule-eval (Story 3.4), bucketing, persist, enqueue, fire.
+        return allocateAndRecord(sdk, experience, experienceKey, enableTracking)
     }
+
+    /**
+     * Tries to resolve the visitor's sticky bucket for [experienceKey]. When
+     * the sticky id still matches a variation in the current config, fires
+     * [SystemEvents.BUCKETING] (gated by [enableTracking]) and returns the
+     * public [Variation]; otherwise returns `null` so the caller re-buckets.
+     *
+     * ### F-035 / F-134 remediation
+     *
+     * Story 3.2 AC-6 step 3 (post-remediation) requires the internal
+     * BUCKETING event to fire on sticky recall **exactly as for the
+     * new-bucketing path**, so debug observers see all bucketing
+     * activity. AC-10 (post-remediation) requires that ALL bucketing
+     * signals — network enqueue AND internal event — are suppressed
+     * when [enableTracking] is `false`. The combination: fire on the
+     * sticky path **iff** [enableTracking] is `true`.
+     *
+     * Note that the sticky path NEVER calls
+     * [com.convert.sdk.core.api.ApiManager.enqueueBucketingEvent] —
+     * sticky bucketing is by definition a returning visitor and the
+     * outbound view-experience event was already enqueued on the
+     * original bucketing call (Story 3.2 AC-7).
+     *
+     * Extracted from [runExperience] so the main method stays under
+     * detekt's `LongMethod` ceiling.
+     */
+    @Suppress("ReturnCount")
+    private fun resolveSticky(
+        sdk: ConvertSDK,
+        experience: ConfigExperience,
+        experienceKey: String,
+        enableTracking: Boolean,
+    ): Variation? {
+        val stored = sdk.dataManager.getStoreData(visitorId).bucketing?.get(experienceKey)
+            ?: return null
+        val variation = experience.variations?.firstOrNull { it.id == stored }
+        if (variation == null) {
+            sdk.logger.debug(
+                message = "ConvertContext.runExperience: sticky variation '$stored' no longer in " +
+                    "config for experience '$experienceKey'; re-bucketing",
+                tag = TAG,
+            )
+            // Caller will re-bucket on the next step.
+            return null
+        }
+        if (enableTracking) {
+            sdk.eventManager.fire(
+                event = SystemEvents.BUCKETING,
+                data = mapOf(
+                    "experienceKey" to experienceKey,
+                    "variationKey" to variation.key,
+                    "visitorId" to visitorId,
+                ),
+            )
+        }
+        // Sticky path does not re-compute the hash, so the bucketingAllocation
+        // value is unknown — pass null to match the JS SDK's sticky branch
+        // (`bucketingAllocation` is only populated on the fresh-bucket path).
+        return toPublicVariation(experience, variation, bucketingAllocationValue = null)
+    }
+
+    /**
+     * Runs the full bucketing + persist + enqueue + event-fire path once
+     * the sticky lookup has missed. Returns the selected [Variation], or
+     * `null` if the visitor is not bucketed into any variation.
+     *
+     * Split from [runExperience] to keep it inside detekt's line limit.
+     */
+    @Suppress("ReturnCount")
+    private fun allocateAndRecord(
+        sdk: ConvertSDK,
+        experience: ConfigExperience,
+        experienceKey: String,
+        enableTracking: Boolean,
+    ): Variation? {
+        val buckets = buildBuckets(experience.variations)
+        if (buckets.isEmpty()) {
+            sdk.logger.debug(
+                message = "ConvertContext.runExperience: experience '$experienceKey' has no " +
+                    "eligible variations",
+                tag = TAG,
+            )
+            return null
+        }
+        val allocation = sdk.bucketingManager.getBucketForVisitor(
+            buckets = buckets,
+            visitorId = visitorId,
+            experienceId = experience.id.orEmpty(),
+        ) ?: run {
+            sdk.logger.debug(
+                message = "ConvertContext.runExperience: visitor not bucketed into experience " +
+                    "'$experienceKey'",
+                tag = TAG,
+            )
+            return null
+        }
+        val variation = experience.variations?.firstOrNull { it.id == allocation.variationId }
+            ?: return null
+
+        // Persist sticky (atomic under DataManager's visitor lock).
+        sdk.dataManager.updateBucketing(
+            visitorId = visitorId,
+            experienceKey = experienceKey,
+            variationId = allocation.variationId,
+        )
+
+        // Outbound tracking AND internal event bus — both gated by the
+        // per-call flag (F-134 remediation: AC-10 suppresses the internal
+        // BUCKETING fire when enableTracking is false so observers do not
+        // receive misleading bucketing signals during silent runs).
+        // Story 5.4 also gates the network enqueue by the SDK-level
+        // tracking toggle on ApiManager.
+        if (enableTracking) {
+            sdk.apiManager?.enqueueBucketingEvent(
+                visitorId = visitorId,
+                experienceId = experience.id.orEmpty(),
+                variationId = allocation.variationId,
+            )
+            sdk.eventManager.fire(
+                event = SystemEvents.BUCKETING,
+                data = mapOf(
+                    "experienceKey" to experienceKey,
+                    "variationKey" to variation.key,
+                    "visitorId" to visitorId,
+                ),
+            )
+        }
+        return toPublicVariation(
+            experience = experience,
+            variation = variation,
+            bucketingAllocationValue = allocation.bucketingAllocation.toDouble(),
+        )
+    }
+
+    /**
+     * Builds the `variationId -> percentage` map consumed by
+     * [com.convert.sdk.core.bucketing.BucketingManager.getBucketForVisitor].
+     *
+     * Matches the JS SDK's `data-manager.ts:620-637` filter chain:
+     *  - Drop variations whose `status` is set AND not `RUNNING`
+     *    (unset status defaults to "eligible", same as JS).
+     *  - Drop zero-traffic variations (stopped variations in disguise).
+     *  - Use the variation's `trafficAllocation` as-is. Although the
+     *    OpenAPI schema describes the field as `0..10000`, the actual
+     *    CDN-emitted values are percentages `0..100` — the JS SDK's
+     *    `* 100` multiplier inside `selectBucket` assumes percentages,
+     *    and real config fixtures (tests/test-config.json across the
+     *    JS SDK) carry `50.0` for a 50% variation. We mirror that
+     *    interpretation.
+     *
+     * Insertion order is preserved (the generated
+     * [ExperienceVariationConfig] list is a plain [List], so iteration
+     * is declaration order — which the bucketing engine relies on).
+     */
+    private fun buildBuckets(
+        variations: List<ExperienceVariationConfig>?,
+    ): Map<String, Double> =
+        variations
+            ?.asSequence()
+            ?.filter { it.id != null }
+            ?.filter { it.status == null || it.status == VariationStatuses.RUNNING }
+            ?.map { it to (it.trafficAllocation?.toDouble() ?: DEFAULT_VARIATION_PCT) }
+            ?.filter { (_, allocation) -> allocation > 0.0 }
+            ?.associateByTo(
+                destination = linkedMapOf(),
+                keySelector = { (variation, _) -> variation.id!! },
+                valueTransform = { (_, allocation) -> allocation },
+            )
+            ?: emptyMap()
+
+    /**
+     * Lifts a [ConfigExperience] + [ExperienceVariationConfig] pair into
+     * the SDK's public [Variation] shape. Populates `experienceId` /
+     * `experienceKey` / `experienceName` on the variation from the parent
+     * experience so callers get a self-describing object without needing
+     * to look up the experience separately.
+     *
+     * [bucketingAllocationValue] is the hash-pipeline value (range
+     * `0..maxTraffic`) the JS SDK surfaces as `bucketingAllocation` on
+     * the returned BucketedVariation — not the variation's configured
+     * traffic percentage. `null` when the caller took the sticky fast
+     * path (JS SDK matches this — sticky bucketing returns
+     * `bucketingAllocation: undefined`).
+     *
+     * `changes` is intentionally not copied — Story 3.3 adds the full
+     * change-list plumbing.
+     */
+    private fun toPublicVariation(
+        experience: ConfigExperience,
+        variation: ExperienceVariationConfig,
+        bucketingAllocationValue: Double?,
+    ): Variation = Variation(
+        id = variation.id,
+        key = variation.key,
+        name = variation.name,
+        experienceId = experience.id,
+        experienceKey = experience.key,
+        experienceName = experience.name,
+        bucketingAllocation = bucketingAllocationValue,
+        changes = null,
+    )
 
     /**
      * Evaluates every experience for this visitor.
@@ -288,6 +585,18 @@ public class ConvertContext internal constructor(
     )
 
     private companion object {
+        /** Log tag for [runExperience] DEBUG/WARN emissions. */
+        const val TAG: String = "ConvertContext"
+
+        /**
+         * Traffic percentage applied to a variation whose
+         * `trafficAllocation` field is absent. Matches JS SDK
+         * `data-manager.ts:635` (`variation?.traffic_allocation || 100.0`) —
+         * when no allocation is specified, the variation gets 100%
+         * (i.e. the whole wheel).
+         */
+        const val DEFAULT_VARIATION_PCT: Double = 100.0
+
         /**
          * Lifts a `Map<String, Any?>?` into `Map<String, JsonElement>`,
          * applying the Story 3.1 Gotcha 7 coercion table. Returns the

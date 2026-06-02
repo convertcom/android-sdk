@@ -15,6 +15,7 @@ import com.convert.sdk.android.adapter.OkHttpClientAdapter
 import com.convert.sdk.android.adapter.SharedPrefsDataStore
 import com.convert.sdk.android.lifecycle.SdkLifecycleObserver
 import com.convert.sdk.core.api.ApiManager
+import com.convert.sdk.core.bucketing.BucketingManager
 import com.convert.sdk.core.config.ApiConfig
 import com.convert.sdk.core.config.ApiEndpoint
 import com.convert.sdk.core.config.BucketingConfig
@@ -112,10 +113,30 @@ public class ConvertSDK internal constructor(
     internal val httpClient: HttpClient? = null,
     internal val eventManager: EventManager = EventManager(logger = Logger.NoOp),
     initialDataManager: DataManager? = null,
-    internal val apiManager: ApiManager? = null,
+    apiManager: ApiManager? = null,
     internal val fileConfigCache: FileConfigCache? = null,
+    initialBucketingManager: BucketingManager? = null,
     scope: CoroutineScope? = null,
 ) {
+
+    /**
+     * Mutable [ApiManager] reference — Story 3.2 SDK-4 introduces a
+     * `var` here so that tests can swap in a recording fake via
+     * [attachTestApiManager]. The private setter keeps the surface
+     * inert to production callers: the Builder path wires the real
+     * [com.convert.sdk.core.api.ApiManager] once at construction and no
+     * other production code path rewrites it.
+     *
+     * `@Volatile` so that [startRefreshLoop] (running on the SDK scope)
+     * and [ConvertContext.runExperience] (running on the calling thread)
+     * always see the latest reference after [attachTestApiManager] swaps
+     * it. Production reassignment never happens, but the annotation
+     * documents intent and eliminates a theoretical visibility hole in
+     * the test path.
+     */
+    @Volatile
+    internal var apiManager: ApiManager? = apiManager
+        private set
 
     /**
      * Shared [DataManager]; owns the currently-loaded [ConfigResponseData]
@@ -136,6 +157,16 @@ public class ConvertSDK internal constructor(
         eventManager = eventManager,
         environment = config.environment,
     )
+
+    /**
+     * Shared [BucketingManager] — Story 3.2 SDK-4. Exposed `internal` so
+     * [ConvertContext.runExperience] can reach it. The Builder path
+     * constructs one from the assembled config; pure-JVM smoke tests
+     * get a default instance here so `ConvertContext` never sees a null
+     * bucketing manager.
+     */
+    internal val bucketingManager: BucketingManager = initialBucketingManager
+        ?: BucketingManager(config = config, logger = logger)
 
     /**
      * SDK-scoped [CoroutineScope] owning every background coroutine the
@@ -364,6 +395,23 @@ public class ConvertSDK internal constructor(
     private var trackingEnabled: Boolean = config.network?.tracking ?: true
 
     /**
+     * Test-only seam — swaps the SDK's [apiManager] reference with a
+     * test fake (typically a subclass that records
+     * [ApiManager.enqueueBucketingEvent] invocations). Production code
+     * never calls this; the method exists so `ConvertContextRunExperienceTest`
+     * can verify the tracking gate without pulling in a mocking framework
+     * that would struggle with the Robolectric + JVM 23 classloader combo.
+     *
+     * Do NOT call from production code.
+     *
+     * @param replacement the fake [ApiManager] to route
+     *   `enqueueBucketingEvent` calls through; must not be `null`.
+     */
+    internal fun attachTestApiManager(replacement: ApiManager) {
+        apiManager = replacement
+    }
+
+    /**
      * Lock used to serialise the auto-UUID read-generate-persist
      * sequence in [createContext]. Without it, two concurrent cold-start
      * calls could both read a null `visitor_id`, both generate distinct
@@ -414,7 +462,7 @@ public class ConvertSDK internal constructor(
                 dataStore.set(VISITOR_ID_KEY, it)
             }
         }
-        return ConvertContext(visitorId = id)
+        return ConvertContext(visitorId = id, sdk = this)
     }
 
     /**
@@ -433,7 +481,7 @@ public class ConvertSDK internal constructor(
      * @return a context scoped to [visitorId].
      */
     public fun createContext(visitorId: String): ConvertContext =
-        ConvertContext(visitorId)
+        ConvertContext(visitorId = visitorId, sdk = this)
 
     /**
      * Creates a [ConvertContext] for the supplied visitor id and seeds
@@ -457,7 +505,8 @@ public class ConvertSDK internal constructor(
         visitorId: String,
         attributes: Map<String, Any?>?,
     ): ConvertContext =
-        ConvertContext(visitorId).setAttributes(attributes ?: emptyMap())
+        ConvertContext(visitorId = visitorId, sdk = this)
+            .setAttributes(attributes ?: emptyMap())
 
     /**
      * Registers a callback to be invoked once the SDK has finished
@@ -840,8 +889,8 @@ public class ConvertSDK internal constructor(
             val dataStore: DataStore = SharedPrefsDataStore(prefs)
 
             // 3. HttpClient — one OkHttpClient per SDK instance (Gotcha 10).
-            val okHttp = OkHttpClientAdapter.defaultOkHttpClient()
-            val httpClient: HttpClient = OkHttpClientAdapter(okHttp, logger)
+            val httpClient: HttpClient =
+                OkHttpClientAdapter(OkHttpClientAdapter.defaultOkHttpClient(), logger)
 
             // 4. Shared SDK CoroutineScope — Story 2.4: the same scope is
             //    injected into both the EventManager (so replay and
@@ -857,24 +906,13 @@ public class ConvertSDK internal constructor(
 
             // Shared Json instance used by ApiManager, FileConfigCache, and
             // DataManager's per-visitor StoreData serialisation (Story 3.1).
-            // `ignoreUnknownKeys = true` + `explicitNulls = false` so that
-            // the fetch, cache, and visitor-state paths all see the same set
-            // of fields (NFR12: forward-compatible schemas).
-            //
-            // Story 2.2 AC-12 (F-172): the shared Json must register
-            // [bigDecimalSerializersModule] so that the encode path on
-            // FileConfigCache.write does not throw
-            // `kotlinx.serialization.SerializationException: Serializer
-            // for class 'BigDecimal' is not found` when ConfigResponseData
-            // carries a non-null `@Contextual java.math.BigDecimal?` field
-            // (e.g. ConfigProjectSettings.minOrderValue / maxOrderValue).
-            // FileConfigCache MUST receive this Json by injection — it
-            // must NOT instantiate its own.
-            val sharedJson = Json {
-                ignoreUnknownKeys = true
-                explicitNulls = false
-                serializersModule = bigDecimalSerializersModule
-            }
+            // Construction is in [buildSharedJson] (file-scope helper, kept
+            // under detekt's LongMethod ceiling). The helper registers
+            // [bigDecimalSerializersModule] so the encode path in
+            // FileConfigCache.write does not throw the F-172
+            // SerializationException on @Contextual BigDecimal fields —
+            // see Story 2.2 AC-12.
+            val sharedJson = buildSharedJson()
 
             // 6. DataManager — holds the loaded config, fires READY on setData,
             //    and (Story 3.1) manages per-visitor StoreData backed by the
@@ -918,6 +956,16 @@ public class ConvertSDK internal constructor(
                 // graph assembly in one place — Builder.build().
                 apiManager = apiManager,
                 fileConfigCache = fileConfigCache,
+                // Story 3.2 SDK-4 — hand the bucketing manager in so
+                // ConvertContext.runExperience picks up the same instance
+                // (and its config-resolved seed / maxTraffic) that the
+                // Builder assembled. The manager is stateless w.r.t.
+                // visitor bucketing (state lives in DataManager.storeData),
+                // so inline construction here is fine.
+                initialBucketingManager = BucketingManager(
+                    config = assembled,
+                    logger = logger,
+                ),
                 // Story 2.4: share the same scope with EventManager so
                 // all dispatch — ConvertSDK's own launches + EventManager
                 // subscriber broadcasts + deferred replay — flows through
@@ -1164,6 +1212,33 @@ private const val BUILDER_TAG: String = "ConvertSDK.Builder"
  * Extracted from [ConvertSDK.Builder.build] so the Builder method stays
  * under detekt's `LongMethod` ceiling.
  */
+/**
+ * Builds the shared [kotlinx.serialization.json.Json] instance used by
+ * [ApiManager], `FileConfigCache`, and [DataManager]'s per-visitor
+ * [com.convert.sdk.core.model.StoreData] serialisation (Story 3.1).
+ *
+ *  - `ignoreUnknownKeys = true` lets new backend fields pass through
+ *    without breaking older SDK versions (NFR12).
+ *  - `explicitNulls = false` trims null properties from the output so
+ *    the re-serialised cache blob stays tight.
+ *
+ * Extracted from [ConvertSDK.Builder.build] to keep that method under
+ * detekt's `LongMethod` ceiling. Kept at file scope (not inside Builder)
+ * so the Builder's function count stays under `TooManyFunctions` — same
+ * rationale as [launchInitialDataSeed] and [warnIfBuilderStateAmbiguous].
+ */
+private fun buildSharedJson(): Json = Json {
+    ignoreUnknownKeys = true
+    explicitNulls = false
+    // Story 2.2 AC-12 (F-172): register the BigDecimal contextual
+    // serializer so FileConfigCache.write can encode ConfigResponseData
+    // without throwing on @Contextual java.math.BigDecimal fields
+    // (notably ConfigProjectSettings.minOrderValue / maxOrderValue).
+    // Every component using this Json (ApiManager, FileConfigCache,
+    // DataManager's per-visitor StoreData) inherits the registration.
+    serializersModule = bigDecimalSerializersModule
+}
+
 private fun buildSdkScope(logger: Logger): CoroutineScope =
     CoroutineScope(
         SupervisorJob() +
