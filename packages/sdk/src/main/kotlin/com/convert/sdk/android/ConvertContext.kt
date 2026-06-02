@@ -498,27 +498,59 @@ public class ConvertContext internal constructor(
     }
 
     /**
-     * Evaluates a feature flag for this visitor.
+     * Evaluates a feature flag for this visitor — Story 4.1 AC-2.
+     *
+     * Delegates to [FeatureManager.evaluate], which resolves the feature
+     * by walking the currently-loaded experiences in declaration order
+     * and returning the first variation whose `fullStackFeature` change
+     * references this feature. Each bucketing decision goes through
+     * [runExperience], so sticky lookups, audience / location gating,
+     * persistence, outbound-event enqueue, and
+     * [com.convert.sdk.core.event.SystemEvents.BUCKETING] fire apply
+     * exactly as they would for a direct `runExperience` call — there
+     * is no separate "feature evaluated" event (AC-6).
+     *
+     * Returns:
+     *  - `null` when [featureKey] is not declared or the SDK has no
+     *    loaded config yet (AC-7).
+     *  - A [Feature] with [com.convert.sdk.core.model.FeatureStatus.DISABLED]
+     *    when the feature is declared but the visitor is not bucketed
+     *    into any variation exposing it (AC-8).
+     *  - A [Feature] with [com.convert.sdk.core.model.FeatureStatus.ENABLED]
+     *    and its `variables` map populated when the visitor is bucketed
+     *    into a variation carrying the feature.
      *
      * @param featureKey merchant-defined key of the feature.
      * @return the evaluated [Feature], or `null` when the feature is
-     *   unknown or the visitor is not eligible.
+     *   unknown or the SDK is not yet ready.
      */
     public fun runFeature(featureKey: String): Feature? {
-        // TODO(Story 4.1): wire to FeatureManager
         lastFeatureKey = featureKey
-        return null
+        val sdk = this.sdk ?: return null
+        return sdk.featureManager.evaluate(
+            context = this,
+            featureKey = featureKey,
+            enableTracking = true,
+        )
     }
 
     /**
-     * Evaluates every feature for this visitor.
+     * Evaluates every declared feature for this visitor — Story 4.1 AC-3.
+     *
+     * Equivalent to calling [runFeature] for every
+     * [com.convert.sdk.core.model.generated.ConfigFeature] declared in
+     * the loaded config, preserving declaration order. Returns an empty
+     * list when the SDK has no loaded config yet.
      *
      * @return the list of evaluated [Feature]s; empty when none are
-     *   configured for this visitor.
+     *   configured or the config is not loaded.
      */
     public fun runFeatures(): List<Feature> {
-        // TODO(Story 4.1): wire to FeatureManager batch evaluation
-        return emptyList()
+        val sdk = this.sdk ?: return emptyList()
+        return sdk.featureManager.evaluateAll(
+            context = this,
+            enableTracking = true,
+        )
     }
 
     /**

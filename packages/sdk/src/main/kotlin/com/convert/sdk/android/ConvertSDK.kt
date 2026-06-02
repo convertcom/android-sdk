@@ -28,14 +28,13 @@ import com.convert.sdk.core.config.RulesConfig
 import com.convert.sdk.core.data.DataManager
 import com.convert.sdk.core.event.EventManager
 import com.convert.sdk.core.event.SystemEvents
-import com.convert.sdk.core.internal.bigDecimalSerializersModule
+import com.convert.sdk.core.internal.sharedSerializersModule
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.port.DataStore
 import com.convert.sdk.core.port.HttpClient
 import com.convert.sdk.core.port.Logger
 import com.convert.sdk.core.rules.RuleManager
-import com.convert.sdk.core.rules.rawRuleSerializersModule
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,7 +44,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.modules.plus
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
@@ -187,6 +185,25 @@ public class ConvertSDK internal constructor(
      */
     internal val ruleManager: RuleManager = initialRuleManager
         ?: RuleManager(config = config, logger = logger)
+
+    /**
+     * Shared [FeatureManager] — Story 4.1. Exposed `internal` so
+     * [ConvertContext.runFeature] / [ConvertContext.runFeatures] can
+     * delegate to it. The manager holds a back-reference to this
+     * [ConvertSDK] instance so it can reach the loaded config and
+     * route per-experience bucketing through the caller's
+     * [ConvertContext.runExperience] — that keeps sticky / audience /
+     * location / event semantics consistent between experience and
+     * feature resolution.
+     *
+     * Unlike [bucketingManager] / [ruleManager], there is no
+     * `initialFeatureManager` constructor override — the manager is
+     * pure glue over [dataManager] / [ConvertContext] and has no state
+     * that benefits from test substitution. Feature tests exercise
+     * [FeatureManager] via the Builder-constructed SDK using a real
+     * config; no fake injection is required.
+     */
+    internal val featureManager: FeatureManager = FeatureManager(sdk = this, logger = logger)
 
     /**
      * SDK-scoped [CoroutineScope] owning every background coroutine the
@@ -928,7 +945,7 @@ public class ConvertSDK internal constructor(
             // DataManager's per-visitor StoreData serialisation (Story 3.1).
             // Construction is in [buildSharedJson] (file-scope helper, kept
             // under detekt's LongMethod ceiling). The helper registers
-            // [bigDecimalSerializersModule] so the encode path in
+            // [sharedSerializersModule] so the encode path in
             // FileConfigCache.write does not throw the F-172
             // SerializationException on @Contextual BigDecimal fields —
             // see Story 2.2 AC-12.
@@ -1241,7 +1258,7 @@ private const val BUILDER_TAG: String = "ConvertSDK.Builder"
 private fun buildSharedJson(): Json = Json {
     ignoreUnknownKeys = true
     explicitNulls = false
-    // Story 2.2 AC-12 (F-172): [bigDecimalSerializersModule] registers the
+    // Story 2.2 AC-12 (F-172): [sharedSerializersModule] registers the
     // BigDecimal contextual serializer so FileConfigCache.write can encode
     // ConfigResponseData without throwing on @Contextual
     // java.math.BigDecimal fields (notably
@@ -1259,8 +1276,14 @@ private fun buildSharedJson(): Json = Json {
     // audience/location rules fails to parse and the SDK stays
     // unready forever.
     //
-    // Composed via SerializersModule.plus so both registrations apply.
-    serializersModule = bigDecimalSerializersModule + rawRuleSerializersModule
+    // Story 4.1: [sharedSerializersModule] aggregates BigDecimal +
+    // rawRule + AnyAsJsonElementSerializer (the latter registered as the
+    // contextual serializer for Any so generated @Contextual Any? fields
+    // — notably ExperienceChangeFullStackFeatureBaseAllOfData.variablesData
+    // — deserialize to JsonElement; FeatureManager depends on that for
+    // typed variable extraction). The aggregate subsumes the F-172
+    // sharedSerializersModule from Story 2.2 AC-12.
+    serializersModule = sharedSerializersModule
 }
 
 private fun buildSdkScope(logger: Logger): CoroutineScope =
