@@ -9,8 +9,10 @@ import android.app.Application
 import com.convert.sdk.android.ConvertContext
 import com.convert.sdk.android.ConvertSDK
 import com.convert.sdk.core.model.Feature
+import com.convert.sdk.core.model.GoalData
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.Variation
+import com.convert.sdk.demo.viewmodel.ConversionTracker
 import com.convert.sdk.demo.viewmodel.EventSubscriber
 import com.convert.sdk.demo.viewmodel.ExperienceRunner
 import com.convert.sdk.demo.viewmodel.FeatureRunner
@@ -19,6 +21,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 
 /**
  * Story 7.1 AC-3 (F-166) — Application subclass that initialises the
@@ -200,6 +203,46 @@ class DemoApplication : Application() {
                 contextDeferred.getCompleted().runFeatures()
             } else {
                 emptyList()
+            }
+    }
+
+    /**
+     * Story 7.5 — builds a [ConversionTracker] that delegates to the
+     * pre-warmed per-visitor [ConvertContext] from [contextDeferred].
+     *
+     * Unlike the experience / feature runners, [trackConversion]
+     * returns [Unit] — there is no "null when not ready" escape hatch
+     * in the contract. Dropping a tap because the SDK has not landed
+     * yet would be silently lossy, so the tracker fires the call
+     * inside `applicationScope.launch { contextDeferred.await(); … }`:
+     * the launch returns immediately (no main-thread block), the
+     * coroutine waits for the context, then issues the
+     * [ConvertContext.trackConversion] call on [Dispatchers.Default].
+     * Calls dispatched before the context is ready are buffered in
+     * the coroutine queue and replayed in order once it lands.
+     *
+     * Per-visitor dedup (Story 4.3 AC-6) lives inside the SDK and is
+     * unaffected — both runners and this tracker observe the same
+     * sticky [ConvertContext] via [contextDeferred].
+     */
+    fun conversionTracker(): ConversionTracker = object : ConversionTracker {
+        override fun trackConversion(goalKey: String, goalData: List<GoalData>) {
+            applicationScope.launch {
+                contextDeferred.await().trackConversion(goalKey = goalKey, goalData = goalData)
+            }
+        }
+
+        // Synchronous best-effort, mirroring the experience / feature
+        // runners' O(1) isCompleted guard: when the context has not landed
+        // yet the goal cannot be confirmed, so report false (the screen
+        // then surfaces the unknown-goal card rather than a false-positive
+        // success). Once the context is ready the call delegates straight
+        // to ConvertContext.hasGoal with no main-thread block.
+        override fun hasGoal(goalKey: String): Boolean =
+            if (contextDeferred.isCompleted) {
+                contextDeferred.getCompleted().hasGoal(goalKey)
+            } else {
+                false
             }
     }
 }
