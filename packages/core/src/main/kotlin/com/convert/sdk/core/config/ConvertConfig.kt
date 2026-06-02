@@ -5,8 +5,8 @@
  */
 package com.convert.sdk.core.config
 
-import com.convert.sdk.core.model.ConfigResponseData
 import com.convert.sdk.core.model.LogLevel
+import com.convert.sdk.core.model.generated.ConfigResponseData
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -20,9 +20,11 @@ import kotlinx.serialization.Serializable
  * deserialises cleanly; the SDK runtime merges missing pieces against
  * [ConfigDefaults] when it reads this object.
  *
- * `data` is typed against [ConfigResponseData] — a placeholder until
- * Story 1.5 (OpenAPI type generation) replaces it with the generated type.
- * All callers continue compiling because the type name is preserved.
+ * `data` is typed against [ConfigResponseData], the Kotlin data class
+ * auto-generated from the backend Serving OpenAPI spec (Story 1.5) and
+ * located in [com.convert.sdk.core.model.generated]. Regenerate via
+ * `yarn generateKotlinTypes` in `backend/apiDoc/serving/` and sync to
+ * `packages/core/src/main/kotlin/com/convert/sdk/core/model/generated/`.
  *
  * @property sdkKey merchant SDK key used to fetch configuration from the
  *   Convert CDN.
