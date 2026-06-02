@@ -8,6 +8,7 @@ package com.convert.sdk.android
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import androidx.annotation.VisibleForTesting
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
@@ -54,6 +55,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -647,19 +649,6 @@ public class ConvertSDK internal constructor(
     }
 
     /**
-     * Runtime tracking-enabled flag. Seeded from
-     * [ConvertConfig.network]?.tracking when the SDK is built; the public
-     * setter [setTrackingEnabled] flips it at runtime.
-     *
-     * Story 5.4 wires this flag into the real `ApiManager.setTrackingEnabled`
-     * delegation path; for the Story 1.2 skeleton it lives on this class
-     * so the public API surface is frozen now. The `true` fallback
-     * matches `ConfigDefaults.DEFAULT_TRACKING_ENABLED` (which is
-     * `internal` to the core module and cannot be referenced from here).
-     */
-    private var trackingEnabled: Boolean = config.network?.tracking ?: true
-
-    /**
      * Test-only seam — swaps the SDK's [apiManager] reference with a
      * test fake (typically a subclass that records
      * [ApiManager.enqueueBucketingEvent] invocations). Production code
@@ -675,6 +664,87 @@ public class ConvertSDK internal constructor(
     internal fun attachTestApiManager(replacement: ApiManager) {
         apiManager = replacement
     }
+
+    /**
+     * Test-only flush trigger — Story 5.5 Task 3.
+     *
+     * Drives an immediate, synchronous [ApiManager.flushNow] so integration
+     * tests ([com.convert.sdk.android.integration.FullChainIntegrationTest])
+     * can assert on a [okhttp3.mockwebserver.MockWebServer]'s recorded
+     * tracking POST without racing the [ApiManager] timer loop
+     * ([com.convert.sdk.core.config.ConfigDefaults.DEFAULT_EVENTS_RELEASE_INTERVAL_MS]
+     * defaults to 1 second — too slow for a CI run that wants
+     * sub-second determinism).
+     *
+     * Implementation choice: [runBlocking] rather than scheduling onto the
+     * SDK [scope] — tests need to block until the HTTP POST completes so
+     * they can inspect `mockServer.takeRequest(...)` immediately afterwards.
+     * Launching asynchronously would force every caller to re-implement the
+     * same `awaitCondition { mockServer.requestCount >= 1 }` pattern; the
+     * explicit `runBlocking` here centralises the wait.
+     *
+     * Pure-JVM test path ([apiManager] is `null` — no Android wiring): the
+     * call is a silent no-op. Production callers MUST NOT invoke this —
+     * [VisibleForTesting] with `otherwise = NONE` makes the method
+     * inaccessible at the bytecode level to any non-test module, and
+     * Android Lint flags misuse.
+     */
+    @VisibleForTesting(otherwise = VisibleForTesting.NONE)
+    internal fun flushForTesting() {
+        val api = apiManager ?: return
+        runBlocking { api.flushNow() }
+    }
+
+    /**
+     * Flips the SDK-level outbound-tracking flag (Story 5.4 AC-1).
+     *
+     * Delegates to [ApiManager.setTrackingEnabled] — the flag lives on
+     * [ApiManager] (pre-wired in Story 2.3 AC-5) as the single source of
+     * truth. Every future [ApiManager.enqueueBucketingEvent] /
+     * [ApiManager.enqueueConversionEvent] / [ApiManager.enqueueAll] call
+     * reads the flag and short-circuits when `false`.
+     *
+     * **Does NOT flush the queue on re-enable** (Gotcha 1 from Story 5.4):
+     * calling `setTrackingEnabled(true)` after a period of `false` only
+     * re-opens the enqueue gate for subsequent events. Events generated
+     * while disabled were never enqueued and cannot be recovered; events
+     * enqueued BEFORE the disable that are still sitting on the queue
+     * continue flushing through the normal timer / batch mechanism.
+     *
+     * Bucketing, rule evaluation, sticky persistence, and goal dedup
+     * continue to function normally regardless of the flag (AC-3, AC-6)
+     * — only the network enqueue is suppressed.
+     *
+     * Pure-JVM test path ([apiManager] is `null` — no Android wiring):
+     * the call is a silent no-op. Production code paths always have
+     * [apiManager] wired by the Builder.
+     *
+     * @param enabled `true` to allow outbound tracking events, `false` to
+     *   suppress them at the enqueue step.
+     */
+    public fun setTrackingEnabled(enabled: Boolean) {
+        apiManager?.setTrackingEnabled(enabled)
+    }
+
+    /**
+     * Returns the current SDK-level tracking-enabled flag (Story 5.4
+     * Task 1).
+     *
+     * Reads from [ApiManager.isTrackingEnabled] — no local caching, so a
+     * caller that flips the flag via [setTrackingEnabled] sees the new
+     * value immediately on the next read.
+     *
+     * Pure-JVM test path ([apiManager] is `null`): returns
+     * [com.convert.sdk.core.config.ConfigDefaults.DEFAULT_TRACKING_ENABLED]
+     * (the same default the ApiManager itself would initialise to), so
+     * that consumers of the smoke-test SDK see the expected-defaults
+     * surface without crashing on a null dereference.
+     *
+     * @return `true` iff outbound tracking events are currently permitted.
+     */
+    public fun isTrackingEnabled(): Boolean =
+        apiManager?.isTrackingEnabled()
+            ?: com.convert.sdk.core.config.ConfigDefaults.DEFAULT_TRACKING_ENABLED
 
     /**
      * Lock used to serialise the auto-UUID read-generate-persist
@@ -883,41 +953,19 @@ public class ConvertSDK internal constructor(
     }
 
     /**
-     * Flips the runtime tracking-enabled flag.
-     *
-     * Story 5.4 wires this into `ApiManager.setTrackingEnabled` so the
-     * flag is read on every enqueue. For the Story 1.2 skeleton the flag
-     * is held locally so the public API surface is frozen now and Story
-     * 5.4 only swaps the implementation, not the signature.
-     *
-     * @param enabled `true` to enable outbound tracking, `false` to drop
-     *   subsequent events at the enqueue boundary.
-     */
-    public fun setTrackingEnabled(enabled: Boolean) {
-        // TODO(Story 5.4): delegate to apiManager.setTrackingEnabled(enabled)
-        trackingEnabled = enabled
-    }
-
-    /**
-     * Reports whether outbound tracking is currently enabled.
-     *
-     * @return the current value of the tracking-enabled flag.
-     */
-    public fun isTrackingEnabled(): Boolean {
-        // TODO(Story 5.4): delegate to apiManager.isTrackingEnabled()
-        return trackingEnabled
-    }
-
-    /**
      * Returns a privacy-safe string representation of this SDK instance.
      *
      * AC-5 / NFR6: [ConvertConfig] is not embedded in the output — even
      * though its own `toString()` already redacts the secret, including
      * the full config would risk exposing URLs, keys, and other sensitive
      * fields. Only the environment and the tracking flag are rendered.
+     *
+     * The tracking-flag value is sourced from [isTrackingEnabled] so the
+     * single ApiManager-owned source of truth (Story 5.4 AC-1) is rendered
+     * — never a stale local copy.
      */
     override fun toString(): String =
-        "ConvertSDK(environment=${config.environment}, trackingEnabled=$trackingEnabled)"
+        "ConvertSDK(environment=${config.environment}, trackingEnabled=${isTrackingEnabled()})"
 
     public companion object {
         private const val TAG: String = "ConvertSDK"
@@ -1220,13 +1268,22 @@ public class ConvertSDK internal constructor(
             // BigDecimal fields.
             val fileEventQueue: EventQueue = FileEventQueue(context = appContext, logger = logger)
             val apiManager = buildApiManager(
-                httpClient,
-                logger,
-                assembled,
-                sharedJson,
-                eventManager,
-                sdkScope,
-                fileEventQueue,
+                httpClient = httpClient,
+                logger = logger,
+                config = assembled,
+                sharedJson = sharedJson,
+                eventManager = eventManager,
+                sdkScope = sdkScope,
+                eventQueue = fileEventQueue,
+                // Story 5.5 fix: ApiManager must read the live loaded
+                // config (populated by DataManager.setData after the
+                // background fetch completes), not the Builder-time
+                // `assembled.data` (which is null in sdkKey+fetch mode).
+                // Without this, every flush in sdkKey+fetch mode silently
+                // no-ops because `config.data?.project?.id` is null even
+                // though the SDK has a fully-loaded config sitting in
+                // DataManager.
+                liveConfigData = { dataManager.data },
             )
             val fileConfigCache = FileConfigCache(
                 context = appContext,
@@ -1587,6 +1644,7 @@ private fun buildApiManager(
     eventManager: com.convert.sdk.core.event.EventManager,
     sdkScope: CoroutineScope,
     eventQueue: EventQueue,
+    liveConfigData: () -> ConfigResponseData?,
 ): ApiManager = ApiManager(
     httpClient = httpClient,
     logger = logger,
@@ -1595,6 +1653,7 @@ private fun buildApiManager(
     eventManager = eventManager,
     scope = sdkScope,
     eventQueue = eventQueue,
+    liveConfigData = liveConfigData,
 )
 
 private fun buildSdkScope(logger: Logger): CoroutineScope =

@@ -194,7 +194,28 @@ public open class ApiManager(
     private val scope: CoroutineScope? = null,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val eventQueue: EventQueue? = null,
+    private val liveConfigData: () -> ConfigResponseData? = { null },
 ) {
+
+    /**
+     * Returns the effective [ConfigResponseData] — preferring the live
+     * value from [liveConfigData] (populated when the SDK has fetched /
+     * cached / been seeded with a config after construction), falling back
+     * to [config].data (the Builder.data(...) direct-data path).
+     *
+     * This is the glue that fixes the sdkKey+fetch tracking bug surfaced
+     * by Story 5.5's full-chain integration test. Before the fix,
+     * `flush()` only worked when [config].data was non-null at Builder
+     * time — i.e. only the pre-seeded direct-data path. In the real
+     * production flow (merchant supplies sdkKey, SDK fetches config at
+     * runtime), [config].data stayed null forever and every flush
+     * silently no-opped with "projectId is null, skipping flush". The
+     * [liveConfigData] accessor is wired to [com.convert.sdk.core.data.DataManager.data]
+     * at Builder time so that once the fetched config lands, ApiManager
+     * picks it up on the next flush call.
+     */
+    internal fun effectiveConfigData(): ConfigResponseData? =
+        liveConfigData() ?: config.data
 
     /**
      * Internal envelope around one queued event: the visitor it belongs
@@ -420,6 +441,15 @@ public open class ApiManager(
      */
     public open fun reenqueuePersisted(events: List<com.convert.sdk.core.model.VisitorEvent>) {
         if (events.isEmpty()) return
+        // Story 5.4 AC-2 — tracking-flag guard BEFORE the monitor lock.
+        // [ConvertSDK.onNetworkAvailable] / [ConvertSDK.onProcessStart]
+        // drive this path on connectivity / foreground restore; without
+        // the short-circuit, persisted events from before a consent
+        // revocation would continue flowing into the live queue.
+        if (!trackingEnabled.get()) {
+            logger.debug("ApiManager.enqueueAll() skipped: tracking disabled", TAG)
+            return
+        }
         synchronized(queueLock) {
             // Build a dedup set from the live queue's TrackingEvent payloads.
             val liveSet: MutableSet<TrackingEvent> =
@@ -450,11 +480,23 @@ public open class ApiManager(
      * queue, re-serializing the [TrackingEvent] into the internal wire-JSON
      * format.
      *
+     * ### Story 5.4 AC-2 — tracking-flag guard
+     *
+     * The corrected AC-2 requires every queue-adding method to honour the
+     * tracking flag. Without this guard, persisted events from before a
+     * consent revocation would resume flowing into the live queue on
+     * foreground resume. The check runs BEFORE the monitor lock so a
+     * disabled-tracking call has zero contention cost.
+     *
      * @param events events read from [com.convert.sdk.core.port.EventQueue];
      *   may be empty (caller short-circuits on empty, but a no-op is safe).
      */
     public open fun enqueueAll(events: List<com.convert.sdk.core.model.VisitorEvent>) {
         if (events.isEmpty()) return
+        if (!trackingEnabled.get()) {
+            logger.debug("ApiManager.enqueueAll() skipped: tracking disabled", TAG)
+            return
+        }
         synchronized(queueLock) {
             events.forEach { ve ->
                 val internalEvent = toInternalVisitorEvent(ve)
@@ -523,7 +565,7 @@ public open class ApiManager(
     @Suppress("ReturnCount", "TooGenericExceptionCaught", "LongMethod")
     internal suspend fun flush(retryCount: Int = 0) {
         val sdkKey = config.sdkKey
-        val projectId = config.data?.project?.id
+        val projectId = effectiveConfigData()?.project?.id
         if (sdkKey.isNullOrEmpty()) {
             logger.warn("ApiManager.flush(): sdkKey is null, skipping flush", tag = TAG)
             return
@@ -763,7 +805,12 @@ public open class ApiManager(
                 event = ve.trackingEvent,
             )
         }
-        return TrackingPayloadBuilder.build(portEvents, config, json)
+        return TrackingPayloadBuilder.build(
+            events = portEvents,
+            config = config,
+            json = json,
+            liveData = effectiveConfigData(),
+        )
     }
 
     /**

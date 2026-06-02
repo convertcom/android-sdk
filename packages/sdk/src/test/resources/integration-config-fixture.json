@@ -1,0 +1,45 @@
+{
+  "account_id": "acct-int",
+  "project": {
+    "id": "proj-int",
+    "name": "Integration Test Project",
+    "type": "fullstack"
+  },
+  "goals": [],
+  "locations": [],
+  "audiences": [],
+  "segments": [],
+  "experiences": [
+    {
+      "id": "exp-int-1",
+      "key": "test-experience",
+      "name": "Integration test experience",
+      "variations": [
+        {
+          "id": "var-a",
+          "key": "control",
+          "traffic_allocation": 50.0,
+          "changes": []
+        },
+        {
+          "id": "var-b",
+          "key": "treatment",
+          "traffic_allocation": 50.0,
+          "changes": []
+        }
+      ]
+    }
+  ],
+  "archived_experiences": [],
+  "features": [
+    {
+      "id": "100",
+      "key": "test-feature",
+      "name": "Test feature",
+      "variables": [
+        {"key": "theme", "type": "string"}
+      ]
+    }
+  ],
+  "is_debug": false
+}
