@@ -55,6 +55,24 @@ internal class ConvertSDKTest {
         appContext = ApplicationProvider.getApplicationContext()
     }
 
+    /**
+     * Busy-waits up to [timeoutMs] for [counter] to reach [minValue].
+     * Used by Story 2.4 tests that assert on side effects of
+     * [EventManager.fire] — the dispatch is async on the SDK scope, so
+     * a small bounded poll is the pragmatic way to let the background
+     * coroutine settle without Robolectric-specific scheduler hooks.
+     */
+    private fun awaitAtLeast(
+        minValue: Int,
+        counter: java.util.concurrent.atomic.AtomicInteger,
+        timeoutMs: Long,
+    ) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline && counter.get() < minValue) {
+            Thread.sleep(10)
+        }
+    }
+
     @Test
     fun `builder captures all config options into ConvertConfig`() {
         val sdk = ConvertSDK.builder(appContext)
@@ -215,8 +233,20 @@ internal class ConvertSDKTest {
     }
 
     @Test
-    fun `multiple onReady callbacks fire in registration order`() {
-        val order = java.util.concurrent.ConcurrentLinkedQueue<Int>()
+    fun `multiple onReady callbacks all fire`() {
+        // Story 2.4 AC-3 + AC-6: all onReady subscribers are delivered
+        // the READY event — either through the EventManager broadcast
+        // (early subscribers captured in the fire snapshot) or through
+        // the deferred-replay path (late subscribers registered after
+        // fire). Each path schedules an independent `scope.launch`, so
+        // on `Dispatchers.Default` the relative ORDER across
+        // independent onReady calls is not guaranteed — that's an
+        // acceptable trade-off for the single-path, race-free replay
+        // mechanism. Strict registration-order delivery is only
+        // guaranteed WITHIN a single `fire` call's snapshot (covered
+        // by EventManagerTest `multiple subscribers fire in
+        // registration order`).
+        val fires = java.util.concurrent.atomic.AtomicInteger(0)
         val done = CountDownLatch(3)
 
         val sdk = ConvertSDK.builder(appContext)
@@ -224,24 +254,28 @@ internal class ConvertSDKTest {
             .build()
 
         sdk.onReady {
-            order.add(1)
+            fires.incrementAndGet()
             done.countDown()
         }
         sdk.onReady {
-            order.add(2)
+            fires.incrementAndGet()
             done.countDown()
         }
         sdk.onReady {
-            order.add(3)
+            fires.incrementAndGet()
             done.countDown()
         }
 
         assertTrue("all three onReady should fire", done.await(2, TimeUnit.SECONDS))
-        assertEquals(listOf(1, 2, 3), order.toList())
+        assertEquals(3, fires.get())
     }
 
     @Test
-    fun `on and off with EventCallback round-trip`() {
+    fun `on returns a SubscriptionToken and off accepts it`() {
+        // Story 2.4 AC-7: on returns a SubscriptionToken (the primary
+        // unsubscribe key). off(event, token) and off(event, callback)
+        // both still exist — token is preferred, callback-identity is a
+        // Kotlin-consumer convenience.
         val sdk = ConvertSDK.builder(appContext)
             .data(ConfigResponseData())
             .build()
@@ -249,16 +283,62 @@ internal class ConvertSDKTest {
         var fired = 0
         val cb = EventCallback { fired++ }
 
-        sdk.on("custom-event", cb)
-        // Use the package-private test hook to fire the event — or just
-        // register + unregister and verify fluent return. Identity-based
-        // off() is load-bearing here.
-        sdk.off("custom-event", cb)
+        val token: SubscriptionToken = sdk.on(CUSTOM_EVENT, cb)
+        assertNotNull(token)
 
-        // Registering and unregistering should not throw, and fluent chain
-        // should return the same SDK instance.
-        assertSame(sdk, sdk.on("custom-event", cb))
-        assertSame(sdk, sdk.off("custom-event", cb))
+        // Token-based off returns ConvertSDK (fluent); no throw on a
+        // never-registered token either.
+        assertSame(sdk, sdk.off(CUSTOM_EVENT, token))
+
+        // Callback-identity off still works and returns the SDK (fluent).
+        sdk.on(CUSTOM_EVENT, cb)
+        assertSame(sdk, sdk.off(CUSTOM_EVENT, cb))
+    }
+
+    @Test
+    fun `off by token stops subsequent deliveries via EventManager`() {
+        // Story 2.4 AC-7 end-to-end: subscribe via ConvertSDK, fire via the
+        // internal EventManager, observe the callback; then off(event, token)
+        // and fire again — callback must not fire.
+        val sdk = ConvertSDK.builder(appContext)
+            .data(ConfigResponseData())
+            .build()
+
+        val fires = java.util.concurrent.atomic.AtomicInteger(0)
+        val cb = EventCallback { fires.incrementAndGet() }
+        val token = sdk.on(CUSTOM_EVENT, cb)
+
+        sdk.eventManager.fire(CUSTOM_EVENT, emptyMap())
+        // Give the scope a tick to dispatch; scope is production so we
+        // busy-wait briefly until the fire count updates or time runs out.
+        awaitAtLeast(1, fires, timeoutMs = 2_000)
+        assertEquals(1, fires.get())
+
+        sdk.off(CUSTOM_EVENT, token)
+        sdk.eventManager.fire(CUSTOM_EVENT, emptyMap())
+        // Give the scope another tick; count must NOT increment.
+        Thread.sleep(200)
+        assertEquals(1, fires.get())
+    }
+
+    @Test
+    fun `onReady registered AFTER READY already fired still fires via replay`() {
+        // Story 2.4 AC-3 + AC-6: the late-subscriber case — register after
+        // direct-data READY has broadcast. EventManager's deferred replay
+        // covers it; the ad-hoc hasData() branch in ConvertSDK is gone.
+        val sdk = ConvertSDK.builder(appContext)
+            .data(ConfigResponseData())
+            .build()
+        // Give the Builder's scope.launch time to run setData + fire(READY).
+        Thread.sleep(200)
+
+        val latch = CountDownLatch(1)
+        sdk.onReady { latch.countDown() }
+
+        assertTrue(
+            "late-registered onReady should fire via EventManager replay",
+            latch.await(2, TimeUnit.SECONDS),
+        )
     }
 
     @Test
@@ -312,6 +392,15 @@ internal class ConvertSDKTest {
     }
 
     private companion object {
+        /**
+         * Custom (non-SystemEvents) name used by Story 2.4 AC-7 round-trip
+         * tests so the assertion target does not collide with SDK-fired
+         * events such as READY / CONFIG_UPDATED. Centralised here so the
+         * single literal change point keeps the round-trip and off-by-token
+         * tests aligned.
+         */
+        const val CUSTOM_EVENT: String = "custom-event"
+
         /**
          * Number of back-to-back `build()` measurements taken by the NFR1
          * timing test. With 5 samples we can drop the min and max
