@@ -961,16 +961,13 @@ public class ConvertSDK internal constructor(
                 json = sharedJson,
             )
 
-            // 6. Story 2.2 collaborators: ApiManager for the CDN fetch,
-            // FileConfigCache for the offline cold-start fallback. Both share
-            // [sharedJson] with DataManager so every serialisation path in
-            // the SDK uses one lenient codec.
-            val apiManager = ApiManager(
-                httpClient = httpClient,
-                logger = logger,
-                config = assembled,
-                json = sharedJson,
-            )
+            // 6. Story 2.2 / 5.1 collaborators: ApiManager (CDN fetch +
+            // outbound tracking queue) and FileConfigCache (offline cold-start
+            // fallback). See [buildApiManager] for the full wiring rationale.
+            // Story 2.2 AC-12 (F-172): FileConfigCache must receive the
+            // shared Json so its encode path does not throw on @Contextual
+            // BigDecimal fields.
+            val apiManager = buildApiManager(httpClient, logger, assembled, sharedJson, eventManager, sdkScope)
             val fileConfigCache = FileConfigCache(
                 context = appContext,
                 logger = logger,
@@ -1285,6 +1282,36 @@ private fun buildSharedJson(): Json = Json {
     // sharedSerializersModule from Story 2.2 AC-12.
     serializersModule = sharedSerializersModule
 }
+
+/**
+ * Constructs the shared [ApiManager] used by the SDK for config fetching
+ * AND outbound event batching (Story 5.1).
+ *
+ * Extracted from [ConvertSDK.Builder.build] to keep that method under
+ * detekt's `LongMethod` ceiling. The injected [eventManager] lets the
+ * batcher fire [com.convert.sdk.core.event.SystemEvents.API_QUEUE_RELEASED]
+ * on every successful flush; the injected [sdkScope] launches the
+ * periodic timer and hosts the size-triggered flush coroutine. Passing
+ * both dependencies at construction time keeps the init sequence
+ * deterministic and avoids any lifetime-ordering assumptions at call
+ * sites.
+ */
+@Suppress("LongParameterList")
+private fun buildApiManager(
+    httpClient: HttpClient,
+    logger: Logger,
+    config: com.convert.sdk.core.config.ConvertConfig,
+    sharedJson: Json,
+    eventManager: com.convert.sdk.core.event.EventManager,
+    sdkScope: CoroutineScope,
+): ApiManager = ApiManager(
+    httpClient = httpClient,
+    logger = logger,
+    config = config,
+    json = sharedJson,
+    eventManager = eventManager,
+    scope = sdkScope,
+)
 
 private fun buildSdkScope(logger: Logger): CoroutineScope =
     CoroutineScope(
