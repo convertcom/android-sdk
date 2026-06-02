@@ -364,50 +364,100 @@ public class ConvertSDK internal constructor(
     private var trackingEnabled: Boolean = config.network?.tracking ?: true
 
     /**
-     * Creates a [ConvertContext] for a freshly minted visitor id.
+     * Lock used to serialise the auto-UUID read-generate-persist
+     * sequence in [createContext]. Without it, two concurrent cold-start
+     * calls could both read a null `visitor_id`, both generate distinct
+     * UUIDs, both write — the second write wins and the first caller's
+     * returned context holds an orphan id that is not the persisted one.
+     * The critical section is tiny (one prefs read, maybe one prefs
+     * write) so a single-monitor approach is fine.
+     */
+    private val visitorIdLock: Any = Any()
+
+    /**
+     * Creates a [ConvertContext] for the **persisted auto-visitor-id**.
      *
-     * A random UUID stands in for the visitor id until Story 3.1 wires
-     * SharedPreferences-backed persistence via [dataStore]; today every
-     * call produces a new id, which is acceptable for the skeleton
-     * (Story 1.2 Gotcha 7 / Story 2.1 Gotcha 12).
+     * Story 3.1 AC-1: on the first call, generates a fresh UUID via
+     * [java.util.UUID.randomUUID] and persists it to the SDK's
+     * SharedPreferences file (`com.convert.sdk.visitor`) under the key
+     * [VISITOR_ID_KEY]. On every subsequent call — within the same
+     * process or after an app restart — the **same** persisted UUID is
+     * returned. The id is lost only on app uninstall or explicit storage
+     * clear.
      *
-     * @return a context scoped to the generated visitor id.
+     * `randomUUID()` produces a version-4 (randomly generated) UUID per
+     * the Java SE specification — see the Java SE 11 reference for
+     * `java.util.UUID.randomUUID`:
+     * https://docs.oracle.com/en/java/docs/api/java.base/java/util/UUID.html#randomUUID()
+     *
+     * "Static factory to retrieve a type 4 (pseudo randomly generated)
+     * UUID. The UUID is generated using a cryptographically strong
+     * pseudo random number generator." This contract is what guarantees
+     * NFR8 (no correlation to user identity); changing the generator
+     * away from `randomUUID()` would void that guarantee.
+     *
+     * Thread safety: the read-generate-persist sequence is guarded by
+     * [visitorIdLock] so two concurrent cold-start calls from different
+     * threads cannot both observe a null key, both generate distinct
+     * UUIDs, and both persist — only one UUID is ever persisted, and
+     * every caller receives it.
+     *
+     * No PII (NFR8): UUID v4 is a 122-bit random identifier with no
+     * correlation to the user's real identity.
+     *
+     * @return a context scoped to the persisted auto-visitor-id.
      */
     public fun createContext(): ConvertContext {
-        // TODO(Story 3.1): persist to dataStore for stable visitor ID across launches
-        return ConvertContext(UUID.randomUUID().toString())
+        val id = synchronized(visitorIdLock) {
+            val existing = dataStore.get(VISITOR_ID_KEY)
+            existing ?: UUID.randomUUID().toString().also {
+                dataStore.set(VISITOR_ID_KEY, it)
+            }
+        }
+        return ConvertContext(visitorId = id)
     }
 
     /**
      * Creates a [ConvertContext] for the supplied visitor id.
      *
-     * @param visitorId stable visitor identifier supplied by the caller.
+     * Story 3.1 AC-2: the persisted auto-visitor-id (see the no-arg
+     * [createContext] overload) is **neither read nor overwritten** —
+     * explicit visitor IDs are caller-managed. This enables
+     * multi-visitor scenarios (e.g. account switching) without
+     * disturbing the auto-UUID that may have been generated for the
+     * anonymous flow earlier in the session.
+     *
+     * @param visitorId stable visitor identifier supplied by the caller;
+     *   may be any string, sanitised internally before being used as a
+     *   SharedPreferences key for per-visitor state.
      * @return a context scoped to [visitorId].
      */
-    public fun createContext(visitorId: String): ConvertContext {
-        // TODO(Story 3.1): wire to DataManager-backed context construction
-        return ConvertContext(visitorId)
-    }
+    public fun createContext(visitorId: String): ConvertContext =
+        ConvertContext(visitorId)
 
     /**
      * Creates a [ConvertContext] for the supplied visitor id and seeds
-     * the initial attribute map.
+     * the initial attribute map via
+     * [ConvertContext.setAttributes] (replace-not-merge).
+     *
+     * Like the explicit-id overload, this method does **not** touch the
+     * persisted auto-visitor-id (AC-2).
+     *
+     * When [attributes] is `null`, the new context's attribute map is
+     * set to [emptyMap] — matching the story's literal code so that the
+     * context observable state is identical regardless of whether the
+     * caller passed `null` or an empty map.
      *
      * @param visitorId stable visitor identifier supplied by the caller.
      * @param attributes initial attributes forwarded to the new context;
-     *   `null` leaves attributes unset.
+     *   `null` becomes an empty map.
      * @return a context scoped to [visitorId] with [attributes] applied.
      */
     public fun createContext(
         visitorId: String,
         attributes: Map<String, Any?>?,
-    ): ConvertContext {
-        val context = ConvertContext(visitorId)
-        if (attributes != null) {
-            context.setAttributes(attributes)
-        }
-        return context
-    }
+    ): ConvertContext =
+        ConvertContext(visitorId).setAttributes(attributes ?: emptyMap())
 
     /**
      * Registers a callback to be invoked once the SDK has finished
@@ -557,6 +607,20 @@ public class ConvertSDK internal constructor(
 
     public companion object {
         private const val TAG: String = "ConvertSDK"
+
+        /**
+         * SharedPreferences key under which the auto-generated
+         * persistent visitor UUID is stored. Lives in the
+         * `com.convert.sdk.visitor` file (see [Builder.PREFS_NAME]).
+         * Only touched by the no-arg [createContext] overload — the
+         * explicit-ID and explicit-ID-with-attributes overloads bypass
+         * this key entirely (AC-2).
+         *
+         * `internal` so tests in the same module can verify persistence
+         * without exposing the key name as part of the public API — the
+         * SDK controls its own SharedPreferences schema.
+         */
+        internal const val VISITOR_ID_KEY: String = "visitor_id"
 
         /**
          * Creates a new [Builder].
@@ -791,17 +855,11 @@ public class ConvertSDK internal constructor(
             //    shared SDK scope.
             val eventManager = EventManager(logger = logger, scope = sdkScope)
 
-            // 6. DataManager — holds the loaded config, fires READY on setData.
-            val dataManager = DataManager(
-                eventManager = eventManager,
-                environment = assembled.environment,
-            )
-
-            // 6. Story 2.2 collaborators: ApiManager for the CDN fetch,
-            // FileConfigCache for the offline cold-start fallback. The
-            // shared Json instance has `ignoreUnknownKeys = true` +
-            // `explicitNulls = false` so that the fetch and the cache see
-            // the same set of fields (NFR12: forward-compatible schemas).
+            // Shared Json instance used by ApiManager, FileConfigCache, and
+            // DataManager's per-visitor StoreData serialisation (Story 3.1).
+            // `ignoreUnknownKeys = true` + `explicitNulls = false` so that
+            // the fetch, cache, and visitor-state paths all see the same set
+            // of fields (NFR12: forward-compatible schemas).
             //
             // Story 2.2 AC-12 (F-172): the shared Json must register
             // [bigDecimalSerializersModule] so that the encode path on
@@ -817,6 +875,21 @@ public class ConvertSDK internal constructor(
                 explicitNulls = false
                 serializersModule = bigDecimalSerializersModule
             }
+
+            // 6. DataManager — holds the loaded config, fires READY on setData,
+            //    and (Story 3.1) manages per-visitor StoreData backed by the
+            //    same SharedPreferences dataStore with LRU-capped in-memory cache.
+            val dataManager = DataManager(
+                eventManager = eventManager,
+                environment = assembled.environment,
+                dataStore = dataStore,
+                json = sharedJson,
+            )
+
+            // 6. Story 2.2 collaborators: ApiManager for the CDN fetch,
+            // FileConfigCache for the offline cold-start fallback. Both share
+            // [sharedJson] with DataManager so every serialisation path in
+            // the SDK uses one lenient codec.
             val apiManager = ApiManager(
                 httpClient = httpClient,
                 logger = logger,

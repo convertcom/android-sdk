@@ -342,7 +342,18 @@ internal class ConvertSDKTest {
     }
 
     @Test
-    fun `createContext returns a new context each call with unique visitorIds`() {
+    fun `createContext no-arg returns same persisted UUID across calls`() {
+        // Story 3.1 AC-1 flipped the earlier (Story 1.2 / 2.1) "every
+        // call gets a fresh UUID" contract — now the SDK persists the
+        // first auto-UUID and returns it on every subsequent no-arg call.
+        // Clear the visitor_id key first so this test is independent of
+        // the other tests' ordering.
+        appContext
+            .getSharedPreferences("com.convert.sdk.visitor", Context.MODE_PRIVATE)
+            .edit()
+            .remove("visitor_id")
+            .apply()
+
         val sdk = ConvertSDK.builder(appContext).data(ConfigResponseData()).build()
 
         val a = sdk.createContext()
@@ -350,7 +361,7 @@ internal class ConvertSDKTest {
 
         assertNotNull(a)
         assertNotNull(b)
-        assertTrue("visitor ids must differ", a.visitorId != b.visitorId)
+        assertEquals("AC-1: persisted auto-UUID is stable", a.visitorId, b.visitorId)
     }
 
     @Test
