@@ -398,19 +398,88 @@ public class ConvertContext internal constructor(
     )
 
     /**
-     * Evaluates every experience for this visitor.
+     * Evaluates every experience in the currently-loaded config for this
+     * visitor — Story 3.3 AC-1 through AC-7.
+     *
+     * ### Algorithm
+     *
+     *  1. **Config-ready gate (AC-1).** An unset [sdk] reference (test
+     *     path) or [com.convert.sdk.core.data.DataManager.hasData] being
+     *     `false` yields an empty list — matches the config-not-ready
+     *     fallback used by [runExperience].
+     *  2. **Iterate in declaration order (AC-1, Gotcha 2).** The
+     *     `experiences` list is walked top-to-bottom. The resulting list
+     *     preserves that ordering; consumers that need alphabetical or
+     *     custom ordering sort themselves.
+     *  3. **Delegate to [runExperience] (AC-2, AC-3, AC-4, AC-5).** Each
+     *     element calls `runExperience(key, enableTracking)`, which
+     *     handles sticky lookup, bucketing, persistence, tracking gate,
+     *     and `SystemEvents.BUCKETING` fire. Null returns (non-allocated,
+     *     unknown key, empty wheel) are dropped via [mapNotNull].
+     *  4. **Exception isolation (AC-7 test 5).** Each per-experience
+     *     call is wrapped in a `try/catch`: if bucketing for experience
+     *     A throws, the loop logs, drops A, and continues with B. Today
+     *     [runExperience] never throws (every failure path returns null),
+     *     but the catch is defensive per the architecture's
+     *     "never leak exceptions to the caller" rule.
+     *
+     * ### Per-call tracking
+     *
+     * `enableTracking` passes verbatim into each [runExperience] call.
+     * When `false`, no experience in the batch enqueues an outbound
+     * bucketing event — matches Story 3.2 AC-10 semantics per
+     * experience, applied across the batch.
+     *
+     * ### Return contract (Gotcha 3)
+     *
+     * Always returns a [List] — never `null`. Empty when the visitor is
+     * in no experiences (or config is not ready).
      *
      * @param enableTracking when `true`, each bucketing emits a
      *   `viewExp` tracking event. Pass `false` for silent evaluation.
      *   Defaults to `true`.
-     * @return the list of bucketed [Variation]s; empty when the visitor
-     *   is not in any experience.
+     * @return the list of bucketed [Variation]s in config-declaration
+     *   order; empty when the visitor is not in any experience.
      */
     @JvmOverloads
+    @Suppress("ReturnCount", "TooGenericExceptionCaught")
     public fun runExperiences(enableTracking: Boolean = true): List<Variation> {
-        // TODO(Story 3.3): wire to BucketingManager batch evaluation
         lastRunWithTracking = enableTracking
-        return emptyList()
+
+        val sdk = this.sdk ?: return emptyList()
+        if (!sdk.dataManager.hasData()) {
+            sdk.logger.debug(
+                message = "ConvertContext.runExperiences: config not loaded, returning empty",
+                tag = TAG,
+            )
+            return emptyList()
+        }
+        val experiences = sdk.dataManager.data?.experiences ?: return emptyList()
+
+        return experiences.mapNotNull { experience ->
+            val key = experience.key ?: return@mapNotNull null
+            try {
+                runExperience(key, enableTracking)
+            } catch (t: Throwable) {
+                // Belt-and-suspenders: runExperience today never throws
+                // (every failure returns null), but isolating each
+                // iteration keeps one bad experience config from poisoning
+                // the batch. Matches the architecture error-handling rule:
+                // "All public methods: wrap in try/catch, log error, return
+                // null or Unit." Detekt's TooGenericExceptionCaught is
+                // suppressed here intentionally — the whole point of this
+                // catch is to prevent any unexpected runtime failure from
+                // breaking the batch, so narrowing to specific exceptions
+                // would defeat the guarantee.
+                sdk.logger.error(
+                    message = "ConvertContext.runExperiences: experience '$key' threw " +
+                        "during evaluation; skipping",
+                    throwable = t,
+                    tag = TAG,
+                )
+                null
+            }
+        }
     }
 
     /**
