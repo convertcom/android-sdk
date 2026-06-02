@@ -198,6 +198,12 @@ jobs:
       - name: Ensure gradlew is executable
         run: chmod +x ./gradlew
 
+      - name: Generate Kover XML reports
+        # `koverVerify` does not emit report.xml — only `koverXmlReport` does.
+        # Generate the XML first so the reports exist for the upload step even
+        # when `koverVerify` trips a threshold below.
+        run: ./gradlew koverXmlReport --no-daemon
+
       - name: Enforce Kover thresholds
         # `koverVerify` runs each module's `minBound` rule — currently 85 for
         # :packages:core and 50 for :packages:sdk (will ratchet to 70 per
