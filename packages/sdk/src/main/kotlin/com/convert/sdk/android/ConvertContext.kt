@@ -603,10 +603,21 @@ public class ConvertContext internal constructor(
      *     This is the only observable the application-level observer
      *     API surfaces, so consumers can latch onto it for
      *     in-process analytics without parsing the tracking payload.
-     *  6. **Dedup deferred to Story 4.3 (AC-1 step 6).** This story
-     *     enqueues unconditionally every time the method is called.
-     *     Story 4.3 adds the `goals[goalId] == true` check before
-     *     enqueue + fire.
+     *  6. **Dedup (Story 4.3 AC-1 / AC-3 / AC-5 / AC-6).** Before the
+     *     enqueue, the atomic check-and-set
+     *     [com.convert.sdk.core.data.DataManager.markGoalTracked] serializes
+     *     concurrent callers — exactly one transition from "untracked" to
+     *     "tracked" wins, every other racing caller sees `false`. JS SDK
+     *     schema-strict shape: a single [com.convert.sdk.core.api.ApiManager.enqueueConversionEvent]
+     *     call carries goalData verbatim (per F-007/F-015 remediation —
+     *     `"tr"` is not a valid eventType; revenue lives in `goalData`).
+     *       - `!firstMark && !forceMultipleTransactions`: DEBUG log and
+     *         return — no enqueue, no CONVERSION fire.
+     *       - `firstMark || forceMultipleTransactions`: emit single
+     *         ConversionEvent with goalData (null when omitted), FIRE CONVERSION.
+     *     `forceMultipleTransactions` flows in via the optional
+     *     [conversionSetting] map — developer-supplied at call time, not
+     *     a backend schema field (F-080 remediation).
      *
      * ### Never throws (AC-4)
      *
@@ -619,12 +630,19 @@ public class ConvertContext internal constructor(
      * @param goalKey merchant-defined key of the goal to track.
      * @param goalData optional goal-data payload (amounts, transaction
      *   ids, custom dimensions). `null` omits the payload entirely.
+     * @param conversionSetting optional per-call settings map — mirrors
+     *   JS SDK `ConversionAttributes.conversionSetting`. The only flag
+     *   consulted today is `forceMultipleTransactions` (Boolean): when
+     *   `true`, the transaction enqueue fires even on a repeat call for
+     *   an already-tracked goal. `null` (the default) applies regular
+     *   dedup semantics.
      */
     @JvmOverloads
     @Suppress("ReturnCount")
     public fun trackConversion(
         goalKey: String,
         goalData: List<GoalData>? = null,
+        conversionSetting: Map<String, Any?>? = null,
     ) {
         lastConversionGoalKey = goalKey
         lastConversionGoalData = goalData
@@ -664,7 +682,32 @@ public class ConvertContext internal constructor(
             return
         }
 
-        dispatchConversion(sdk, goalKey, goalId, goalData)
+        // Step 3 — Story 4.3 AC-6 dedup guard. Atomic check-and-set; the
+        // returned `firstMark` drives the enqueue/fire decisions inside
+        // dispatchConversion so thread A (firstMark=true) and thread B
+        // (firstMark=false) take deterministically different paths.
+        val forceMultipleTransactions =
+            (conversionSetting?.get(FORCE_MULTIPLE_TRANSACTIONS_KEY) as? Boolean) == true
+        val firstMark = sdk.dataManager.markGoalTracked(visitorId = visitorId, goalId = goalId)
+
+        if (!firstMark && !forceMultipleTransactions) {
+            // Pure dedup path. JS SDK parity: convert() returns undefined
+            // (data-manager.ts line 1036), context.ts line 417 guard is
+            // false → no CONVERSION fire either.
+            sdk.logger.debug(
+                message = "ConvertContext.trackConversion: goal '$goalKey' already tracked " +
+                    "for visitor '$visitorId', skipping",
+                tag = TAG,
+            )
+            return
+        }
+
+        dispatchConversion(
+            sdk = sdk,
+            goalKey = goalKey,
+            goalId = goalId,
+            goalData = goalData,
+        )
     }
 
     /**
@@ -699,15 +742,17 @@ public class ConvertContext internal constructor(
      * `LongMethod` ceiling and the launch body holds the full AC-4
      * try/catch in one place.
      *
-     * F-008 remediation: a single [com.convert.sdk.core.api.ApiManager.enqueueConversionEvent]
+     * F-008 / F-007 / F-015 remediation: a single
+     * [com.convert.sdk.core.api.ApiManager.enqueueConversionEvent]
      * call passes [goalData] verbatim (null when omitted; the caller's
-     * list when present). The previous dual-call pattern (one bare,
-     * one with goalData) violated the JS SDK schema at
-     * `javascript-sdk/packages/types/src/config/types.gen.ts:2749-2757`,
-     * which declares only `'bucketing'` and `'conversion'` event types —
-     * a single `ConversionEvent` carries goalId, optional goalData, and
-     * optional bucketingData. Revenue lives in `goalData` on the same
-     * event, not on a sibling event.
+     * list when present). The `"tr"` event type does not exist in the
+     * JS SDK schema (`types.gen.ts:2749-2757` — only `"bucketing"` and
+     * `"conversion"`); revenue lives in `goalData` on the same
+     * ConversionEvent. The previous dual-call DispatchFlags pattern
+     * (sendBare + sendTransaction) is dropped in favour of this
+     * schema-strict single-call shape. The dedup gate in
+     * [trackConversion] ensures this method is only reached when
+     * the call should actually enqueue.
      */
     @Suppress("TooGenericExceptionCaught")
     private fun dispatchConversion(
@@ -718,13 +763,15 @@ public class ConvertContext internal constructor(
     ) {
         sdk.scope.launch {
             try {
-                // Step 4 — single ConversionEvent enqueue (F-008 remediation).
+                // Step 4 — single ConversionEvent enqueue (F-008 / F-007 / F-015 remediation).
                 // Pass goalData verbatim: null for a bare hit, the caller's
                 // list when revenue / custom-dimension fields are present.
                 // Empty list is normalised to null so the wire payload
                 // matches `ConversionEvent.goalData: List<...>? = null`
                 // (avoids serialising an empty array where the schema
-                // accepts the field's absence).
+                // accepts the field's absence). The dedup gate in
+                // trackConversion ensures this method is only called when
+                // the event should actually be emitted.
                 sdk.apiManager?.enqueueConversionEvent(
                     visitorId = visitorId,
                     goalId = goalId,
@@ -899,6 +946,19 @@ public class ConvertContext internal constructor(
          * (i.e. the whole wheel).
          */
         const val DEFAULT_VARIATION_PCT: Double = 100.0
+
+        /**
+         * Key in the per-call `conversionSetting` map that toggles
+         * force-multiple-transactions semantics. JS SDK parity with
+         * `javascript-sdk/packages/enums/src/conversion-setting-key.ts`
+         * (`FORCE_MULTIPLE_TRANSACTIONS = 'forceMultipleTransactions'`).
+         *
+         * When the map value at this key is the Boolean `true`, a repeat
+         * [trackConversion] call for an already-tracked goal will still
+         * emit the transaction conversion (and fire CONVERSION) — only
+         * the bare goal hit stays suppressed on the repeat path.
+         */
+        const val FORCE_MULTIPLE_TRANSACTIONS_KEY: String = "forceMultipleTransactions"
 
         /**
          * Lifts a `Map<String, Any?>?` into `Map<String, JsonElement>`,
