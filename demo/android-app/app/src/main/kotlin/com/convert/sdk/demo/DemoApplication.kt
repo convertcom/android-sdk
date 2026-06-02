@@ -12,6 +12,8 @@ import com.convert.sdk.core.model.Feature
 import com.convert.sdk.core.model.GoalData
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.Variation
+import com.convert.sdk.demo.viewmodel.ConfigSnapshot
+import com.convert.sdk.demo.viewmodel.ConfigSnapshotProvider
 import com.convert.sdk.demo.viewmodel.ConversionTracker
 import com.convert.sdk.demo.viewmodel.EventSubscriber
 import com.convert.sdk.demo.viewmodel.ExperienceRunner
@@ -244,5 +246,52 @@ class DemoApplication : Application() {
             } else {
                 false
             }
+    }
+
+    /**
+     * Story 7.6 AC-5 — builds a [ConfigSnapshotProvider] that reads
+     * the SDK's current state through its **public** API surface.
+     *
+     * The demo cannot read `sdk.dataManager` directly (the property is
+     * `internal` to the SDK module) but it can infer the two lists the
+     * panel requires by asking the per-visitor [ConvertContext] for
+     * its eligible experience and feature sets — `runExperiences()` /
+     * `runFeatures()`, the same calls the other screens drive. Each
+     * `Variation` carries its `experienceKey`; each `Feature` carries
+     * its `key`.
+     *
+     * Honest naming: "Active" in the panel means "eligible for the
+     * current visitor". A visitor outside an experience's audience
+     * will see that experience omitted from the list — which is the
+     * correct signal for a developer debugging audience rules.
+     *
+     * `trackingEnabled` comes from the SDK's public
+     * [com.convert.sdk.android.ConvertSDK.isTrackingEnabled] accessor.
+     * The `null` branch (API manager not yet wired, or the SDK
+     * deferred has not landed yet) renders as `"—"` in
+     * [ConfigInfoPanel].
+     *
+     * Synchronous-by-contract: the [ConfigSnapshotProvider] docstring
+     * says `snapshot()` is called on the SDK's event-dispatch thread
+     * and must not block. The implementation therefore reads
+     * [sdkDeferred] and [contextDeferred] only when they are already
+     * complete; missing values fall back to empty lists / `null`,
+     * matching the "cannot produce a meaningful snapshot" path the
+     * contract anticipates for early calls before the first config
+     * fetch lands.
+     */
+    fun configSnapshotProvider(): ConfigSnapshotProvider = ConfigSnapshotProvider {
+        val sdk = if (sdkDeferred.isCompleted) sdkDeferred.getCompleted() else null
+        val context = if (contextDeferred.isCompleted) contextDeferred.getCompleted() else null
+        val experiences = context?.let { runCatching { it.runExperiences() }.getOrDefault(emptyList()) } ?: emptyList()
+        val features = context?.let { runCatching { it.runFeatures() }.getOrDefault(emptyList()) } ?: emptyList()
+        val tracking = sdk?.let { runCatching { it.isTrackingEnabled() }.getOrNull() }
+        ConfigSnapshot(
+            sdkKey = BuildConfig.convertSdkKey,
+            environment = null,
+            experienceKeys = experiences.mapNotNull { it.experienceKey },
+            featureKeys = features.mapNotNull { it.key },
+            trackingEnabled = tracking,
+        )
     }
 }

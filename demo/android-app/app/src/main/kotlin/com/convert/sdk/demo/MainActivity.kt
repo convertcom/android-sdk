@@ -151,6 +151,7 @@ private class SdkViewModelFactory(private val demoApp: DemoApplication) : ViewMo
             experienceRunner = demoApp.experienceRunner(),
             featureRunner = demoApp.featureRunner(),
             conversionTracker = demoApp.conversionTracker(),
+            configSnapshotProvider = demoApp.configSnapshotProvider(),
         ) as T
     }
 }
