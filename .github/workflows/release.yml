@@ -11,8 +11,10 @@ on:
     types: [completed]
     branches: [main]
 
-# `contents: write` — semantic-release needs to push the release commit
-#   and create the `vX.Y.Z` tag.
+# `contents: write` — semantic-release needs to push the `vX.Y.Z` tag and
+#   create the GitHub Release via the API. It does NOT push any commit to
+#   `main` (the branch ruleset would reject that — GH013); only the tag ref
+#   and the Release are written. (qs-03.)
 #
 # packages: write is INTENTIONALLY OMITTED — the Android SDK publishes to
 # Maven Central only (via the vanniktech plugin). GitHub Packages / GHCR
@@ -27,8 +29,8 @@ permissions:
 # Serialize releases. If two pushes land on main in quick succession, the
 # second workflow_run waits for the first to finish before starting — we
 # must not have two concurrent `./gradlew publish…` invocations racing to
-# upload artifacts of the same version, or two `@semantic-release/git`
-# instances racing to push a tag. `cancel-in-progress: false` because
+# upload artifacts of the same version, or two `@semantic-release/github`
+# instances racing to create the tag + Release. `cancel-in-progress: false` because
 # cancelling a mid-publish workflow can leave a half-uploaded staged
 # deployment in the Central Portal that needs manual cleanup.
 concurrency:
@@ -58,8 +60,9 @@ jobs:
           # semantic-release analyzes all commits since the last tag; the
           # default shallow clone (depth 1) would blind it.
           fetch-depth: 0
-          # Required so semantic-release's @semantic-release/git plugin can
-          # push the release commit + tag back to origin using GITHUB_TOKEN.
+          # Required so semantic-release can push the `vX.Y.Z` tag back to
+          # origin using GITHUB_TOKEN. Only the tag is pushed — no commit to
+          # `main` (the GitHub Release is created via the API). (qs-03.)
           persist-credentials: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -109,12 +112,14 @@ jobs:
 
       - name: Run semantic-release
         # semantic-release orchestrates everything from here: analyze
-        # commits → bump libs.versions.toml → write CHANGELOG.md →
+        # commits → bump libs.versions.toml (build-time, not committed) →
         # ./gradlew publishAllPublicationsToMavenCentralRepository →
-        # commit + tag.
+        # push the `vX.Y.Z` tag + create the GitHub Release via the API.
+        # No commit is pushed to `main`.
         run: yarn release
         env:
-          # GitHub Actions — used by @semantic-release/git to push.
+          # GitHub Actions — used to push the tag and create the Release
+          # (@semantic-release/github + semantic-release core).
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
           # Sonatype Central Portal credentials. Generate these in the
