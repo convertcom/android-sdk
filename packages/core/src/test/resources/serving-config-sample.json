@@ -1,0 +1,46 @@
+{
+  "account_id": "12345",
+  "project": {
+    "id": "67890",
+    "name": "Test Project",
+    "type": "fullstack",
+    "utc_offset": -480,
+    "domains": [
+      {
+        "tld": "example.com"
+      },
+      {
+        "tld": "other.com"
+      }
+    ],
+    "global_javascript": "console.log('global');"
+  },
+  "goals": [],
+  "locations": [
+    {
+      "id": "loc_1",
+      "name": "Home page"
+    }
+  ],
+  "audiences": [
+    {
+      "id": "aud_1",
+      "key": "logged_in",
+      "name": "Logged in users"
+    }
+  ],
+  "segments": [
+    {
+      "id": "seg_1",
+      "key": "mobile_users",
+      "name": "Mobile users"
+    }
+  ],
+  "experiences": [],
+  "archived_experiences": [
+    "exp_archived_1",
+    "exp_archived_2"
+  ],
+  "features": [],
+  "is_debug": true
+}

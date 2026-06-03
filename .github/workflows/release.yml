@@ -1,0 +1,117 @@
+name: Release
+
+# Triggered by a successful CI run on main, via `workflow_run`. Using
+# `workflow_run` (instead of `push` or `release` triggers) guarantees that
+# CI (lint, detekt, Android lint, tests, coverage) has passed BEFORE we
+# attempt to publish to Maven Central — so broken code never reaches
+# consumers. Mirrors the Convert PHP SDK's release.yml pattern.
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: [main]
+
+# `contents: write` — semantic-release needs to push the release commit
+#   and create the `vX.Y.Z` tag.
+#
+# packages: write is INTENTIONALLY OMITTED — the Android SDK publishes to
+# Maven Central only (via the vanniktech plugin). GitHub Packages / GHCR
+# is not a target. Adding `packages: write` would widen the blast radius
+# of a compromised GITHUB_TOKEN with no functional benefit (least-privilege
+# principle). If a GHCR mirror is ever added, re-introduce it then with
+# an inline citation to the architecture decision. Matches the PHP SDK's
+# release.yml permissions block exactly. (Story 1.4 / AC-1 — F-121.)
+permissions:
+  contents: write
+
+# Serialize releases. If two pushes land on main in quick succession, the
+# second workflow_run waits for the first to finish before starting — we
+# must not have two concurrent `./gradlew publish…` invocations racing to
+# upload artifacts of the same version, or two `@semantic-release/git`
+# instances racing to push a tag. `cancel-in-progress: false` because
+# cancelling a mid-publish workflow can leave a half-uploaded staged
+# deployment in the Central Portal that needs manual cleanup.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Semantic Release → Maven Central
+    runs-on: ubuntu-latest
+    # Twin guards (both required):
+    #   (1) workflow_run.conclusion == 'success' → CI actually passed
+    #       (workflow_run fires on `completed` regardless of outcome).
+    #   (2) workflow_run.event == 'push' → the CI run that triggered us
+    #       was on a push, not a pull_request. FORK PRs fire `pull_request`
+    #       events and DO NOT carry secret access; triggering release on
+    #       them would either fail or (worse) risk leaking secrets into PR
+    #       logs. DO NOT REMOVE THIS GUARD — see RELEASE.md §"Fork-PR
+    #       Safeguard" for why. (Story 1.4 / AC-10.)
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          # semantic-release analyzes all commits since the last tag; the
+          # default shallow clone (depth 1) would blind it.
+          fetch-depth: 0
+          # Required so semantic-release's @semantic-release/git plugin can
+          # push the release commit + tag back to origin using GITHUB_TOKEN.
+          persist-credentials: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle (with caching)
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Ensure gradlew is executable
+        # Defensive — actions/checkout@v4 should preserve the exec bit but
+        # some self-hosted runners strip it. CI has the same guard.
+        run: chmod +x ./gradlew
+
+      - name: Set up Node LTS (for semantic-release)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: yarn
+
+      - name: Install Node dependencies
+        # --immutable: error if yarn.lock drifts from package.json. Matches
+        # the PHP SDK's pattern — prevents accidental lockfile mutation in
+        # CI while still catching out-of-sync lockfiles at PR time.
+        run: yarn install --immutable
+
+      - name: Run semantic-release
+        # semantic-release orchestrates everything from here: analyze
+        # commits → bump libs.versions.toml → write CHANGELOG.md →
+        # ./gradlew publishAllPublicationsToMavenCentralRepository →
+        # commit + tag.
+        run: yarn release
+        env:
+          # GitHub Actions — used by @semantic-release/git to push.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # Sonatype Central Portal credentials. Generate these in the
+          # Central Portal UI (https://central.sonatype.com) → user tokens.
+          # See RELEASE.md §"Secrets" for the exact acquisition steps.
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+
+          # In-memory GPG signing key for vanniktech's plugin. Export the
+          # private key with `gpg --armor --export-secret-keys <KEY_ID>`
+          # and paste the full multi-line ASCII-armored output into the
+          # GitHub secret UI (secret storage handles multi-line correctly).
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_PRIVATE_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_KEY_PASSWORD }}
+          # Optional — the plugin can derive the key ID from the key itself.
+          # Provide it only if you publish with multiple keys and need to
+          # disambiguate.
+          ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.GPG_KEY_ID }}
