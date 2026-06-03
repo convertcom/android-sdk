@@ -21,8 +21,14 @@ The android-sdk owns the **Kotlin side** of parity:
 - The vector file at `packages/core/src/test/resources/hash-parity-vectors.json`
   (committed; regenerated only from the JS SDK reference).
 - The generation script at `tools/generate-parity-vectors.mjs`
-  (committed; runs against `@convertcom/js-sdk-bucketing` from the
-  sibling javascript-sdk checkout).
+  (committed; runs against the PUBLISHED `@convertcom/js-sdk-bucketing`
+  npm package, pinned in `tools/package.json`). The script and its
+  dependency live in an isolated `tools/package.json` — deliberately
+  separate from the root release `package.json`, so the release pipeline
+  never installs the parity dependency. Regeneration is run from `tools/`
+  and needs no sibling javascript-sdk checkout (it resolves bucketing from
+  npm), making it portable and reproducible against the exact version
+  other Convert SDKs consume.
 - The Kotlin parity gate `HashParityTest.kt`.
 
 The JS side maintains its own equivalent parity suite. Other SDKs (PHP,
@@ -61,7 +67,7 @@ to silently regenerate.
    precise `description`). Then regenerate locally:
 
    ```sh
-   cd android-sdk
+   cd android-sdk/tools
    yarn install
    yarn generate:parity-vectors
    ```

@@ -1,0 +1,13 @@
+{
+  "name": "convert-android-sdk-parity-tooling",
+  "private": true,
+  "type": "module",
+  "description": "Cross-SDK parity-vector generation for the Convert Android SDK. Regen-only; isolated from release tooling, and pinned to the PUBLISHED @convertcom/js-sdk-bucketing npm package so regeneration is portable (no sibling javascript-sdk checkout needed) and reproducible.",
+  "packageManager": "yarn@4.15.0",
+  "scripts": {
+    "generate:parity-vectors": "node generate-parity-vectors.mjs > ../packages/core/src/test/resources/hash-parity-vectors.json"
+  },
+  "devDependencies": {
+    "@convertcom/js-sdk-bucketing": "3.1.2"
+  }
+}

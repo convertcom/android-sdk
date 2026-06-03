@@ -14,3 +14,9 @@ node_modules/
 .yarn/cache
 .yarn/install-state.gz
 .pnp.*
+
+# Parity tooling — nested Berry project under tools/ (qs-02). Its .yarn
+# artifacts are NOT covered by the root-anchored patterns above, so ignore
+# them explicitly. tools/package.json + tools/yarn.lock ARE committed.
+tools/.yarn/cache
+tools/.yarn/install-state.gz
