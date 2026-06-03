@@ -115,13 +115,15 @@ export default {
     [
       '@semantic-release/github',
       {
-        // release.yml grants `contents: write` only; default PR/issue
-        // success comments would need issues:write + pull-requests:write
-        // and could 403. Disable them — the Release + tag (contents:write)
-        // are all we need. (qs-03 / TD-2.)
+        // release.yml grants `contents: write` only; the plugin's default
+        // PR/issue success comments AND `releasedLabels` both write to
+        // issues/PRs (need issues:write + pull-requests:write) and would
+        // 403. Disable them all — the Release + tag (contents:write) are
+        // all we need. (qs-03 / TD-2.)
         successComment: false,
         failComment: false,
         failTitle: false,
+        releasedLabels: false,
       },
     ],
   ],
