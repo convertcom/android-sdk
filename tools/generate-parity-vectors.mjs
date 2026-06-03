@@ -18,26 +18,33 @@
  * ──────────────────────────────────────────────────────────────────────
  * How to run
  * ──────────────────────────────────────────────────────────────────────
- *   cd android-sdk
- *   yarn install                              # once
+ * This tooling lives in its OWN package (android-sdk/tools), isolated from
+ * the root release package.json so the release pipeline never installs the
+ * parity dependency. Run it from tools/:
+ *
+ *   cd android-sdk/tools
+ *   yarn install                              # once (pulls bucketing from npm)
  *   yarn generate:parity-vectors              # regenerate vectors
- *   # or equivalently:
- *   node tools/generate-parity-vectors.mjs \
- *     > packages/core/src/test/resources/hash-parity-vectors.json
+ *   # or equivalently, from tools/:
+ *   node generate-parity-vectors.mjs \
+ *     > ../packages/core/src/test/resources/hash-parity-vectors.json
  *
  * ──────────────────────────────────────────────────────────────────────
  * Dependencies
  * ──────────────────────────────────────────────────────────────────────
  * Requires:
  *   - Node 20+ (uses ESM + top-level await-compatible runtime)
- *   - `@convertcom/js-sdk-bucketing` resolved via the `file:../javascript-sdk/
- *     packages/bucketing` devDependency in the android-sdk's package.json.
- *     That pulls in the PRE-BUILT `lib/index.mjs` which has murmurhash
- *     bundled in — no internet access needed at runtime.
+ *   - `@convertcom/js-sdk-bucketing` — the PUBLISHED npm package, pinned in
+ *     tools/package.json (`^3.1.2`). No sibling javascript-sdk checkout is
+ *     needed: regeneration is portable and reproducible against the exact
+ *     published version other Convert SDKs consume. The package ships a
+ *     PRE-BUILT `lib/index.mjs` with murmurhash bundled in.
  *
- * If the sibling javascript-sdk checkout moves or the bucketing lib
- * hasn't been built (no `lib/index.mjs`), run
- * `cd ../javascript-sdk && yarn install && yarn bucketing:build`.
+ * To regenerate against a newer JS SDK bucketing release, bump the version
+ * range in tools/package.json, run `yarn install` in tools/, then
+ * `yarn generate:parity-vectors`. A version bump that changes existing
+ * vectors is a cross-SDK breaking change — see "When the JS SDK changes
+ * hash logic" in PARITY.md.
  *
  * ──────────────────────────────────────────────────────────────────────
  * When to regenerate

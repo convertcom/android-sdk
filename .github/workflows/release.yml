@@ -81,12 +81,30 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 'lts/*'
-          cache: yarn
+          # NOTE: `cache: yarn` is intentionally NOT set. This repo is a Yarn
+          # Berry project (yarn.lock __metadata version 10). setup-node's
+          # `cache: yarn` resolves the cache folder using the yarn binary on
+          # PATH *during this step* — which is the runner's default Yarn
+          # Classic 1.x, because corepack's Berry shim isn't activated until
+          # the next step. That would cache the wrong (Classic) folder.
+          # Release runs only on workflow_run after CI success on main (low
+          # frequency), so the marginal cache benefit doesn't justify the
+          # misconfiguration risk. (qs-02 / TD-3.)
+
+      - name: Enable corepack (activate Yarn Berry from packageManager)
+        # Runs AFTER setup-node so corepack uses the pinned Node toolchain.
+        # `corepack enable` installs the yarn shim that resolves the version
+        # in package.json's `packageManager` field (yarn@4.15.0), so the
+        # install below runs under Berry — not the runner's default Yarn
+        # Classic 1.x, which silently ignores --immutable and mis-reads the
+        # v10 lockfile. (qs-02 / TD-3.)
+        run: corepack enable
 
       - name: Install Node dependencies
         # --immutable: error if yarn.lock drifts from package.json. Matches
         # the PHP SDK's pattern — prevents accidental lockfile mutation in
-        # CI while still catching out-of-sync lockfiles at PR time.
+        # CI while still catching out-of-sync lockfiles at PR time. Honored
+        # correctly now that corepack has activated Yarn Berry above.
         run: yarn install --immutable
 
       - name: Run semantic-release
