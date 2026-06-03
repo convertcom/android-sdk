@@ -3,26 +3,36 @@
  *
  * Triggered by `.github/workflows/release.yml` on every successful CI run on
  * `main`. Analyzes the conventional commits since the last tag, decides the
- * next version, bumps `gradle/libs.versions.toml`, writes CHANGELOG.md,
- * publishes signed artifacts to Maven Central via the vanniktech plugin,
- * commits the bump + CHANGELOG, and pushes the `vX.Y.Z` tag.
+ * next version, bumps `gradle/libs.versions.toml` for the build, publishes
+ * signed artifacts to Maven Central via the vanniktech plugin, then creates
+ * the `vX.Y.Z` tag + a GitHub Release carrying the generated notes.
  *
- * Plugin order is LOAD-BEARING — see Story 1.4 AC-3 and the Dev Notes
- * "Why @semantic-release/exec Twice" section:
+ * IMPORTANT: this release NEVER pushes a commit to `main`. The `main`
+ * repository ruleset (pull_request + code_scanning) rejects direct branch
+ * pushes, so any commit-back step would fail with GH013. semantic-release
+ * core pushes only the *tag* (a `refs/tags/*` ref — not gated by the branch
+ * ruleset) and `@semantic-release/github` creates the Release via the API.
+ * The version bump in `libs.versions.toml` is a build-time, working-tree
+ * write that is consumed by the Gradle publish and intentionally not
+ * committed; the next release derives its version from this run's git tag.
+ *
+ * Plugin order is LOAD-BEARING — see Story 1.4 AC-3, qs-03, and the Dev
+ * Notes "Why @semantic-release/exec Twice" section:
  *
  *   1. commit-analyzer          → decide next version from feat/fix/BREAKING
  *   2. release-notes-generator  → render markdown release notes
- *   3. changelog                → prepend notes to CHANGELOG.md
- *   4. exec (bump-version)      → write nextRelease.version into libs.versions.toml
- *   5. exec (publish-maven)     → ./gradlew publishAllPublicationsToMavenCentralRepository
- *   6. git                      → commit CHANGELOG + libs.versions.toml, push vX.Y.Z tag
+ *   3. exec (bump-version)      → write nextRelease.version into libs.versions.toml
+ *   4. exec (publish-maven)     → ./gradlew publishAllPublicationsToMavenCentralRepository
+ *   5. github                   → create vX.Y.Z tag + GitHub Release (via API)
  *
- * If step 5 fails, semantic-release aborts BEFORE step 6 — so no orphan tag
- * gets pushed without a corresponding Maven Central upload. The repo stays
- * in its pre-release state; the next push retries.
+ * If step 4 (Maven Central publish) fails, semantic-release aborts BEFORE
+ * step 5 — so no GitHub Release/tag is finalized without a corresponding
+ * Maven Central upload. The repo stays in its pre-release state; the next
+ * push retries.
  *
- * Adapted from the Convert PHP SDK's release.config.mjs (same PHP SDK
- * release plumbing, different build tool — Gradle vs Composer).
+ * Adapted from the Convert PHP SDK's release.config.mjs (same release
+ * plumbing — tag + GitHub Release, no branch commit — different build tool:
+ * Gradle vs Composer).
  */
 
 export default {
@@ -72,10 +82,7 @@ export default {
       },
     ],
 
-    // 3. Prepend the release notes to CHANGELOG.md at repo root.
-    '@semantic-release/changelog',
-
-    // 4. Bump `sdk-version = "…"` in gradle/libs.versions.toml so the Gradle
+    // 3. Bump `sdk-version = "…"` in gradle/libs.versions.toml so the Gradle
     //    build knows which version to publish. Runs BEFORE the Maven Central
     //    publish, so the published AAR carries the new version.
     [
@@ -85,12 +92,12 @@ export default {
       },
     ],
 
-    // 5. Publish signed AAR + JAR to Maven Central Portal via the vanniktech
+    // 4. Publish signed AAR + JAR to Maven Central Portal via the vanniktech
     //    plugin. Reads the in-memory GPG key + Central Portal credentials
     //    from the `ORG_GRADLE_PROJECT_*` and `MAVEN_CENTRAL_*` env vars
     //    wired in release.yml. Runs AFTER the version bump so the uploaded
-    //    artifact name matches what the tag will say, and BEFORE the git
-    //    commit so a publish failure means no orphan tag gets created.
+    //    artifact name matches what the tag will say, and BEFORE the GitHub
+    //    Release so a publish failure means no Release/tag is finalized.
     [
       '@semantic-release/exec',
       {
@@ -98,17 +105,25 @@ export default {
       },
     ],
 
-    // 6. Commit CHANGELOG.md + libs.versions.toml, push `vX.Y.Z` tag.
-    //    `[skip ci]` prevents the release workflow from recursing on its
-    //    own auto-commit — without it, CI would fire again on the release
-    //    commit and (harmlessly) repeat the "no release-worthy changes"
-    //    analysis.
+    // 5. Create the `vX.Y.Z` tag + a GitHub Release with the generated
+    //    notes. semantic-release core pushes the tag (a `refs/tags/*` ref —
+    //    NOT gated by the `main` branch ruleset); this plugin creates the
+    //    Release via the GitHub API. There is NO commit-back to `main` —
+    //    that would hit the ruleset (GH013). Mirrors the PHP SDK, where the
+    //    GitHub Release surfaces the changelog and Packagist/Maven consumes
+    //    the git tag directly.
     [
-      '@semantic-release/git',
+      '@semantic-release/github',
       {
-        assets: ['CHANGELOG.md', 'gradle/libs.versions.toml'],
-        message:
-          'chore(release): v${nextRelease.version} [skip ci]\n\n${nextRelease.notes}',
+        // release.yml grants `contents: write` only; the plugin's default
+        // PR/issue success comments AND `releasedLabels` both write to
+        // issues/PRs (need issues:write + pull-requests:write) and would
+        // 403. Disable them all — the Release + tag (contents:write) are
+        // all we need. (qs-03 / TD-2.)
+        successComment: false,
+        failComment: false,
+        failTitle: false,
+        releasedLabels: false,
       },
     ],
   ],
