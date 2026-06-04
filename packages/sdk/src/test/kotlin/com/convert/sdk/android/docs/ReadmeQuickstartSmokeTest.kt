@@ -28,11 +28,12 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 
 /**
- * Compile-check smoke test for README.md Quick Start and docs/user-guide.md
+ * Compile-check smoke test for README.md Quick Start and the SDK wiki
  * snippets (Story 6.2 AC-3).
  *
- * Every public consumer-facing code block from `README.md` and
- * `docs/user-guide.md` is reproduced verbatim (or minimally adapted
+ * Every public consumer-facing code block from `README.md` and the
+ * SDK wiki (https://github.com/convertcom/android-sdk/wiki) is reproduced
+ * verbatim (or minimally adapted
  * for the test harness — fake `Application`, placeholder `sdkKey`) as a
  * named helper below. The Kotlin compiler enforces that every API
  * referenced in the docs still exists and still has the documented
@@ -129,7 +130,7 @@ internal class ReadmeQuickstartSmokeTest {
     }
 
     // -------------------------------------------------------------------
-    // docs/user-guide.md — representative snippets
+    // SDK wiki user-guide pages — representative snippets
     // -------------------------------------------------------------------
 
     /** User guide — direct-data (pre-fetched config) mode. */
