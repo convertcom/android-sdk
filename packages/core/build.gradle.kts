@@ -123,7 +123,12 @@ mavenPublishing {
 
     // vanniktech 0.36.0 removed the SonatypeHost argument — publishToMavenCentral()
     // always routes to the new Central Portal (OSSRH retired June 2025).
-    publishToMavenCentral()
+    // automaticRelease = true MUST match :packages:sdk — sdk-android's POM
+    // depends on com.convert:sdk-core, so both artifacts must auto-publish
+    // together. If core stayed manual while sdk auto-released, sdk-android
+    // would go live referencing a sdk-core that's still staged → broken
+    // release. (qs-05 / Gemini review on PR #45.)
+    publishToMavenCentral(automaticRelease = true)
 
     // GPG signing is mandatory for Maven Central. CI wires the in-memory key
     // via ORG_GRADLE_PROJECT_signingInMemoryKey (see .github/workflows/release.yml).
