@@ -81,7 +81,6 @@ Add three GitHub repository secrets:
 |---|---|
 | `GPG_PRIVATE_KEY` | Full multi-line output of `gpg --armor --export-secret-keys …` (including the `-----BEGIN PGP PRIVATE KEY BLOCK-----` and `-----END …-----` lines). |
 | `GPG_KEY_PASSWORD` | The passphrase you chose when creating the key. |
-| `GPG_KEY_ID` | Optional. The 16-hex-digit long key ID. The vanniktech plugin can derive this from the key itself, so leave it unset unless you maintain multiple signing keys. |
 
 ### 4. Run the R8 consumer-app verification (one-time, blocks v1.0.0)
 
@@ -145,7 +144,6 @@ The full set of secrets the release workflow reads:
 | `MAVEN_CENTRAL_PASSWORD` | yes | Central Portal user token password (step 2). |
 | `GPG_PRIVATE_KEY` | yes | ASCII-armored private signing key (step 3). |
 | `GPG_KEY_PASSWORD` | yes | Passphrase for the signing key (step 3). |
-| `GPG_KEY_ID` | optional | Long key ID; only needed if multiple signing keys co-exist. |
 
 Configure them in **GitHub → repo → Settings → Secrets and variables → Actions → New repository secret**.
 
