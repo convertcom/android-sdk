@@ -125,8 +125,13 @@ jobs:
           # Sonatype Central Portal credentials. Generate these in the
           # Central Portal UI (https://central.sonatype.com) → user tokens.
           # See RELEASE.md §"Secrets" for the exact acquisition steps.
-          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          # Exposed as Gradle project properties (`mavenCentralUsername` /
+          # `mavenCentralPassword`) via the `ORG_GRADLE_PROJECT_` prefix —
+          # the same convention as the `ORG_GRADLE_PROJECT_signingInMemoryKey*`
+          # lines below. The vanniktech maven-publish plugin reads these
+          # properties to authenticate `publishToMavenCentral`. (qs-04.)
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
 
           # In-memory GPG signing key for vanniktech's plugin. Export the
           # private key with `gpg --armor --export-secret-keys <KEY_ID>`
