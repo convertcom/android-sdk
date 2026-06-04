@@ -156,10 +156,12 @@ mavenPublishing {
         version = libs.versions.sdk.version.get(),
     )
 
-    // Route to the Central Portal. Starts with a validation round-trip; the
-    // actual deployment is finalized manually via the Central Portal UI on
-    // the first publish (until we flip on automaticRelease).
-    publishToMavenCentral()
+    // Route to the Central Portal with automatic release: after the upload
+    // passes Central's validation, the deployment is published to Maven
+    // Central automatically — no manual "Publish" click in the Portal UI.
+    // (`automaticRelease` is a publisher-side plugin setting, not a Central
+    // Portal UI option; it sets the deployment's publishingType=AUTOMATIC.)
+    publishToMavenCentral(automaticRelease = true)
 
     // Every artifact uploaded to Maven Central MUST be GPG-signed. The plugin
     // reads the signing key from ORG_GRADLE_PROJECT_signingInMemoryKey etc.

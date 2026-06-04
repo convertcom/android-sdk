@@ -139,7 +139,10 @@ jobs:
           # GitHub secret UI (secret storage handles multi-line correctly).
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_PRIVATE_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_KEY_PASSWORD }}
-          # Optional — the plugin can derive the key ID from the key itself.
-          # Provide it only if you publish with multiple keys and need to
-          # disambiguate.
-          ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.GPG_KEY_ID }}
+          # signingInMemoryKeyId is intentionally NOT set: it is optional (the
+          # plugin derives the key from the armored block) and a mismatched id
+          # causes "Could not read PGP secret key". A local
+          # `publishToMavenLocal` with the same key — and NO keyId — signs
+          # successfully, so CI matches that proven-good config. Re-introduce
+          # it only if the armored key ever holds multiple keys needing
+          # disambiguation.

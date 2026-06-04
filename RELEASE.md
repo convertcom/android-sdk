@@ -81,7 +81,6 @@ Add three GitHub repository secrets:
 |---|---|
 | `GPG_PRIVATE_KEY` | Full multi-line output of `gpg --armor --export-secret-keys …` (including the `-----BEGIN PGP PRIVATE KEY BLOCK-----` and `-----END …-----` lines). |
 | `GPG_KEY_PASSWORD` | The passphrase you chose when creating the key. |
-| `GPG_KEY_ID` | Optional. The 16-hex-digit long key ID. The vanniktech plugin can derive this from the key itself, so leave it unset unless you maintain multiple signing keys. |
 
 ### 4. Run the R8 consumer-app verification (one-time, blocks v1.0.0)
 
@@ -145,7 +144,6 @@ The full set of secrets the release workflow reads:
 | `MAVEN_CENTRAL_PASSWORD` | yes | Central Portal user token password (step 2). |
 | `GPG_PRIVATE_KEY` | yes | ASCII-armored private signing key (step 3). |
 | `GPG_KEY_PASSWORD` | yes | Passphrase for the signing key (step 3). |
-| `GPG_KEY_ID` | optional | Long key ID; only needed if multiple signing keys co-exist. |
 
 Configure them in **GitHub → repo → Settings → Secrets and variables → Actions → New repository secret**.
 
@@ -167,28 +165,28 @@ Releases are fully automatic. The process:
    - Everything else (`chore`, `docs`, `ci`, `test`, `style`, `perf`,
      `refactor` without `!`) → no release. The workflow succeeds silently.
 5. If there's a release-worthy commit:
-   1. `scripts/bump-version.mjs` updates `gradle/libs.versions.toml`.
-   2. `CHANGELOG.md` is regenerated with the new notes.
+   1. `scripts/bump-version.mjs` updates `gradle/libs.versions.toml` for
+      the build (consumed by the publish; not committed back to `main`).
+   2. Release notes are generated from the commits (surfaced in the
+      GitHub Release created in sub-step 4).
    3. `./gradlew publishAllPublicationsToMavenCentralRepository` uploads
       both `com.convert:sdk-android:X.Y.Z` and `com.convert:sdk-core:X.Y.Z`
-      to the Central Portal as a **staged deployment** (validated, but
-      NOT yet released to the public mirror — see step 6).
-   4. `@semantic-release/git` commits the version bump + CHANGELOG and
-      pushes the `vX.Y.Z` tag to `main` (commit message carries
-      `[skip ci]` to prevent a feedback loop).
-6. **Manual step (repo admin):** Sign in to
-   <https://central.sonatype.com> → **Deployments**, find the new
-   deployment, confirm the artifacts look correct (version, POM, both
-   modules present), and click **Publish**. This releases the staged
-   deployment to the public Maven Central mirror. We deliberately chose
-   `publishAllPublicationsToMavenCentralRepository` (staged) over
-   `publishAndReleaseToMavenCentral` (auto-release) as a safety gate —
-   lets a human eyeball the contents before pushing a new version to
-   consumers. Once we're confident in the pipeline (several releases
-   in), we can switch to auto-release by changing the Gradle task in
-   `release.config.mjs` plugin 5's `publishCmd`.
-7. Maven Central's sync to the public mirror takes 10–30 minutes after
-   you click **Publish** in step 6. Verify with:
+      to the Central Portal. Both modules set `automaticRelease = true`, so
+      once the deployment passes validation it is **published to Maven
+      Central automatically** — no manual step.
+   4. `@semantic-release/github` creates the `vX.Y.Z` git tag and a GitHub
+      Release with the notes, via the GitHub API. The release pushes **no
+      commit to `main`** (the branch ruleset forbids it); the next version
+      is derived from the tag.
+6. **No manual publish step.** Because both modules set
+   `automaticRelease = true`, the validated deployment auto-publishes to
+   the public Maven Central mirror (you can still watch it at
+   <https://central.sonatype.com> → **Deployments**). To re-introduce a
+   manual safety gate, change `publishToMavenCentral(automaticRelease = true)`
+   back to `publishToMavenCentral()` in **both** `packages/core` and
+   `packages/sdk` `build.gradle.kts`, then publish via the Portal UI.
+7. Maven Central's sync to the public mirror takes 10–30 minutes after the
+   deployment auto-publishes. Verify with:
    ```bash
    curl -I https://repo1.maven.org/maven2/com/convert/sdk-android/X.Y.Z/sdk-android-X.Y.Z.aar
    # → HTTP/2 200 when the artifact is live.
