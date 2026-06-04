@@ -90,8 +90,9 @@ internal class NetworkObserver(
      *
      * `@SuppressLint("MissingPermission")` — the SDK's own manifest
      * intentionally does NOT declare `ACCESS_NETWORK_STATE`; per the
-     * user guide ([docs/user-guide.md#permissions]) the consumer app
-     * provides it when best-effort offline recovery is desired. When
+     * [Offline Behavior](https://github.com/convertcom/android-sdk/wiki/OfflineBehavior)
+     * wiki page the consumer app provides it when best-effort offline
+     * recovery is desired. When
      * the permission is absent, `registerDefaultNetworkCallback` throws
      * `SecurityException`, which the try/catch below swallows so the
      * SDK degrades gracefully to the foreground-retry path. AGP 9.x's
