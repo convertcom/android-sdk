@@ -9,6 +9,7 @@ import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.convert.sdk.android.CONVERT_AGENT_USER_AGENT
 import com.convert.sdk.android.adapter.FileEventQueue
 import com.convert.sdk.core.api.TrackingPayloadBuilder
 import com.convert.sdk.core.config.ApiConfig
@@ -138,6 +139,9 @@ internal class EventFlushWorker(
         val request = Request.Builder()
             .url(url)
             .post(payload.toRequestBody(JSON_MEDIA_TYPE))
+            // This raw path bypasses OkHttpClientAdapter, so it must announce the
+            // SDK User-Agent independently to clear the metrics-endpoint bot filter.
+            .header("User-Agent", CONVERT_AGENT_USER_AGENT)
             .build()
 
         return withContext(Dispatchers.IO) {
