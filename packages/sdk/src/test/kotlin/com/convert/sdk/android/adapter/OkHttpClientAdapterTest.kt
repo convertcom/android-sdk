@@ -5,6 +5,7 @@
  */
 package com.convert.sdk.android.adapter
 
+import com.convert.sdk.android.CONVERT_AGENT_USER_AGENT
 import com.convert.sdk.core.port.HttpClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -285,6 +286,55 @@ internal class OkHttpClientAdapterTest {
             "Interceptor-injected body failure must propagate as an exception, not hang",
             caughtException,
         )
+    }
+
+    // -------------------------------------------------------------------------
+    // User-Agent invariant — AC-1, AC-2, AC-3
+    // -------------------------------------------------------------------------
+
+    /**
+     * Enqueues a 204, issues a GET (and, when [withPost], a POST) through the
+     * adapter with the supplied [headers], and returns the `User-Agent` the
+     * server recorded for the GET. Shared by the UA tests so each case is one
+     * line of intent without duplicating the MockWebServer plumbing
+     * (SonarQube CPD).
+     */
+    private suspend fun recordedUserAgent(
+        headers: Map<String, String> = emptyMap(),
+        withPost: Boolean = false,
+    ): String? {
+        server.enqueue(MockResponse().setResponseCode(204))
+        if (withPost) {
+            adapter.post(server.url("/ua").toString(), body = "{}", headers = headers)
+        } else {
+            adapter.get(server.url("/ua").toString(), headers = headers)
+        }
+        return server.takeRequest().getHeader("User-Agent")
+    }
+
+    @Test
+    fun `get announces ConvertAgent User-Agent`() = runTest {
+        assertEquals(CONVERT_AGENT_USER_AGENT, recordedUserAgent())
+    }
+
+    @Test
+    fun `post announces ConvertAgent User-Agent`() = runTest {
+        assertEquals(CONVERT_AGENT_USER_AGENT, recordedUserAgent(withPost = true))
+    }
+
+    @Test
+    fun `caller-supplied User-Agent cannot override the invariant on get`() = runTest {
+        val ua = recordedUserAgent(headers = mapOf("User-Agent" to "Custom/9.9"))
+        assertEquals(CONVERT_AGENT_USER_AGENT, ua)
+    }
+
+    @Test
+    fun `caller-supplied User-Agent cannot override the invariant on post`() = runTest {
+        val ua = recordedUserAgent(
+            headers = mapOf("User-Agent" to "Custom/9.9"),
+            withPost = true,
+        )
+        assertEquals(CONVERT_AGENT_USER_AGENT, ua)
     }
 
     @Test

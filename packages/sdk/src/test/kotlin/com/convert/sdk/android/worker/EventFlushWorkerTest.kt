@@ -10,6 +10,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.work.Data
 import androidx.work.ListenableWorker
 import androidx.work.testing.TestListenableWorkerBuilder
+import com.convert.sdk.android.CONVERT_AGENT_USER_AGENT
 import com.convert.sdk.android.adapter.FileEventQueue
 import com.convert.sdk.core.model.BucketingEvent
 import com.convert.sdk.core.model.ConversionEvent
@@ -134,6 +135,13 @@ internal class EventFlushWorkerTest {
 
         val recorded: RecordedRequest? = server.takeRequest(2, TimeUnit.SECONDS)
         assertNotNull("worker must POST to the track endpoint", recorded)
+        // AC-4: the background flush bypasses OkHttpClientAdapter, so it must
+        // announce the SDK User-Agent independently to clear the bot filter.
+        assertEquals(
+            "background flush must announce the SDK User-Agent",
+            CONVERT_AGENT_USER_AGENT,
+            recorded!!.getHeader("User-Agent"),
+        )
         // The body is the TrackingPayloadBuilder output — assert the sdkKey
         // did NOT leak into it (payload carries accountId / projectId only).
         val body = recorded!!.body.readUtf8()
