@@ -1078,7 +1078,7 @@ public class ConvertSDK internal constructor(
         private var rulesKeysCaseSensitive: Boolean? = null
         private var rulesNegation: String? = null
         private var rulesComparisonProcessor: String? = null
-        private var networkSource: String? = null
+        private var networkSource: String? = "android-sdk"
         private var mapper: Any? = null
 
         /** Sets the merchant SDK key. */
@@ -1168,6 +1168,12 @@ public class ConvertSDK internal constructor(
          * tracking payloads (e.g. `"android"`, `"web"`). Distinct from
          * FR2's `network.source` "custom HTTP transport" hook which is
          * out of scope for v1.0 (see AC-2 deferred list).
+         *
+         * Defaults to `"android-sdk"` when not set. The `-sdk` suffix
+         * satisfies the metrics endpoint's `isConvertSdkSource` whitelist
+         * convention (belt-and-braces alongside the `ConvertAgent/1.0`
+         * User-Agent) and self-documents the integration in server logs.
+         * An explicit customer-supplied value still wins.
          */
         public fun networkSource(value: String): Builder = apply {
             networkSource = value
@@ -1397,17 +1403,20 @@ public class ConvertSDK internal constructor(
                 null
             }
             val loggerConfig = logLevel?.let { LoggerConfig(logLevel = it) }
-            val networkConfig = if (
-                trackingEnabled != null || cacheLevel != null || networkSource != null
-            ) {
-                NetworkConfig(
-                    tracking = trackingEnabled,
-                    cacheLevel = cacheLevel,
-                    source = networkSource,
-                )
-            } else {
-                null
-            }
+            // NetworkConfig is always present: networkSource has a non-null
+            // default ("android-sdk") and its setter takes a non-null String,
+            // so the field can never be null. The former
+            // `trackingEnabled != null || cacheLevel != null || networkSource != null`
+            // guard is therefore permanently true. Constructing it
+            // unconditionally is behavior-safe — every config.network consumer
+            // (ApiManager.kt:249, :1060; TrackingPayloadBuilder.kt:146) uses
+            // field-level safe-calls with its own fallback; nothing branches on
+            // `network != null`.
+            val networkConfig = NetworkConfig(
+                tracking = trackingEnabled,
+                cacheLevel = cacheLevel,
+                source = networkSource,
+            )
             val rulesConfig = if (
                 rulesKeysCaseSensitive != null ||
                 rulesNegation != null ||

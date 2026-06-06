@@ -93,6 +93,7 @@ internal class ConvertSDKTest {
             .cacheLevel("low")
             .rulesKeysCaseSensitive(false)
             .rulesNegation("not")
+            .networkSource("custom")
             .build()
 
         val config = sdk.config
@@ -112,6 +113,8 @@ internal class ConvertSDKTest {
         assertEquals("low", config.network?.cacheLevel)
         assertEquals(false, config.rules?.keysCaseSensitive)
         assertEquals("not", config.rules?.negation)
+        // AC-5: an explicit networkSource() value wins.
+        assertEquals("custom", config.network?.source)
     }
 
     @Test
@@ -129,6 +132,18 @@ internal class ConvertSDKTest {
             "expected Application context, got ${sdk.appContext?.javaClass?.name}",
             sdk.appContext is Application,
         )
+    }
+
+    @Test
+    fun `default networkSource is android-sdk when not set`() {
+        // AC-5: a default-built SDK (no networkSource() call) carries the
+        // "android-sdk" default so the metrics endpoint's *-sdk source
+        // whitelist is satisfied out of the box.
+        val sdk = ConvertSDK.builder(appContext)
+            .sdkKey("k")
+            .build()
+
+        assertEquals("android-sdk", sdk.config.network?.source)
     }
 
     @Test

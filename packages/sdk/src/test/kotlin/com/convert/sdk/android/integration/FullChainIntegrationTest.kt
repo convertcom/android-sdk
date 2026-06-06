@@ -347,6 +347,14 @@ internal class FullChainIntegrationTest {
             bodies.size,
         )
         val payload = json.parseToJsonElement(bodies.single()).jsonObject
+        // AC-5 (wire-level): the SDK is built via the real Builder without
+        // calling networkSource(), so the default "android-sdk" must reach the
+        // payload root end-to-end.
+        assertEquals(
+            "default networkSource must render as source=android-sdk at the payload root",
+            "android-sdk",
+            payload["source"]?.jsonPrimitive?.contentOrNull,
+        )
         return extractEventsForVisitor(payload, visitorId)
     }
 

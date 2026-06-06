@@ -5,6 +5,7 @@
  */
 package com.convert.sdk.android.adapter
 
+import com.convert.sdk.android.CONVERT_AGENT_USER_AGENT
 import com.convert.sdk.core.port.HttpClient
 import com.convert.sdk.core.port.Logger
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -44,6 +45,16 @@ import kotlin.coroutines.resumeWithException
  * content-type pass it through [headers] and the adapter defers to their
  * value.
  *
+ * ### User-Agent invariant
+ *
+ * Every request carries `User-Agent: ConvertAgent/1.0`
+ * ([CONVERT_AGENT_USER_AGENT]). The header is set AFTER the caller-headers
+ * `apply { }` block, so `Request.Builder.header()`'s case-insensitive
+ * replace semantics make it non-overridable by any caller-supplied
+ * `User-Agent` — the announcement is an SDK invariant (mirrors the PHP
+ * SDK's `ApiManager`). This exempts requests from the metrics endpoint's
+ * bot filter; see [CONVERT_AGENT_USER_AGENT] for the rationale.
+ *
  * ### Constructing the adapter
  *
  * Consumers of the SDK should not build this directly — the
@@ -71,6 +82,8 @@ internal class OkHttpClientAdapter(
             .url(url)
             .get()
             .apply { headers.forEach { (name, value) -> header(name, value) } }
+            // SDK invariant: set after caller headers so it cannot be overridden.
+            .header("User-Agent", CONVERT_AGENT_USER_AGENT)
             .build()
         return execute(request)
     }
@@ -99,6 +112,8 @@ internal class OkHttpClientAdapter(
                     }
                 }
             }
+            // SDK invariant: set after caller headers so it cannot be overridden.
+            .header("User-Agent", CONVERT_AGENT_USER_AGENT)
             .build()
         return execute(request)
     }
