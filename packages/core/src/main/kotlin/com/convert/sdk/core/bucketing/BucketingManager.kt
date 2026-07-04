@@ -261,43 +261,60 @@ public class BucketingManager(
      * entries keep their weight for anchor stability but resolve to a
      * zero-width range (AC4).
      *
-     * ### Phase 1 (RED) stub
-     *
-     * TODO(qs-01 Phase 2): returns an empty list unconditionally. The real
-     * cumulative-weight walk lands in Phase 2 — see
-     * `qs-01-anchored-bucketing-layout.md` "The contract (normative)".
+     * `totalWeight <= 0.0` (AC5 — e.g. every entry allocation is zero) short
+     * circuits to an empty list: there is nothing to anchor against.
      *
      * @param allocations variation allocations in config order.
      * @return the anchored ranges, in the same order as [allocations].
      */
     public fun getBucketRanges(allocations: List<VariationAllocation>): List<BucketAnchoredRange> {
+        val totalWeight = allocations.sumOf { it.allocation }
+        if (totalWeight <= 0.0) {
+            logger.debug(
+                message = "BucketingManager.getBucketRanges() allocations=$allocations " +
+                    "totalWeight=$totalWeight (not bucketable)",
+                tag = TAG,
+            )
+            return emptyList()
+        }
+
+        var cumWeight = 0.0
+        val ranges = allocations.map { entry ->
+            val anchor = (cumWeight / totalWeight) * ConfigDefaults.DEFAULT_BUCKETING_MAX_TRAFFIC
+            val width = if (entry.active) entry.allocation * PERCENTAGE_TO_BASIS_MULTIPLIER else 0.0
+            cumWeight += entry.allocation
+            BucketAnchoredRange(id = entry.id, anchor = anchor, width = width)
+        }
+
         logger.debug(
-            message = "BucketingManager.getBucketRanges() allocations=$allocations (STUB — Phase 2)",
+            message = "BucketingManager.getBucketRanges() allocations=$allocations " +
+                "totalWeight=$totalWeight ranges=$ranges",
             tag = TAG,
         )
-        return emptyList()
+        return ranges
     }
 
     /**
      * Selects the variation whose anchored range contains [value] — qs-01 /
-     * contract v12. Mirrors the JS SDK's `selectBucketAnchored`.
-     *
-     * ### Phase 1 (RED) stub
-     *
-     * TODO(qs-01 Phase 2): returns `null` unconditionally. The real
-     * half-open range scan (`value >= anchor && value < anchor + width`,
-     * AC5 boundary semantics) lands in Phase 2.
+     * contract v12. Mirrors the JS SDK's `selectBucketAnchored`: the first
+     * range (in [ranges] order — mirrors [getBucketRanges]'s output order)
+     * whose half-open interval `[anchor, anchor + width)` contains [value]
+     * wins (AC5 boundary semantics).
      *
      * @param ranges anchored bucket ranges (see [getBucketRanges]).
      * @param value the bucket value, typically produced by [getValueVisitorBased].
      * @return the matching variation id, or `null` when not bucketed.
      */
     public fun selectBucketAnchored(ranges: List<BucketAnchoredRange>, value: Int): String? {
+        val selected = ranges.firstOrNull { range ->
+            value >= range.anchor && value < range.anchor + range.width
+        }?.id
+
         logger.debug(
-            message = "BucketingManager.selectBucketAnchored() ranges=$ranges value=$value (STUB — Phase 2)",
+            message = "BucketingManager.selectBucketAnchored() ranges=$ranges value=$value selected=$selected",
             tag = TAG,
         )
-        return null
+        return selected
     }
 
     /**
@@ -306,11 +323,6 @@ public class BucketingManager(
      * counterpart to [getBucketForVisitor]. Reuses the existing
      * visitor-based hash value UNCHANGED (AC6 — hash path is frozen);
      * only the range-resolution step differs from the packed layout.
-     *
-     * ### Phase 1 (RED) stub
-     *
-     * TODO(qs-01 Phase 2): returns `null` unconditionally (delegates to the
-     * still-stubbed [getBucketRanges] / [selectBucketAnchored]).
      *
      * @param allocations variation allocations in config order.
      * @param visitorId the visitor's opaque stable identifier.

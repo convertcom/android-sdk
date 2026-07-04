@@ -34,6 +34,14 @@ import java.math.BigDecimal
 private const val DEFAULT_VARIATION_PCT: Double = 100.0
 
 /**
+ * Anchored-layout gate threshold — qs-01 / contract v12 AC1. `version` must
+ * compare strictly greater than this (via [BigDecimal.compareTo], never
+ * `equals`) to activate the anchored layout. Mirrors the JS SDK's
+ * `Number(experience.version) > 11`.
+ */
+private val ANCHORED_LAYOUT_VERSION_THRESHOLD: BigDecimal = BigDecimal("11")
+
+/**
  * Anchored-vs-packed GATE — qs-01 / contract v12 AC1. `version > 11` runs
  * the anchored layout; `version <= 11`, missing, or non-numeric keeps the
  * packed cumulative walk. Uses [BigDecimal.compareTo] (via the `>`
@@ -49,11 +57,8 @@ private const val DEFAULT_VARIATION_PCT: Double = 100.0
  *   wire's numeric-or-numeric-string form by [com.convert.sdk.core.internal.BigDecimalSerializer].
  * @return `true` iff the anchored layout (contract v12) should run.
  */
-internal fun isAnchoredLayout(version: BigDecimal?): Boolean {
-    // Phase 1 (RED) stub — TODO(qs-01 Phase 2): replace with
-    // `version != null && version > BigDecimal("11")`.
-    return version == null && false
-}
+internal fun isAnchoredLayout(version: BigDecimal?): Boolean =
+    version != null && version > ANCHORED_LAYOUT_VERSION_THRESHOLD
 
 /**
  * Builds the ordered [VariationAllocation] list the anchored layout
@@ -64,22 +69,25 @@ internal fun isAnchoredLayout(version: BigDecimal?): Boolean {
  * `100.0`, and `active` is `false` for a non-`RUNNING` status OR an explicit
  * zero allocation (AC4 — never defaults a stopped/zero arm back to 100%).
  *
- * ### Phase 1 (RED) stub
- *
- * TODO(qs-01 Phase 2): always returns an empty list, ignoring [variations].
- *
  * @param variations the experience's variations, in declaration order.
  * @return the anchored allocation inputs, in the same order as [variations]
  *   (minus null-id entries).
  */
 internal fun buildVariationAllocations(
     variations: List<ExperienceVariationConfig>?,
-): List<VariationAllocation> {
-    // References `variations` so the Phase-1 stub still type-checks the real
-    // Phase-2 body's shape without executing it.
-    variations?.size
-    return emptyList()
-}
+): List<VariationAllocation> =
+    variations
+        ?.mapNotNull { variation ->
+            val id = variation.id ?: return@mapNotNull null
+            val allocation = variation.trafficAllocation?.toDouble() ?: DEFAULT_VARIATION_PCT
+            val statusOk = variation.status == null || variation.status == VariationStatuses.RUNNING
+            VariationAllocation(
+                id = id,
+                allocation = allocation,
+                active = statusOk && allocation > 0.0,
+            )
+        }
+        ?: emptyList()
 
 /**
  * Builds the `variationId -> percentage` map for the packed layout — the

@@ -70,8 +70,8 @@ internal class AnchoredBucketingAcceptanceTest {
         assertRange(ranges15, id = "V1", anchor = THIRD_OF_10000, width = 500.0)
         assertRange(ranges15, id = "V2", anchor = TWO_THIRDS_OF_10000, width = 500.0)
         assertRange(ranges25, id = "O", anchor = 0.0, width = 833.3333333333334)
-        assertRange(ranges25, id = "V1", anchor = THIRD_OF_10000, width = 833.3333333333334)
-        assertRange(ranges25, id = "V2", anchor = TWO_THIRDS_OF_10000, width = 833.3333333333334)
+        assertRange(ranges25, id = "V1", anchor = TWENTY_FIVE_PCT_THIRD_OF_10000, width = 833.3333333333334)
+        assertRange(ranges25, id = "V2", anchor = TWENTY_FIVE_PCT_TWO_THIRDS_OF_10000, width = 833.3333333333334)
 
         // A visitor at value 3500 sits inside V1's 15% band AND inside V1's
         // (superset) 25% band -> same arm both times, never reassigned.
@@ -191,6 +191,23 @@ internal class AnchoredBucketingAcceptanceTest {
         private const val TWENTY_FIVE_PCT: Double = 8.333333333333334
         private const val THIRD_OF_10000: Double = 3333.333333333333
         private const val TWO_THIRDS_OF_10000: Double = 6666.666666666666
+
+        /**
+         * `ranges25`'s V1/V2 anchors are NOT bit-identical to [THIRD_OF_10000] /
+         * [TWO_THIRDS_OF_10000] — [TWENTY_FIVE_PCT] (8.333333333333334, the
+         * per-arm share of 25%) is itself an imprecise double, so
+         * `(cumWeight / totalWeight) * 10000` rounds to a different ULP than
+         * the [FIFTEEN_PCT]-derived case. Verified against the JS SDK oracle
+         * (`packages/bucketing/src/bucketing-manager.ts` `getBucketRanges`)
+         * executed directly in Node — `node -e` with the identical
+         * `(cumWeight/totalWeight)*10000` walk over three
+         * `8.333333333333334`-weighted arms prints
+         * `{"id":"V1","anchor":3333.3333333333335,...}` /
+         * `{"id":"V2","anchor":6666.666666666667,...}`, confirming this is a
+         * genuine floating-point-parity fact, not a Kotlin-side defect.
+         */
+        private const val TWENTY_FIVE_PCT_THIRD_OF_10000: Double = 3333.3333333333335
+        private const val TWENTY_FIVE_PCT_TWO_THIRDS_OF_10000: Double = 6666.666666666667
         private const val SAMPLE_V1_VALUE: Int = 3500
         private const val EJECTED_VALUE: Int = 4000
         private const val BOUNDARY_ANCHOR: Double = 1000.0
