@@ -8,8 +8,31 @@ package com.convert.sdk.core.bucketing
 import com.convert.sdk.core.config.ConfigDefaults
 import com.convert.sdk.core.config.ConvertConfig
 import com.convert.sdk.core.model.BucketingAllocation
+import com.convert.sdk.core.model.VariationAllocation
 import com.convert.sdk.core.port.Logger
 import com.goncalossilva.murmurhash.MurmurHash3
+
+/**
+ * A precomputed anchored bucket range for a single variation — qs-01 /
+ * contract v12. `anchor` and `anchor + width` bound the half-open interval
+ * `[anchor, anchor + width)` (per-10000 traffic space) that maps to [id]
+ * in the anchored layout. Mirrors the JS SDK's `BucketAnchoredRange`
+ * (`packages/bucketing/src/interfaces/bucketing-manager.ts`).
+ *
+ * @property id the variation id this range resolves to.
+ * @property anchor the range's lower (inclusive) bound, in `0..10000`
+ *   traffic-space units. Computed from the entry's position in the
+ *   cumulative weight walk — NOT from its own allocation — which is what
+ *   gives the layout its "raise is a superset" property (AC2).
+ * @property width the range's span. `entry.allocation * 100` when
+ *   [com.convert.sdk.core.model.VariationAllocation.active] is `true`,
+ *   else `0.0` (AC4).
+ */
+public data class BucketAnchoredRange(
+    public val id: String,
+    public val anchor: Double,
+    public val width: Double,
+)
 
 /**
  * Deterministic bucketing engine that hashes visitor + experience identity
@@ -221,6 +244,95 @@ public class BucketingManager(
             buckets = buckets,
             value = value,
             redistribute = redistribute,
+        ) ?: return null
+        return BucketingAllocation(
+            variationId = variationId,
+            bucketingAllocation = value,
+        )
+    }
+
+    /**
+     * Builds the anchored bucket layout for [allocations] — qs-01 / contract
+     * v12. Mirrors the JS SDK's `getBucketRanges`
+     * (`packages/bucketing/src/bucketing-manager.ts`): anchors are computed
+     * over the total weight of ALL entries (active and inactive) so that
+     * raising an experience's total allocation only ever grows arms (AC2)
+     * and never reshuffles an already-bucketed visitor (AC3). Inactive
+     * entries keep their weight for anchor stability but resolve to a
+     * zero-width range (AC4).
+     *
+     * ### Phase 1 (RED) stub
+     *
+     * TODO(qs-01 Phase 2): returns an empty list unconditionally. The real
+     * cumulative-weight walk lands in Phase 2 — see
+     * `qs-01-anchored-bucketing-layout.md` "The contract (normative)".
+     *
+     * @param allocations variation allocations in config order.
+     * @return the anchored ranges, in the same order as [allocations].
+     */
+    public fun getBucketRanges(allocations: List<VariationAllocation>): List<BucketAnchoredRange> {
+        logger.debug(
+            message = "BucketingManager.getBucketRanges() allocations=$allocations (STUB — Phase 2)",
+            tag = TAG,
+        )
+        return emptyList()
+    }
+
+    /**
+     * Selects the variation whose anchored range contains [value] — qs-01 /
+     * contract v12. Mirrors the JS SDK's `selectBucketAnchored`.
+     *
+     * ### Phase 1 (RED) stub
+     *
+     * TODO(qs-01 Phase 2): returns `null` unconditionally. The real
+     * half-open range scan (`value >= anchor && value < anchor + width`,
+     * AC5 boundary semantics) lands in Phase 2.
+     *
+     * @param ranges anchored bucket ranges (see [getBucketRanges]).
+     * @param value the bucket value, typically produced by [getValueVisitorBased].
+     * @return the matching variation id, or `null` when not bucketed.
+     */
+    public fun selectBucketAnchored(ranges: List<BucketAnchoredRange>, value: Int): String? {
+        logger.debug(
+            message = "BucketingManager.selectBucketAnchored() ranges=$ranges value=$value (STUB — Phase 2)",
+            tag = TAG,
+        )
+        return null
+    }
+
+    /**
+     * Convenience combining [getValueVisitorBased] + [getBucketRanges] +
+     * [selectBucketAnchored] into a single call — qs-01 / contract v12
+     * counterpart to [getBucketForVisitor]. Reuses the existing
+     * visitor-based hash value UNCHANGED (AC6 — hash path is frozen);
+     * only the range-resolution step differs from the packed layout.
+     *
+     * ### Phase 1 (RED) stub
+     *
+     * TODO(qs-01 Phase 2): returns `null` unconditionally (delegates to the
+     * still-stubbed [getBucketRanges] / [selectBucketAnchored]).
+     *
+     * @param allocations variation allocations in config order.
+     * @param visitorId the visitor's opaque stable identifier.
+     * @param seed optional seed override; `null` uses [hashSeed].
+     * @param experienceId the experience's stable identifier — empty when
+     *   `excludeExperienceIdHash` is set.
+     * @return a [BucketingAllocation] on success, or `null` when no bucket matched.
+     */
+    public fun getBucketForVisitorAnchored(
+        allocations: List<VariationAllocation>,
+        visitorId: String,
+        seed: Int? = null,
+        experienceId: String = "",
+    ): BucketingAllocation? {
+        val value = getValueVisitorBased(
+            visitorId = visitorId,
+            experienceId = experienceId,
+            seed = seed ?: hashSeed,
+        )
+        val variationId = selectBucketAnchored(
+            ranges = getBucketRanges(allocations),
+            value = value,
         ) ?: return null
         return BucketingAllocation(
             variationId = variationId,
