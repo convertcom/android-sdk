@@ -36,15 +36,6 @@ import java.util.stream.Stream
  * the gate; event/return shapes are untouched) — already exercised by the
  * existing `ConvertContextRunExperienceTest` suite, so no new test is
  * added for them either.
- *
- * ## Phase 1 (RED) note
- *
- * `isAnchoredLayout`, `buildVariationAllocations`, [BucketingManager.getBucketRanges],
- * and [BucketingManager.selectBucketAnchored] are Phase-1 stubs (always
- * `false` / empty / `null`). Assertions below that require the REAL
- * anchored arithmetic are expected to FAIL until Phase 2 fills in the
- * bodies; assertions whose expected value happens to equal the stub's
- * sentinel may pass early — that is expected and documented per-case.
  */
 internal class AnchoredBucketingAcceptanceTest {
 

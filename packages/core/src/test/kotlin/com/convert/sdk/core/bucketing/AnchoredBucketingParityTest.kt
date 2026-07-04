@@ -49,17 +49,6 @@ import java.util.stream.Stream
  *   3. **FIX the Kotlin side** to restore parity, then confirm the test
  *      passes without changing the vectors.
  *
- * ## Phase 1 (RED) note
- *
- * As of this commit, `isAnchoredLayout` / `buildVariationAllocations` /
- * `getBucketRanges` / `selectBucketAnchored` are Phase-1 stubs (see
- * `BucketingLayoutResolver.kt` and `BucketingManager.kt`). `version: 12`
- * vectors are therefore expected to FAIL — the gate stub always routes to
- * the packed layout, which computes different ranges than the anchored
- * layout expects. `version: 11` vectors are expected to PASS: the packed
- * branch (`buildPackedBuckets`) is a full, unmodified port of the already-
- * shipped packed filter chain, not a stub. Phase 2 removes this note.
- *
  * ## Vector file shape
  *
  * The JSON is a top-level array of objects:

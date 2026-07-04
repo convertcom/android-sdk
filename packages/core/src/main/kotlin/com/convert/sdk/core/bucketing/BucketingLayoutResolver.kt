@@ -48,11 +48,6 @@ private val ANCHORED_LAYOUT_VERSION_THRESHOLD: BigDecimal = BigDecimal("11")
  * operator), never `equals` — `BigDecimal("11.0") != BigDecimal("11")` under
  * `equals`, but both must compare `<= 11` here.
  *
- * ### Phase 1 (RED) stub
- *
- * TODO(qs-01 Phase 2): always returns `false` (packed), ignoring [version]
- * entirely. Real gate: `version != null && version > BigDecimal("11")`.
- *
  * @param version the experience's `version` field, already coerced from the
  *   wire's numeric-or-numeric-string form by [com.convert.sdk.core.internal.BigDecimalSerializer].
  * @return `true` iff the anchored layout (contract v12) should run.
