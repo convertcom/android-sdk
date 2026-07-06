@@ -35,6 +35,26 @@ The JS side maintains its own equivalent parity suite. Other SDKs (PHP,
 Python, …) consume the SAME vector file conceptually but mirror it into
 their own test resources — coordinated via the backend channel.
 
+### Second parity suite — anchored bucketing layout (qs-01 / contract v12)
+
+Alongside the generated `hash-parity-vectors.json` above, the repo carries a
+**second, distinctly-provisioned** parity fixture:
+`packages/core/src/test/resources/cross-sdk-bucketing-vectors.json` (a bare
+JSON array of 59 vectors, versions `{11, 12}`), gated by
+`AnchoredBucketingParityTest.kt`. It pins the version-gated bucketing decision
+`BucketingManager.resolveVariationId`: `version: 11` vectors lock the frozen
+packed cumulative walk (byte-for-byte unchanged), `version: 12` vectors lock
+the anchored layout (`getBucketRanges` / `selectBucketAnchored`).
+
+**Provenance differs from the hash vectors above.** This fixture is **imported
+verbatim** from the shared cross-SDK golden set (JS reference branch
+`feat/anchored-bucketing-layout`, file
+`packages/bucketing/tests/cross-sdk-bucketing-vectors.json`) — it is **NOT**
+produced by `tools/generate-parity-vectors.mjs`, which regenerates only
+`hash-parity-vectors.json`. The divergence workflow and anti-patterns below
+apply identically: a failing vector is always a Kotlin-side bug to fix, never a
+fixture to regenerate or hand-edit.
+
 ---
 
 ## When a parity divergence is discovered
