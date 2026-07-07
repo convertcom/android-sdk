@@ -1062,6 +1062,7 @@ public class ConvertSDK internal constructor(
 
         private var sdkKey: String? = null
         private var sdkKeySecret: String? = null
+        private var debugToken: String? = null
         private var data: ConfigResponseData? = null
         private var environment: String? = null
         private var configEndpoint: String? = null
@@ -1086,6 +1087,20 @@ public class ConvertSDK internal constructor(
 
         /** Sets the confidential SDK secret. */
         public fun sdkKeySecret(value: String): Builder = apply { sdkKeySecret = value }
+
+        /**
+         * Sets a QA debug token (qs-02 AND-1 contract §1). When set, every
+         * config-fetch URL carries `debug_token=<value>` plus a forced
+         * `_conv_low_cache=1` (regardless of [cacheLevel]), and the
+         * on-disk config cache is neither read nor written while set.
+         * The token is never sent to the track endpoint and never logged
+         * in clear.
+         *
+         * RED-phase note (AND-1): this setter currently only threads the
+         * value onto the assembled [ConvertConfig] — the transport /
+         * cache-bypass / redaction behavior lands in the GREEN phase.
+         */
+        public fun debugToken(value: String): Builder = apply { debugToken = value }
 
         /**
          * Provides a pre-fetched configuration blob, skipping the initial HTTP fetch.
@@ -1434,6 +1449,7 @@ public class ConvertSDK internal constructor(
             return ConvertConfig(
                 sdkKey = sdkKey,
                 sdkKeySecret = sdkKeySecret,
+                debugToken = debugToken,
                 data = data,
                 environment = environment ?: defaults.environment,
                 api = apiConfig,
