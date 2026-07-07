@@ -98,11 +98,14 @@ public data class ConvertConfig(
         } else {
             append(", sdkKeySecret=null")
         }
-        // TODO(AND-1 GREEN): redact like sdkKeySecret above — qs-02 AC3
-        // requires debugToken to never appear in clear. RED-phase stub
-        // intentionally passes it through unredacted so the parity test
-        // in ConvertConfigToStringTest fails until GREEN wires this.
-        append(", debugToken=").append(debugToken)
+        // qs-02 AC3: debugToken must never appear in clear in any
+        // rendered representation of this config — same redaction
+        // mechanism as sdkKeySecret above.
+        if (debugToken != null) {
+            append(", debugToken=[REDACTED]")
+        } else {
+            append(", debugToken=null")
+        }
         append(", data=").append(data)
         append(", environment=").append(environment)
         append(", api=").append(api)

@@ -954,7 +954,8 @@ public open class ApiManager(
             httpClient.get(url, headers)
         } catch (t: Throwable) {
             logger.warn(
-                message = "ApiManager.fetchConfig(): network error fetching $url: ${t.message}",
+                message = "ApiManager.fetchConfig(): network error fetching ${redactDebugToken(url)}: " +
+                    "${t.message}",
                 throwable = t,
                 tag = TAG,
             )
@@ -963,7 +964,8 @@ public open class ApiManager(
 
         if (response.statusCode == 0) {
             logger.warn(
-                message = "ApiManager.fetchConfig(): network error (statusCode 0) fetching $url",
+                message = "ApiManager.fetchConfig(): network error (statusCode 0) fetching " +
+                    redactDebugToken(url),
                 tag = TAG,
             )
             return@withContext null
@@ -1002,13 +1004,16 @@ public open class ApiManager(
      *    security.
      *
      * Output shape: `{base}/config/{sdkKey}{query}` where `{query}` is
-     * built per AC-1 (F-006 option a):
-     *  - `?` prefix when either `environment` is non-null or
-     *    `cacheLevel == "low"`; otherwise empty.
+     * built per AC-1 (F-006 option a) plus qs-02 AND-1 contract §1:
+     *  - `?` prefix when any of `environment`, `debugToken`, or
+     *    `cacheLevel == "low"` apply; otherwise empty.
      *  - `environment={env}` appended when `config.environment` is set.
-     *  - `_conv_low_cache=1` appended when `cacheLevel == "low"`, with a
-     *    leading `&` if `environment=` was already appended (so the two
-     *    params are joined as `?environment=prod&_conv_low_cache=1`).
+     *  - `debug_token={value}` appended when `config.debugToken` is set,
+     *    with a leading `&` if `environment=` was already appended.
+     *  - `_conv_low_cache=1` appended when `cacheLevel == "low"` OR
+     *    `config.debugToken` is set (forced, regardless of `cacheLevel` —
+     *    qs-02 AC1), with a leading `&` if an earlier param was already
+     *    appended. Appended at most once even when both conditions hold.
      *
      * Kept to two return statements (detekt `ReturnCount` threshold) by
      * folding the precondition checks into a single early-return, then
@@ -1057,22 +1062,43 @@ public open class ApiManager(
      */
     private fun buildConfigQuery(): String {
         val environment = config.environment
-        val isLowCache = config.network?.cacheLevel == "low"
-        if (environment.isEmpty() && !isLowCache) return ""
+        val debugToken = config.debugToken
+        // qs-02 AC1: a debugToken forces the low-cache hint regardless of
+        // the configured cacheLevel — the two conditions are ORed into a
+        // single flag so `_conv_low_cache=1` is still appended at most once.
+        val isLowCache = config.network?.cacheLevel == "low" || debugToken != null
+        if (environment.isEmpty() && debugToken == null && !isLowCache) return ""
 
         val builder = StringBuilder("?")
         if (environment.isNotEmpty()) {
             builder.append("environment=").append(environment)
         }
+        if (debugToken != null) {
+            if (builder.contains('=')) builder.append('&')
+            builder.append("debug_token=").append(debugToken)
+        }
         if (isLowCache) {
             // Insert `&` only when an earlier `key=value` is already in the
-            // query — i.e. when `environment=` was just appended. The
-            // detection uses `'='` so the literal `?` from the prefix is
-            // never mistaken for an existing parameter.
+            // query — i.e. when `environment=` or `debug_token=` was just
+            // appended. The detection uses `'='` so the literal `?` from
+            // the prefix is never mistaken for an existing parameter.
             if (builder.contains('=')) builder.append('&')
             builder.append("_conv_low_cache=1")
         }
         return builder.toString()
+    }
+
+    /**
+     * Redacts a `debug_token=<value>` query parameter from [url] before it
+     * is handed to [Logger] — qs-02 AC3 requires the raw QA debug token
+     * never appear in clear in any log line. Replaces the value (up to the
+     * next `&` or end of string) with the literal marker `[REDACTED]`; a
+     * no-op when [url] carries no `debug_token` param. Shared by both
+     * [fetchConfig] WARN sites and reusable by any future logging call
+     * site that touches a debug-token-bearing URL.
+     */
+    private fun redactDebugToken(url: String): String = url.replace(DEBUG_TOKEN_QUERY_PARAM_REGEX) {
+        "debug_token=$REDACTED_MARKER"
     }
 
     private fun buildHeaders(): Map<String, String> {
@@ -1115,6 +1141,12 @@ public open class ApiManager(
         private val HTTP_2XX_RANGE: IntRange = 200..299
         private const val MAX_BODY_LOG_CHARS: Int = 200
         private val LOOPBACK_HOSTS: Set<String> = setOf("localhost", "127.0.0.1", "[::1]")
+
+        /** Marker substituted for a redacted `debug_token` value — qs-02 AC3. */
+        private const val REDACTED_MARKER: String = "[REDACTED]"
+
+        /** Matches a `debug_token=<value>` query param up to `&` or end of string. */
+        private val DEBUG_TOKEN_QUERY_PARAM_REGEX: Regex = Regex("debug_token=[^&]*")
 
         /**
          * Story 5.2 AC-2 exponential backoff delays: 10s, 20s, 40s. Explicit
