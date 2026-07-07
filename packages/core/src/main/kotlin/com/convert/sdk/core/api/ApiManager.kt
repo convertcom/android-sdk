@@ -183,6 +183,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   to the in-memory queue — suitable for pure-JVM tests that do not
  *   exercise offline behaviour. The SDK builder always wires
  *   [com.convert.sdk.android.adapter.FileEventQueue] here.
+ * @property clock wall-clock source for the qs-02 AND-4 preview-config
+ *   memo TTL ([fetchConfig] overload taking `experienceId`). Defaults to
+ *   [System.currentTimeMillis]; tests inject a deterministic fake so the
+ *   60s TTL can be exercised without a real 60-second sleep.
  */
 @Suppress("TooManyFunctions", "LongParameterList")
 public open class ApiManager(
@@ -195,6 +199,7 @@ public open class ApiManager(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val eventQueue: EventQueue? = null,
     private val liveConfigData: () -> ConfigResponseData? = { null },
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
 
     /**
@@ -260,6 +265,42 @@ public open class ApiManager(
      */
     private val queueLock: Any = Any()
     private val eventQueueInternal: MutableList<VisitorEvent> = mutableListOf()
+
+    /**
+     * One in-memory memo entry for a `?exp=` preview-config fetch — qs-02
+     * AND-4 / contract §2 "Resolution" / AC8.
+     *
+     * @property config the parsed config response returned by the `?exp=`
+     *   fetch for this `experienceId`.
+     * @property fetchedAtMillis [clock]-sourced timestamp recorded at the
+     *   moment the entry was inserted; compared against a later [clock]
+     *   read to decide whether the entry has aged past
+     *   [PREVIEW_CONFIG_MEMO_TTL_MILLIS].
+     */
+    private data class PreviewConfigMemoEntry(
+        val config: ConfigResponseData,
+        val fetchedAtMillis: Long,
+    )
+
+    /**
+     * Guards [previewConfigMemo]. Every read AND write sweeps expired
+     * entries first (superset of the "sweep-on-write" fix the python/ruby
+     * siblings' review required — sweeping on every touch, not just on
+     * write, means an experienceId that is read repeatedly but never
+     * re-fetched still gets pruned once its entry ages out, so the memo
+     * cannot grow unbounded regardless of call pattern).
+     */
+    private val previewConfigMemoLock: Any = Any()
+
+    /**
+     * In-memory-only memo, keyed by `experienceId`. Deliberately NOT keyed
+     * by any config/sdkKey identity: one [ApiManager] instance already
+     * corresponds to exactly one `ConvertConfig` (hence one sdkKey), so
+     * `experienceId` alone is an unambiguous key within this instance's
+     * lifetime. Never written to disk — see [fetchConfig] (experienceId
+     * overload) KDoc.
+     */
+    private val previewConfigMemo: MutableMap<String, PreviewConfigMemoEntry> = mutableMapOf()
 
     private val batchSize: Int =
         config.events?.batchSize ?: ConfigDefaults.DEFAULT_EVENTS_BATCH_SIZE
@@ -945,9 +986,91 @@ public open class ApiManager(
      *   valid body, or `null` if any precondition fails or the fetch
      *   errored out. Never throws.
      */
-    @Suppress("ReturnCount", "TooGenericExceptionCaught")
     public suspend fun fetchConfig(): ConfigResponseData? = withContext(Dispatchers.IO) {
         val url = buildConfigUrl() ?: return@withContext null
+        performConfigFetch(url)
+    }
+
+    /**
+     * Fetches the config bundle for a previewed [experienceId] that is
+     * absent from the currently-loaded config — qs-02 AND-4 / contract §2
+     * "Resolution" / AC8.
+     *
+     * Appends `exp={experienceId}` and a forced `_conv_low_cache=1` to the
+     * request URL (plus `debug_token=<value>` when [ConvertConfig.debugToken]
+     * is configured) via the [buildConfigUrl] `experienceId` overload, then
+     * delegates to the same [performConfigFetch] error handling / parsing
+     * path as the param-less [fetchConfig] — identical network-error,
+     * non-2xx, and malformed-body behaviour (log + return `null`).
+     *
+     * ### Memoization (AC8)
+     *
+     * Successful results are memoized **in memory only**, keyed by
+     * [experienceId], for [PREVIEW_CONFIG_MEMO_TTL_MILLIS] (60s). Two
+     * resolutions for the same [experienceId] inside the TTL window return
+     * the memoized value with **zero** additional network calls. The memo
+     * is never handed to [com.convert.sdk.android.adapter.FileConfigCache] —
+     * this method has no reference to that type, so the on-disk config
+     * cache is structurally unreachable from this path; the caller (a
+     * future qs-02 story) MUST NOT feed this method's result into
+     * `FileConfigCache.write`.
+     *
+     * @param experienceId the previewed experience id (numeric-id string —
+     *   see [com.convert.sdk.core.preview.PreviewParam]).
+     * @return the parsed [ConfigResponseData] on a 2xx response with a
+     *   valid body (fresh or memoized), or `null` if any precondition
+     *   fails or the fetch errored out. Never throws.
+     */
+    public suspend fun fetchConfig(experienceId: String): ConfigResponseData? = withContext(Dispatchers.IO) {
+        val now = clock()
+        val memoized = synchronized(previewConfigMemoLock) {
+            sweepExpiredPreviewMemoEntries(now)
+            previewConfigMemo[experienceId]?.config
+        }
+        if (memoized != null) return@withContext memoized
+
+        val url = buildConfigUrl(experienceId) ?: return@withContext null
+        val fetched = performConfigFetch(url) ?: return@withContext null
+
+        synchronized(previewConfigMemoLock) {
+            sweepExpiredPreviewMemoEntries(now)
+            previewConfigMemo[experienceId] = PreviewConfigMemoEntry(fetched, now)
+        }
+        fetched
+    }
+
+    /**
+     * Removes every [previewConfigMemo] entry whose [PreviewConfigMemoEntry.fetchedAtMillis]
+     * is [PREVIEW_CONFIG_MEMO_TTL_MILLIS] or more behind [now]. MUST be
+     * called only while holding [previewConfigMemoLock] — bounds the
+     * memo's size regardless of read/write call pattern (qs-02 AND-4:
+     * "evict expired entries so the memo cannot grow unbounded").
+     */
+    private fun sweepExpiredPreviewMemoEntries(now: Long) {
+        val iterator = previewConfigMemo.entries.iterator()
+        while (iterator.hasNext()) {
+            val fetchedAtMillis = iterator.next().value.fetchedAtMillis
+            if (now - fetchedAtMillis >= PREVIEW_CONFIG_MEMO_TTL_MILLIS) {
+                iterator.remove()
+            }
+        }
+    }
+
+    /**
+     * Shared GET + status-check + parse sequence for both [fetchConfig]
+     * overloads. Extracted (Story 2.2 behaviour kept byte-for-byte) so the
+     * qs-02 AND-4 `experienceId` overload does not duplicate the error
+     * handling / [redactDebugToken] logging / [ConfigResponseData] parsing
+     * already exercised by the Story 2.2 regression suite.
+     *
+     * @param url the fully-assembled request URL (already built by either
+     *   [buildConfigUrl] overload).
+     * @return the parsed [ConfigResponseData] on a 2xx response with a
+     *   valid body, or `null` if any precondition fails or the fetch
+     *   errored out. Never throws.
+     */
+    @Suppress("ReturnCount", "TooGenericExceptionCaught")
+    private suspend fun performConfigFetch(url: String): ConfigResponseData? {
         val headers = buildHeaders()
 
         val response = try {
@@ -959,7 +1082,7 @@ public open class ApiManager(
                 throwable = t,
                 tag = TAG,
             )
-            return@withContext null
+            return null
         }
 
         if (response.statusCode == 0) {
@@ -968,7 +1091,7 @@ public open class ApiManager(
                     redactDebugToken(url),
                 tag = TAG,
             )
-            return@withContext null
+            return null
         }
 
         if (response.statusCode !in HTTP_2XX_RANGE) {
@@ -977,10 +1100,10 @@ public open class ApiManager(
                 message = "ApiManager.fetchConfig(): ${response.statusCode} $bodySnippet",
                 tag = TAG,
             )
-            return@withContext null
+            return null
         }
 
-        return@withContext try {
+        return try {
             json.decodeFromString(ConfigResponseData.serializer(), response.body)
         } catch (t: Throwable) {
             logger.error(
@@ -1014,12 +1137,20 @@ public open class ApiManager(
      *    `config.debugToken` is set (forced, regardless of `cacheLevel` —
      *    qs-02 AC1), with a leading `&` if an earlier param was already
      *    appended. Appended at most once even when both conditions hold.
+     *  - `exp={experienceId}` appended when [experienceId] is non-null
+     *    (qs-02 AND-4 contract §2 "Resolution"), which also forces
+     *    `_conv_low_cache=1` the same way `debugToken` does.
      *
      * Kept to two return statements (detekt `ReturnCount` threshold) by
      * folding the precondition checks into a single early-return, then
      * returning the assembled URL.
+     *
+     * @param experienceId when non-null, builds the qs-02 AND-4 preview
+     *   `?exp=` fetch URL instead of the normal config URL. `null`
+     *   (the default) reproduces today's exact URL shape — used by the
+     *   param-less [fetchConfig].
      */
-    private fun buildConfigUrl(): String? {
+    private fun buildConfigUrl(experienceId: String? = null): String? {
         val sdkKey = config.sdkKey
         val endpoint = config.api?.endpoint?.config ?: ConfigDefaults.DEFAULT_CONFIG_ENDPOINT
         val rejection = when {
@@ -1037,7 +1168,7 @@ public open class ApiManager(
         // Normalise trailing slash so "endpoint/config/sdkKey" never produces
         // "endpoint//config/sdkKey" or "endpointconfig/sdkKey".
         val base = endpoint.trimEnd('/')
-        val query = buildConfigQuery()
+        val query = buildConfigQuery(experienceId)
         return "$base/$PATH_CONFIG_SEGMENT/$sdkKey$query"
     }
 
@@ -1059,19 +1190,35 @@ public open class ApiManager(
      * Returns the empty string when neither parameter applies (only
      * possible when both `environment` is empty AND `cacheLevel` is not
      * `"low"`).
+     *
+     * @param experienceId qs-02 AND-4 — when non-null, appends
+     *   `exp={experienceId}` right after `environment=` (mirroring the web
+     *   precedent's `?exp={expId}&_conv_low_cache=…` ordering — the
+     *   experience identifier is the primary axis of the preview fetch,
+     *   `debug_token` is the auxiliary QA transport, `_conv_low_cache=1`
+     *   always trails last) and forces `_conv_low_cache=1` the same way a
+     *   configured `debugToken` does.
      */
-    private fun buildConfigQuery(): String {
+    private fun buildConfigQuery(experienceId: String? = null): String {
         val environment = config.environment
         val debugToken = config.debugToken
-        // qs-02 AC1: a debugToken forces the low-cache hint regardless of
-        // the configured cacheLevel — the two conditions are ORed into a
-        // single flag so `_conv_low_cache=1` is still appended at most once.
-        val isLowCache = config.network?.cacheLevel == "low" || debugToken != null
-        if (environment.isEmpty() && debugToken == null && !isLowCache) return ""
+        // qs-02 AC1 / AND-4: a debugToken OR an in-flight `exp=` preview
+        // fetch forces the low-cache hint regardless of the configured
+        // cacheLevel — all three conditions are ORed into a single flag so
+        // `_conv_low_cache=1` is still appended at most once.
+        val isLowCache = config.network?.cacheLevel == "low" || debugToken != null || experienceId != null
+        // Split into a named intermediate (rather than one 4-operator `&&`
+        // chain) to stay under detekt's ComplexCondition threshold.
+        val hasNoIdentifyingParam = environment.isEmpty() && debugToken == null && experienceId == null
+        if (hasNoIdentifyingParam && !isLowCache) return ""
 
         val builder = StringBuilder("?")
         if (environment.isNotEmpty()) {
             builder.append("environment=").append(environment)
+        }
+        if (experienceId != null) {
+            if (builder.contains('=')) builder.append('&')
+            builder.append("exp=").append(experienceId)
         }
         if (debugToken != null) {
             if (builder.contains('=')) builder.append('&')
@@ -1147,6 +1294,14 @@ public open class ApiManager(
 
         /** Matches a `debug_token=<value>` query param up to `&` or end of string. */
         private val DEBUG_TOKEN_QUERY_PARAM_REGEX: Regex = Regex("debug_token=[^&]*")
+
+        /**
+         * qs-02 AND-4 / AC8 — TTL for [previewConfigMemo] entries: 60
+         * seconds. Two [fetchConfig] (experienceId overload) calls for the
+         * same `experienceId` inside this window return the memoized value
+         * with zero additional network calls.
+         */
+        private const val PREVIEW_CONFIG_MEMO_TTL_MILLIS: Long = 60_000L
 
         /**
          * Story 5.2 AC-2 exponential backoff delays: 10s, 20s, 40s. Explicit
