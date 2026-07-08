@@ -162,8 +162,15 @@ internal class OkHttpClientAdapter(
                 }
 
                 override fun onFailure(call: Call, e: IOException) {
+                    // qs-02 AC3: never log the query string. A config-fetch
+                    // URL built while `debugToken` is configured carries
+                    // `debug_token=<secret>` (ApiManager.buildConfigQuery);
+                    // this adapter is a generic transport with no knowledge
+                    // of which query params are sensitive, so the query is
+                    // stripped wholesale rather than pattern-matched — host
+                    // and path are what matter for diagnosing an IOException.
                     logger.warn(
-                        message = "HTTP ${request.method} ${request.url} failed: ${e.message}",
+                        message = "HTTP ${request.method} ${queryStrippedUrl(request)} failed: ${e.message}",
                         throwable = e,
                         tag = "OkHttpClientAdapter",
                     )
@@ -230,3 +237,12 @@ internal class OkHttpClientAdapter(
 private fun okhttp3.Headers.toMap(): Map<String, String> = buildMap {
     this@toMap.forEach { (name, value) -> put(name, value) }
 }
+
+/**
+ * qs-02 AC3 (token hygiene): returns [Request.url] with its query string
+ * stripped, for safe inclusion in a log message. See the `onFailure`
+ * callsite comment above for why the whole query is dropped rather than
+ * redacting a specific param name.
+ */
+private fun queryStrippedUrl(request: Request): String =
+    request.url.newBuilder().query(null).build().toString()
