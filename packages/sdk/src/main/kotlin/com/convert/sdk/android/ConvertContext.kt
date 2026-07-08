@@ -117,6 +117,33 @@ public class ConvertContext internal constructor(
     @Volatile private var previewState: PreviewState? = null
 
     /**
+     * qs-02 / AND-6 (contract §2 "Zero-trace") — `true` when a preview
+     * target is active on this context, regardless of which experience
+     * it targets. [allocateAndRecord], [trackConversion] /
+     * [dispatchConversion], and the file-scope [persistSegmentsToStore]
+     * gate their network-enqueue and persistence side effects on this
+     * flag: "while preview is set on the context, ALL tracking is
+     * disabled ... and ALL visitor-state persistence writes are
+     * disabled" — for every experience/goal/segment write on this
+     * context, not just the previewed experience (other experiences
+     * still evaluate and decide normally for coherent rendering, per
+     * contract §2). `internal` (not `private`) so the file-scope helper
+     * functions below the class body can read it — Kotlin's `private`
+     * on a class member is invisible outside the class body, even in
+     * the same file.
+     *
+     * The in-process [SystemEvents] bus (developer observer callbacks
+     * such as `SystemEvents.BUCKETING` / `SystemEvents.CONVERSION`) is
+     * deliberately NOT gated by this flag — it is not part of the
+     * durable/network tracking path the contract's zero-trace
+     * requirement covers (AC6 asserts zero track-endpoint requests,
+     * zero durable-queue entries, zero WorkManager enqueues, and zero
+     * sticky-bucketing writes; it does not assert zero in-process
+     * observer callbacks).
+     */
+    internal fun isPreviewActive(): Boolean = previewState != null
+
+    /**
      * qs-02 / AND-5 — one context's preview target: the previewed
      * [experienceId] / [variationId] pair exactly as supplied to
      * [setPreview] (numeric-id strings, contract §2), plus the resolved
@@ -416,25 +443,39 @@ public class ConvertContext internal constructor(
             ?: return null
 
         // Persist sticky (atomic under DataManager's visitor lock).
-        sdk.dataManager.updateBucketing(
-            visitorId = visitorId,
-            experienceKey = experienceKey,
-            variationId = allocation.variationId,
-        )
+        // qs-02 AND-6 (contract §2 "Zero-trace") — suppressed for the
+        // ENTIRE context while ANY preview is active, not just for the
+        // previewed experience: "ALL visitor-state persistence writes
+        // are disabled" while preview is set. Other experiences still
+        // decide normally (below) so the UI renders coherently; only
+        // this write is skipped.
+        if (!isPreviewActive()) {
+            sdk.dataManager.updateBucketing(
+                visitorId = visitorId,
+                experienceKey = experienceKey,
+                variationId = allocation.variationId,
+            )
+        }
 
         // Outbound tracking AND internal event bus — both gated by the
         // per-call flag (F-134 remediation: AC-10 suppresses the internal
         // BUCKETING fire when enableTracking is false so observers do not
         // receive misleading bucketing signals during silent runs).
         // Story 5.4 also gates the network enqueue by the SDK-level
-        // tracking toggle on ApiManager.
+        // tracking toggle on ApiManager. qs-02 AND-6 additionally
+        // suppresses the network enqueue (not the in-process event fire)
+        // while a preview is active on this context (contract §2
+        // "Zero-trace") — see [isPreviewActive] for why the internal
+        // SystemEvents bus stays ungated.
         if (enableTracking) {
-            sdk.apiManager?.enqueueBucketingEvent(
-                visitorId = visitorId,
-                experienceId = experience.id.orEmpty(),
-                variationId = allocation.variationId,
-                segments = getMergedSegments(),
-            )
+            if (!isPreviewActive()) {
+                sdk.apiManager?.enqueueBucketingEvent(
+                    visitorId = visitorId,
+                    experienceId = experience.id.orEmpty(),
+                    variationId = allocation.variationId,
+                    segments = getMergedSegments(),
+                )
+            }
             sdk.eventManager.fire(
                 event = SystemEvents.BUCKETING,
                 data = mapOf(
@@ -758,7 +799,18 @@ public class ConvertContext internal constructor(
         // (firstMark=false) take deterministically different paths.
         val forceMultipleTransactions =
             (conversionSetting?.get(FORCE_MULTIPLE_TRANSACTIONS_KEY) as? Boolean) == true
-        val firstMark = sdk.dataManager.markGoalTracked(visitorId = visitorId, goalId = goalId)
+        // qs-02 AND-6 (contract §2 "Zero-trace") — while a preview is
+        // active on this context, skip the persisted goal-tracked
+        // check-and-set entirely (no visitor-state write) and treat the
+        // call as "first" so it still proceeds to dispatchConversion for
+        // coherent rendering/observer feedback — but see
+        // [dispatchConversion], which additionally suppresses the
+        // network enqueue in that branch.
+        val firstMark = if (isPreviewActive()) {
+            true
+        } else {
+            sdk.dataManager.markGoalTracked(visitorId = visitorId, goalId = goalId)
+        }
 
         if (!firstMark && !forceMultipleTransactions) {
             // Pure dedup path. JS SDK parity: convert() returns undefined
@@ -844,12 +896,21 @@ public class ConvertContext internal constructor(
                 // the event should actually be emitted. Story 4.4 wires
                 // the merged default+custom segments snapshot into the
                 // outbound call (AC-3).
-                sdk.apiManager?.enqueueConversionEvent(
-                    visitorId = visitorId,
-                    goalId = goalId,
-                    goalData = goalData?.takeIf { it.isNotEmpty() },
-                    segments = getMergedSegments(),
-                )
+                // qs-02 AND-6 (contract §2 "Zero-trace") — suppressed
+                // while a preview is active on this context; the
+                // trackConversion caller already skipped the persisted
+                // markGoalTracked write for this same call (see there).
+                // The internal CONVERSION fire below stays ungated (see
+                // [isPreviewActive] for why the in-process event bus is
+                // out of scope for zero-trace).
+                if (!isPreviewActive()) {
+                    sdk.apiManager?.enqueueConversionEvent(
+                        visitorId = visitorId,
+                        goalId = goalId,
+                        goalData = goalData?.takeIf { it.isNotEmpty() },
+                        segments = getMergedSegments(),
+                    )
+                }
                 // Step 5 — internal event fire. JS SDK parity:
                 // `{visitorId, goalKey}` — not goalId. Downstream consumers
                 // that need the id re-resolve via the config.
@@ -1328,9 +1389,19 @@ private fun passesLocationGate(
  * Lives at file scope (same rationale as [passesAudienceGate] /
  * [passesLocationGate]) so [ConvertContext] stays under detekt's
  * `TooManyFunctions` threshold.
+ *
+ * qs-02 AND-6 (contract §2 "Zero-trace") — also a no-op while
+ * [ConvertContext.isPreviewActive]: "ALL visitor-state persistence
+ * writes are disabled" for the entire context while any preview is
+ * active, not only for the previewed experience. The in-memory
+ * `defaultSegments` / `customSegments` field assignment in
+ * [ConvertContext.setDefaultSegments] / [ConvertContext.setCustomSegments]
+ * still happens before this call — only this SharedPreferences write is
+ * skipped (per-context scratch only, per contract).
  */
 private fun persistSegmentsToStore(context: ConvertContext) {
     val sdk = context.sdk ?: return
+    if (context.isPreviewActive()) return
     val current = sdk.dataManager.getStoreData(context.visitorId)
     sdk.dataManager.setStoreData(
         context.visitorId,

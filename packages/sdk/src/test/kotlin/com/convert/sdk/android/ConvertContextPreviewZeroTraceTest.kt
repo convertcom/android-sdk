@@ -1,0 +1,343 @@
+/*
+ * Convert Android SDK — sdk tests
+ * Copyright (c) 2026 Convert Insights, Inc.
+ * License: Apache-2.0
+ */
+package com.convert.sdk.android
+
+import android.content.Context
+import android.os.Looper
+import androidx.test.core.app.ApplicationProvider
+import androidx.work.Configuration
+import androidx.work.WorkManager
+import androidx.work.testing.WorkManagerTestInitHelper
+import com.convert.sdk.android.worker.EventFlushWorker
+import com.convert.sdk.core.event.SystemEvents
+import com.convert.sdk.core.model.GoalData
+import com.convert.sdk.core.model.GoalDataKey
+import com.convert.sdk.core.model.generated.ClicksElementGoalSettings
+import com.convert.sdk.core.model.generated.ConfigExperience
+import com.convert.sdk.core.model.generated.ConfigGoal
+import com.convert.sdk.core.model.generated.ConfigProject
+import com.convert.sdk.core.model.generated.ConfigResponseData
+import com.convert.sdk.core.model.generated.ExperienceVariationConfig
+import com.convert.sdk.core.model.generated.RuleObject
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonPrimitive
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
+import java.math.BigDecimal
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+
+/**
+ * qs-02 / AND-6 (contract §2 "Zero-trace", AC6, AC7) — durable-pipeline
+ * zero-trace tests for [ConvertContext.setPreview].
+ *
+ * ### What "zero trace" means here (contract §2)
+ *
+ * While a preview is active on a context, ALL tracking is suppressed at
+ * the enqueue source (nothing reaches the in-memory [com.convert.sdk.core.api.ApiManager]
+ * queue, the durable [com.convert.sdk.android.adapter.FileEventQueue], or a
+ * network request) and ALL visitor-state persistence writes are suppressed
+ * (no `SharedPreferences` sticky-bucketing / goal-tracked / segments
+ * writes). This holds for EVERY experience/goal evaluated on the preview
+ * context — not just the previewed one (contract §2 "other experiences
+ * still evaluate and decide normally for coherent rendering, but nothing
+ * is tracked or persisted from the preview").
+ *
+ * ### WorkManager-clause interpretation (spec-silent decision, recorded here)
+ *
+ * AC6 reads "zero WorkManager enqueues". Story 5.3's [ConvertSDK.onProcessStop]
+ * unconditionally flushes and enqueues an [EventFlushWorker] on ANY
+ * backgrounding transition — that scheduling is preview-independent
+ * lifecycle behaviour, out of AND-6's scope to change (shared, shipped
+ * code; changing it would violate the additive-only mandate). The literal
+ * "zero WorkManager enqueues" reading would therefore fail even with a
+ * perfectly zero-trace preview implementation. This suite instead asserts
+ * the INTENT: after driving [ConvertSDK.onProcessStopForTest] with a
+ * preview active, the durable pipeline carries zero preview trace because
+ * the flush worker — scheduled or not — has nothing to drain: the
+ * in-memory [com.convert.sdk.core.api.ApiManager] snapshot is empty, the
+ * [com.convert.sdk.android.adapter.FileEventQueue] is empty, and zero
+ * requests ever reach the track endpoint. [EventFlushWorkerDrainTest]
+ * already regression-locks "empty queue → no HTTP call, no matter how the
+ * worker is invoked" — this suite does not re-derive that; it proves the
+ * PRECONDITION (nothing preview-sourced ever enters either queue) holds
+ * across a full context lifecycle including the background transition.
+ */
+@RunWith(RobolectricTestRunner::class)
+internal class ConvertContextPreviewZeroTraceTest {
+
+    private lateinit var appContext: Context
+    private lateinit var server: MockWebServer
+
+    @Before
+    fun setUp() {
+        appContext = ApplicationProvider.getApplicationContext()
+        appContext
+            .getSharedPreferences("com.convert.sdk.visitor", Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
+        WorkManagerTestInitHelper.initializeTestWorkManager(
+            appContext,
+            Configuration.Builder().setMinimumLoggingLevel(android.util.Log.VERBOSE).build(),
+        )
+        server = MockWebServer()
+        server.dispatcher = TrackOnlyDispatcher()
+        server.start()
+    }
+
+    @After
+    fun tearDown() {
+        server.shutdown()
+        // AC-6.2 WorkManager isolation (same rationale as
+        // ConvertSDKLifecycleHooksTest): without closing the database, the
+        // SQLite-backed queue leaks enqueued work across tests in the same
+        // JVM run.
+        runCatching { WorkManager.getInstance(appContext).cancelAllWork() }
+        runCatching { WorkManagerTestInitHelper.closeWorkDatabase() }
+    }
+
+    /** Any POST containing `/track/` succeeds; everything else 404s loudly. */
+    private inner class TrackOnlyDispatcher : Dispatcher() {
+        override fun dispatch(request: RecordedRequest): MockResponse {
+            val path = request.path ?: ""
+            return if (request.method == "POST" && path.contains("/track/")) {
+                MockResponse().setResponseCode(HTTP_OK).setBody("")
+            } else {
+                MockResponse().setResponseCode(HTTP_NOT_FOUND)
+            }
+        }
+    }
+
+    // --- fixtures ---------------------------------------------------------
+
+    /**
+     * `exp-1` keyed `welcome` (two 50/50 variations, previewed as
+     * `var-b`) + `exp-2` keyed `promo` (single 100% variation,
+     * deterministic) — `promo` proves "a DIFFERENT experience on the same
+     * preview context still decides normally" while exercising the
+     * AND-6-gated [ConvertContext] persist/enqueue path. `zt-goal` backs
+     * the conversion-attempt step.
+     */
+    private fun zeroTraceConfig(): ConfigResponseData = ConfigResponseData(
+        accountId = "acc-zt",
+        project = ConfigProject(id = "proj-zt"),
+        experiences = listOf(
+            ConfigExperience(
+                id = "exp-1",
+                key = "welcome",
+                variations = listOf(
+                    ExperienceVariationConfig(
+                        id = "var-a",
+                        key = "control",
+                        trafficAllocation = BigDecimal.valueOf(FIFTY_FIFTY),
+                    ),
+                    ExperienceVariationConfig(
+                        id = "var-b",
+                        key = "treatment",
+                        trafficAllocation = BigDecimal.valueOf(FIFTY_FIFTY),
+                    ),
+                ),
+            ),
+            ConfigExperience(
+                id = "exp-2",
+                key = "promo",
+                variations = listOf(
+                    ExperienceVariationConfig(
+                        id = "var-p",
+                        key = "promo-v",
+                        trafficAllocation = BigDecimal.valueOf(FULL_ALLOCATION),
+                    ),
+                ),
+            ),
+        ),
+        goals = listOf(ZeroTraceGoal(id = "g-zt", key = "zt-goal")),
+    )
+
+    /**
+     * In-test [ConfigGoal] impl — same minimal-field pattern used by
+     * [com.convert.sdk.android.integration.FullChainIntegrationTest].
+     */
+    private data class ZeroTraceGoal(
+        override val id: String? = null,
+        override val name: String? = null,
+        override val key: String? = null,
+        override val type: String? = null,
+        override val rules: RuleObject? = null,
+        override val settings: ClicksElementGoalSettings? = null,
+    ) : ConfigGoal
+
+    private fun buildSdk(sdkKey: String): ConvertSDK {
+        val sdk = ConvertSDK.builder(appContext)
+            .sdkKey(sdkKey)
+            .data(zeroTraceConfig())
+            .trackEndpoint(server.url("/").toString())
+            .batchSize(LARGE_BATCH_SIZE)
+            .releaseInterval(LONG_RELEASE_INTERVAL_MS)
+            .dataRefreshInterval(LONG_DATA_REFRESH_INTERVAL_MS)
+            .build()
+        awaitCondition { sdk.dataManager.hasData() }
+        return sdk
+    }
+
+    private fun awaitCondition(timeoutMs: Long = AWAIT_TIMEOUT_MS, check: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline && !check()) {
+            Thread.sleep(AWAIT_POLL_MS)
+        }
+        assertTrue("Timed out waiting for condition", check())
+    }
+
+    // ---------------------------------------------------------------
+    // AC6 — zero trace across bucketing, conversion, and background flush
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `preview lifecycle leaves zero trace across bucketing, conversion, and background flush`() {
+        val sdk = buildSdk("sk-zero-trace")
+        val ctx = sdk.createContext("visitor_preview_zt")
+        ctx.setPreview(experienceId = "exp-1", variationId = "var-b")
+
+        // Previewed experience decides as forced — bypasses allocateAndRecord
+        // entirely (resolvePreviewOverride short-circuits runExperience), so
+        // this leg is inherently zero-trace by construction.
+        val forced = ctx.runExperience("welcome")
+        assertEquals("var-b", forced?.id)
+
+        // A DIFFERENT experience on the SAME preview context (contract §2
+        // "other experiences still evaluate and decide normally") — this is
+        // the leg that actually exercises the AND-6 gates inside
+        // allocateAndRecord (updateBucketing / enqueueBucketingEvent).
+        val other = ctx.runExperience("promo")
+        assertEquals("var-p", other?.id)
+
+        // A conversion attempt on the preview context. dispatchConversion
+        // still fires SystemEvents.CONVERSION internally (only the network
+        // enqueue + the markGoalTracked persistence are gated — see
+        // ConvertContext.isPreviewActive's KDoc) — subscribe to it as a
+        // deterministic completion signal for the fire-and-forget dispatch.
+        val conversionLatch = CountDownLatch(1)
+        sdk.on(SystemEvents.CONVERSION) { conversionLatch.countDown() }
+        ctx.trackConversion(
+            goalKey = "zt-goal",
+            goalData = listOf(GoalData(key = GoalDataKey.AMOUNT, value = JsonPrimitive(GOAL_AMOUNT))),
+        )
+        assertTrue(
+            "CONVERSION must still fire internally even though tracking is suppressed",
+            conversionLatch.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS),
+        )
+
+        // Background transition — see the class doc for why this suite
+        // asserts "drains an empty queue" rather than "zero WorkManager
+        // enqueues": Story 5.3's onProcessStop schedules the flush worker
+        // unconditionally on any backgrounding, preview or not.
+        sdk.onProcessStopForTest()
+        awaitCondition {
+            WorkManager.getInstance(appContext)
+                .getWorkInfosForUniqueWork(EventFlushWorker.UNIQUE_WORK_NAME)
+                .get()
+                .isNotEmpty()
+        }
+        shadowOf(Looper.getMainLooper()).idle()
+
+        // --- Zero-trace assertions --------------------------------------
+        assertEquals(
+            "ApiManager in-memory queue must be empty — nothing from the " +
+                "preview context ever entered it",
+            0,
+            sdk.apiManager!!.snapshotQueue().size,
+        )
+        assertEquals(
+            "FileEventQueue must be empty — the WorkManager-backed durable " +
+                "path carries zero preview trace because it has nothing to drain",
+            0,
+            runBlocking { sdk.fileEventQueue!!.size() },
+        )
+        assertEquals(
+            "zero requests must ever reach the mock track endpoint",
+            0,
+            server.requestCount,
+        )
+        val store = sdk.dataManager.getStoreData("visitor_preview_zt")
+        assertTrue(
+            "no sticky-bucketing write for either the previewed or the " +
+                "coherently-rendered experience while preview is active",
+            store.bucketing.isNullOrEmpty(),
+        )
+        assertTrue(
+            "no persisted goal-tracked write for the preview context",
+            store.goals.isNullOrEmpty(),
+        )
+    }
+
+    // ---------------------------------------------------------------
+    // AC7 — isolation: a concurrent non-preview context tracks/persists normally
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `a concurrent non-preview context tracks and persists normally`() {
+        val sdk = buildSdk("sk-isolation")
+        val previewCtx = sdk.createContext("visitor_preview_iso")
+        previewCtx.setPreview(experienceId = "exp-1", variationId = "var-b")
+        previewCtx.runExperience("welcome")
+
+        val normalCtx = sdk.createContext("visitor_normal_iso")
+        val normalResult = normalCtx.runExperience("promo")
+        assertEquals("var-p", normalResult?.id)
+
+        // The shared ApiManager queue must carry EXACTLY the non-preview
+        // context's event — proving the preview context contributed zero.
+        awaitCondition { sdk.apiManager!!.snapshotQueue().size == 1 }
+        assertEquals(
+            "the single queued event must belong to the non-preview visitor",
+            "visitor_normal_iso",
+            sdk.apiManager!!.snapshotQueue().single().visitorId,
+        )
+
+        sdk.flushForTesting()
+        assertEquals(
+            "the non-preview context's bucketing event must reach the track endpoint",
+            1,
+            server.requestCount,
+        )
+
+        val normalStore = sdk.dataManager.getStoreData("visitor_normal_iso")
+        assertEquals(
+            "the non-preview context's sticky decision must persist normally",
+            "var-p",
+            normalStore.bucketing?.get("promo"),
+        )
+        val previewStore = sdk.dataManager.getStoreData("visitor_preview_iso")
+        assertTrue(
+            "the preview context must still carry zero sticky-bucketing writes",
+            previewStore.bucketing.isNullOrEmpty(),
+        )
+    }
+
+    private companion object {
+        private const val LARGE_BATCH_SIZE = 100
+        private const val LONG_RELEASE_INTERVAL_MS = 30_000L
+        private const val LONG_DATA_REFRESH_INTERVAL_MS = 600_000L
+        private const val AWAIT_TIMEOUT_MS = 2_000L
+        private const val AWAIT_POLL_MS = 10L
+        private const val LATCH_TIMEOUT_SECONDS = 2L
+        private const val FIFTY_FIFTY = 50.0
+        private const val FULL_ALLOCATION = 100.0
+        private const val GOAL_AMOUNT = 9.99
+        private const val HTTP_OK = 200
+        private const val HTTP_NOT_FOUND = 404
+    }
+}
