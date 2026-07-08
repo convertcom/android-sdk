@@ -15,6 +15,7 @@ import com.convert.sdk.core.model.generated.ConfigExperience
 import com.convert.sdk.core.model.generated.ConfigLocation
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
+import com.convert.sdk.core.preview.PreviewDecision
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -99,6 +100,40 @@ public class ConvertContext internal constructor(
     @Volatile private var customSegments: Map<String, Any?>? = null
 
     /**
+     * qs-02 / AND-5 (contract §2 "Preview input", §3 "Precedence", AC7) —
+     * the active preview target for this context, or `null` when no
+     * preview is set. `@Volatile` for the same single-reference-swap
+     * visibility reasoning as [attributes] et al. (Gotcha 6): [setPreview]
+     * and [resolvePreviewFetch] each perform a single reference write, so
+     * concurrent [runExperience] calls on this SAME context observe a
+     * consistent snapshot without a `Mutex`.
+     *
+     * Deliberately a per-instance field — NEVER written to [ConvertSDK]'s
+     * shared [ConvertSDK.dataManager] / [ConvertSDK.apiManager] state.
+     * That is what guarantees a concurrent non-preview [ConvertContext] on
+     * the same [ConvertSDK] buckets, persists, and tracks completely
+     * normally (AC7 isolation).
+     */
+    @Volatile private var previewState: PreviewState? = null
+
+    /**
+     * qs-02 / AND-5 — one context's preview target: the previewed
+     * [experienceId] / [variationId] pair exactly as supplied to
+     * [setPreview] (numeric-id strings, contract §2), plus the resolved
+     * [ConfigExperience] once available.
+     *
+     * [experience] starts `null` when [experienceId] required the AND-4
+     * `?exp=` fetch (contract §2 "Resolution") and that fetch is still in
+     * flight; [resolvePreviewOverride] treats a `null` [experience] the
+     * same as "no active preview" — inert until the fetch lands.
+     */
+    private data class PreviewState(
+        val experienceId: String,
+        val variationId: String,
+        val experience: ConfigExperience?,
+    )
+
+    /**
      * Evaluates a single experience for this visitor and returns the
      * bucketed [Variation] — Story 3.2 AC-6 / AC-7 / AC-9 / AC-10.
      *
@@ -178,6 +213,15 @@ public class ConvertContext internal constructor(
         lastRunWithTracking = enableTracking
 
         val sdk = this.sdk ?: return null
+
+        // qs-02 AND-5 — preview forcing (contract §3 "Precedence") beats
+        // EVERYTHING below for the previewed experience on this context
+        // only: the config-ready gate, sticky, the rule gates, and normal
+        // bucketing. Checked first so a previewed draft experience that is
+        // absent from `sdk.dataManager.data` (delivered only via the AND-4
+        // `?exp=` fetch, AC4) can still decide even though the ordinary
+        // Step 2 lookup below would never find it.
+        resolvePreviewOverride(sdk, experienceKey)?.let { return it }
 
         // Step 1 — config-ready gate.
         if (!sdk.dataManager.hasData()) {
@@ -281,6 +325,52 @@ public class ConvertContext internal constructor(
         // value is unknown — pass null to match the JS SDK's sticky branch
         // (`bucketingAllocation` is only populated on the fresh-bucket path).
         return toPublicVariation(experience, variation, bucketingAllocationValue = null)
+    }
+
+    /**
+     * qs-02 / AND-5 — resolves the forced preview decision for
+     * [experienceKey] when this context has an active preview target
+     * whose resolved experience's KEY matches (contract §2 "Decision",
+     * §3 "Precedence").
+     *
+     * Matches by [ConfigExperience.key] — not [PreviewState.experienceId]
+     * — because callers invoke [runExperience] by key, and the previewed
+     * experience may be a draft delivered only via [PreviewState.experience]
+     * (the AND-4 `?exp=` fetch result) and therefore absent from
+     * `sdk.dataManager.data` under its id.
+     *
+     * Returns `null` (inert-on-bad-input, contract §2 — the caller falls
+     * through to the normal [runExperience] steps 1-8 unmodified) when:
+     *  - no preview is set on this context,
+     *  - [PreviewState.experience] has not resolved yet (the AND-4 fetch
+     *    is still in flight — treated as "no preview" rather than
+     *    blocking),
+     *  - the resolved preview experience's key does not match
+     *    [experienceKey] (a DIFFERENT experience is being run — it
+     *    decides normally, per contract §2 "other experiences still
+     *    evaluate normally"), or
+     *  - [PreviewDecision.resolve] itself returns `null` (an unknown
+     *    [PreviewState.variationId] within the resolved experience) — a
+     *    WARN is logged in this last case only, since it is the only
+     *    branch where the caller actually asked to preview THIS
+     *    experience and supplied a bad variation id.
+     */
+    @Suppress("ReturnCount")
+    private fun resolvePreviewOverride(sdk: ConvertSDK, experienceKey: String): Variation? {
+        val preview = previewState ?: return null
+        val previewExperience = preview.experience ?: return null
+        if (previewExperience.key != experienceKey) return null
+
+        val forced = PreviewDecision.resolve(previewExperience, preview.variationId)
+        if (forced == null) {
+            sdk.logger.warn(
+                message = "ConvertContext.runExperience: preview variation " +
+                    "'${preview.variationId}' not found in previewed experience " +
+                    "'$experienceKey'; preview inert",
+                tag = TAG,
+            )
+        }
+        return forced
     }
 
     /**
@@ -900,6 +990,103 @@ public class ConvertContext internal constructor(
     public fun setLocationProperties(properties: Map<String, Any?>): ConvertContext {
         locationProperties = properties
         return this
+    }
+
+    /**
+     * Sets a forced preview decision for [experienceId] on this context —
+     * qs-02 / AND-5 (contract §2 "Preview input", AC4, AC7).
+     *
+     * ### Resolution (contract §2 "Resolution")
+     *
+     * If [experienceId] is already present in the currently-loaded config
+     * ([ConvertSDK.dataManager]), the matching [ConfigExperience] is
+     * stored immediately — no network round-trip. Otherwise the target
+     * experience is fetched via [com.convert.sdk.core.api.ApiManager.fetchConfig]
+     * (the AND-4 `?exp=` fetch, 60s in-memory memo) on [ConvertSDK.scope];
+     * the preview becomes forceable once that fetch lands. The fetch is
+     * fire-and-forget by design — "the fetch rides the deep-link
+     * navigation" (contract §2) — so callers are expected to invoke
+     * [setPreview] before navigating to the screen that will call
+     * [runExperience] for [experienceId].
+     *
+     * ### Decision & precedence (contract §2 "Decision", §3 "Precedence")
+     *
+     * Once resolved, the next [runExperience] call whose KEY matches the
+     * resolved experience's [ConfigExperience.key] returns
+     * [PreviewDecision.resolve]'s forced [Variation] instead of the
+     * normal sticky / rule / bucketing pipeline — beating any pre-existing
+     * stored (sticky) decision for that experience on THIS context only.
+     * Every other experience on this context continues to decide
+     * normally (see [resolvePreviewOverride]).
+     *
+     * ### Isolation (AC7)
+     *
+     * [previewState] is a per-instance field only — this call never
+     * writes [ConvertSDK.dataManager] or [ConvertSDK.apiManager]'s shared
+     * state, so a concurrent non-preview [ConvertContext] on the same
+     * [ConvertSDK] buckets, persists, and tracks completely normally.
+     *
+     * ### Inert on bad input (contract §2 "Inert on bad input")
+     *
+     * An [experienceId] that resolves to nothing — not found in the
+     * loaded config AND not found after the `?exp=` fetch — is logged as
+     * a WARN once [resolvePreviewFetch] completes, and this context then
+     * behaves fully normally for every experience. An unknown
+     * [variationId] within an experience that DID resolve is instead
+     * caught at decision time inside [resolvePreviewOverride] (every
+     * [runExperience] call re-checks via [PreviewDecision.resolve]),
+     * because the resolved experience is not yet known here when
+     * [experienceId] requires the async fetch path.
+     *
+     * @param experienceId numeric-id string identifying the previewed
+     *   experience — NOT the merchant-defined key.
+     * @param variationId numeric-id string identifying the variation to
+     *   force.
+     * @return this context for fluent chaining (mirrors [setAttributes]).
+     */
+    @Suppress("ReturnCount")
+    public fun setPreview(experienceId: String, variationId: String): ConvertContext {
+        val sdk = this.sdk ?: return this
+        val existing = sdk.dataManager.data?.experiences?.firstOrNull { it.id == experienceId }
+        if (existing != null) {
+            previewState = PreviewState(experienceId, variationId, existing)
+            return this
+        }
+
+        // Not in the currently-loaded config — dispatch the AND-4 `?exp=`
+        // fetch. `experience = null` marks the preview as "not yet
+        // forceable"; resolvePreviewOverride treats that as "no preview"
+        // rather than blocking runExperience on the in-flight fetch.
+        previewState = PreviewState(experienceId, variationId, experience = null)
+        sdk.scope.launch { resolvePreviewFetch(sdk, experienceId) }
+        return this
+    }
+
+    /**
+     * Runs the AND-4 `?exp=` fetch for [experienceId] and, if this is
+     * still the active preview target when the fetch completes (a later
+     * [setPreview] call may have superseded it in the meantime), writes
+     * the resolved experience into [previewState]. Logs a WARN when the
+     * fetch succeeds but the experience is genuinely unknown (inert-on-
+     * bad-input, contract §2).
+     *
+     * Extracted from [setPreview] so the public method stays a simple,
+     * synchronous dispatch and [runExperience] never has to await a
+     * suspend call.
+     */
+    private suspend fun resolvePreviewFetch(sdk: ConvertSDK, experienceId: String) {
+        val fetched = sdk.apiManager?.fetchConfig(experienceId)
+        val resolvedExperience = fetched?.experiences?.firstOrNull { it.id == experienceId }
+        if (resolvedExperience == null) {
+            sdk.logger.warn(
+                message = "ConvertContext.setPreview: experience '$experienceId' not found " +
+                    "via ?exp= fetch; preview inert",
+                tag = TAG,
+            )
+        }
+        if (previewState?.experienceId == experienceId) {
+            previewState = previewState?.copy(experience = resolvedExperience)
+        }
     }
 
     /**
