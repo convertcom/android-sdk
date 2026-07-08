@@ -248,7 +248,7 @@ public class ConvertContext internal constructor(
         // absent from `sdk.dataManager.data` (delivered only via the AND-4
         // `?exp=` fetch, AC4) can still decide even though the ordinary
         // Step 2 lookup below would never find it.
-        resolvePreviewOverride(sdk, experienceKey)?.let { return it }
+        resolvePreviewOverride(experienceKey)?.let { return it }
 
         // Step 1 — config-ready gate.
         if (!sdk.dataManager.hasData()) {
@@ -355,10 +355,10 @@ public class ConvertContext internal constructor(
     }
 
     /**
-     * qs-02 / AND-5 — resolves the forced preview decision for
-     * [experienceKey] when this context has an active preview target
-     * whose resolved experience's KEY matches (contract §2 "Decision",
-     * §3 "Precedence").
+     * qs-02 / AND-5 (contract §2 "Decision", §3 "Precedence") — resolves
+     * the forced preview decision for [experienceKey] when this context
+     * has an active preview target whose resolved experience's KEY
+     * matches.
      *
      * Matches by [ConfigExperience.key] — not [PreviewState.experienceId]
      * — because callers invoke [runExperience] by key, and the previewed
@@ -371,33 +371,35 @@ public class ConvertContext internal constructor(
      *  - no preview is set on this context,
      *  - [PreviewState.experience] has not resolved yet (the AND-4 fetch
      *    is still in flight — treated as "no preview" rather than
-     *    blocking),
+     *    blocking), or
      *  - the resolved preview experience's key does not match
      *    [experienceKey] (a DIFFERENT experience is being run — it
      *    decides normally, per contract §2 "other experiences still
-     *    evaluate normally"), or
-     *  - [PreviewDecision.resolve] itself returns `null` (an unknown
-     *    [PreviewState.variationId] within the resolved experience) — a
-     *    WARN is logged in this last case only, since it is the only
-     *    branch where the caller actually asked to preview THIS
-     *    experience and supplied a bad variation id.
+     *    evaluate normally").
+     *
+     * ### Review R2 (Finding 1 sweep) — no bad-variation branch here anymore
+     *
+     * [setPreview] and [resolvePreviewFetch] now EAGERLY validate
+     * [PreviewState.variationId] against the resolved experience the
+     * moment it becomes known — the sync path validates immediately
+     * against a config-resident experience, the async path validates once
+     * the AND-4 fetch lands — and clear [previewState] to `null` on a
+     * miss (contract §2 "Inert on bad input", parity with the Python
+     * SDK's `set_preview` clearing `self._preview` on every bad-input
+     * case). A [previewState] that reaches this method with a non-null
+     * [PreviewState.experience] therefore ALWAYS carries a
+     * [PreviewState.variationId] that resolves within it —
+     * [PreviewDecision.resolve] can no longer return `null` here, so the
+     * previous per-call WARN + null-check at this site was dead code
+     * (and would have double-logged alongside the eager-validation WARN)
+     * and has been removed.
      */
     @Suppress("ReturnCount")
-    private fun resolvePreviewOverride(sdk: ConvertSDK, experienceKey: String): Variation? {
+    private fun resolvePreviewOverride(experienceKey: String): Variation? {
         val preview = previewState ?: return null
         val previewExperience = preview.experience ?: return null
         if (previewExperience.key != experienceKey) return null
-
-        val forced = PreviewDecision.resolve(previewExperience, preview.variationId)
-        if (forced == null) {
-            sdk.logger.warn(
-                message = "ConvertContext.runExperience: preview variation " +
-                    "'${preview.variationId}' not found in previewed experience " +
-                    "'$experienceKey'; preview inert",
-                tag = TAG,
-            )
-        }
-        return forced
+        return PreviewDecision.resolve(previewExperience, preview.variationId)
     }
 
     /**
@@ -1089,15 +1091,23 @@ public class ConvertContext internal constructor(
      *
      * ### Inert on bad input (contract §2 "Inert on bad input")
      *
-     * An [experienceId] that resolves to nothing — not found in the
-     * loaded config AND not found after the `?exp=` fetch — is logged as
-     * a WARN once [resolvePreviewFetch] completes, and this context then
-     * behaves fully normally for every experience. An unknown
-     * [variationId] within an experience that DID resolve is instead
-     * caught at decision time inside [resolvePreviewOverride] (every
-     * [runExperience] call re-checks via [PreviewDecision.resolve]),
-     * because the resolved experience is not yet known here when
-     * [experienceId] requires the async fetch path.
+     * Validation is EAGER, not deferred to decision time (Review R2,
+     * parity with the Python SDK's `set_preview` clearing `self._preview`
+     * on every bad-input case — `context.py:478-496`): a bad
+     * [experienceId] OR a bad [variationId] both clear [previewState] to
+     * `null` the moment the badness is known, so [isPreviewActive]
+     * returns `false` again and the context resumes FULLY normal
+     * tracking/persistence immediately — not just normal decisions.
+     *
+     *  - An [experienceId] resolvable in the loaded config but an unknown
+     *    [variationId]: validated synchronously, right here, against
+     *    [PreviewDecision.resolve] — a WARN is logged and [previewState]
+     *    is left `null` before this method returns.
+     *  - An [experienceId] absent from the loaded config: validated
+     *    inside [resolvePreviewFetch] once the AND-4 `?exp=` fetch lands,
+     *    covering both "the experience itself does not exist" and "the
+     *    experience resolved but [variationId] does not" — either miss
+     *    clears [previewState] and logs a WARN.
      *
      * @param experienceId numeric-id string identifying the previewed
      *   experience — NOT the merchant-defined key.
@@ -1110,7 +1120,24 @@ public class ConvertContext internal constructor(
         val sdk = this.sdk ?: return this
         val existing = sdk.dataManager.data?.experiences?.firstOrNull { it.id == experienceId }
         if (existing != null) {
-            previewState = PreviewState(experienceId, variationId, existing)
+            // Review R2 (Finding 1b) — eager sync validation, parity with
+            // the Python SDK's set_preview (context.py:492-496): validate
+            // variationId THE MOMENT the experience resolves rather than
+            // deferring to decision time, so a bad variation id clears
+            // previewState immediately instead of leaving zero-trace
+            // suppression permanently ON for this context (contract §2
+            // "Inert on bad input" — the context must behave FULLY
+            // normally, not just decide normally).
+            if (PreviewDecision.resolve(existing, variationId) == null) {
+                sdk.logger.warn(
+                    message = "ConvertContext.setPreview: preview variation '$variationId' not " +
+                        "found in previewed experience '$experienceId'; preview inert",
+                    tag = TAG,
+                )
+                previewState = null
+            } else {
+                previewState = PreviewState(experienceId, variationId, existing)
+            }
             return this
         }
 
@@ -1118,6 +1145,8 @@ public class ConvertContext internal constructor(
         // fetch. `experience = null` marks the preview as "not yet
         // forceable"; resolvePreviewOverride treats that as "no preview"
         // rather than blocking runExperience on the in-flight fetch.
+        // resolvePreviewFetch performs the same eager variation
+        // validation once the fetch lands (Review R2, Finding 1a/1b).
         previewState = PreviewState(experienceId, variationId, experience = null)
         sdk.scope.launch { resolvePreviewFetch(sdk, experienceId) }
         return this
@@ -1126,15 +1155,27 @@ public class ConvertContext internal constructor(
     /**
      * Runs the AND-4 `?exp=` fetch for [experienceId] and, if this is
      * still the active preview target when the fetch completes (a later
-     * [setPreview] call may have superseded it in the meantime), writes
-     * the resolved experience into [previewState]. Logs a WARN when the
-     * fetch succeeds but the experience is genuinely unknown (inert-on-
-     * bad-input, contract §2).
+     * [setPreview] call may have superseded it in the meantime), either
+     * writes the resolved experience into [previewState] or — on ANY bad
+     * input — clears [previewState] to `null` (Review R2, contract §2
+     * "Inert on bad input", parity with the Python SDK's `set_preview`
+     * clearing `self._preview` on every bad-input case).
+     *
+     * Two independent bad-input cases, both logged as a WARN and both
+     * clearing [previewState]:
+     *  - [experienceId] resolves to nothing even after the fetch (the
+     *    experience itself is genuinely unknown).
+     *  - [experienceId] resolves, but [PreviewState.variationId] does not
+     *    match any variation within it (mirrors the synchronous
+     *    validation [setPreview] performs on its config-resident path —
+     *    this is the async-path equivalent, since the resolved experience
+     *    is not yet known at [setPreview] call time here).
      *
      * Extracted from [setPreview] so the public method stays a simple,
      * synchronous dispatch and [runExperience] never has to await a
      * suspend call.
      */
+    @Suppress("ReturnCount")
     private suspend fun resolvePreviewFetch(sdk: ConvertSDK, experienceId: String) {
         val fetched = sdk.apiManager?.fetchConfig(experienceId)
         val resolvedExperience = fetched?.experiences?.firstOrNull { it.id == experienceId }
@@ -1144,10 +1185,25 @@ public class ConvertContext internal constructor(
                     "via ?exp= fetch; preview inert",
                 tag = TAG,
             )
+            if (previewState?.experienceId == experienceId) {
+                previewState = null
+            }
+            return
         }
-        if (previewState?.experienceId == experienceId) {
-            previewState = previewState?.copy(experience = resolvedExperience)
+
+        val activeVariationId = previewState?.takeIf { it.experienceId == experienceId }?.variationId
+            ?: return
+        if (PreviewDecision.resolve(resolvedExperience, activeVariationId) == null) {
+            sdk.logger.warn(
+                message = "ConvertContext.setPreview: preview variation '$activeVariationId' not " +
+                    "found in previewed experience '$experienceId'; preview inert",
+                tag = TAG,
+            )
+            previewState = null
+            return
         }
+
+        previewState = previewState?.copy(experience = resolvedExperience)
     }
 
     /**

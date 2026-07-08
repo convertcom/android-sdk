@@ -163,6 +163,42 @@ internal class ApiManagerPreviewConfigFetchTest {
         )
     }
 
+    // ------------------------------------------------------------------
+    // Review R2 Finding 3 — memo TTL anchored to fetch-COMPLETION time
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `memo TTL is anchored to fetch-completion time, not pre-fetch dispatch time`() = runTest {
+        // The memo write previously reused the pre-fetch `now`, so under
+        // the Story 5.2 retry backoff (10s / 20s / 40s) a slow fetch could
+        // make the memo appear to have aged more than 60s even though the
+        // value only became available moments ago. This simulates a 40s
+        // fetch latency and proves the TTL window is measured from
+        // COMPLETION, not dispatch.
+        val fakeClock = FakeClock(startMillis = 0L)
+        val http = SlowFakeHttpClient(
+            statusCode = 200,
+            body = "{}",
+            clock = fakeClock,
+            delayMillis = FETCH_LATENCY_MILLIS,
+        )
+        val logger = CapturingLogger()
+        val config = convertConfig(sdkKey = "sk-abc")
+        val api = ApiManager(httpClient = http, logger = logger, config = config, json = json, clock = fakeClock)
+
+        api.fetchConfig(experienceId = "555") // dispatched at t=0, completes at t=40_000
+        fakeClock.advanceBy(POST_COMPLETION_ADVANCE_MILLIS) // 59s since COMPLETION
+        api.fetchConfig(experienceId = "555") // must be a memo hit if TTL anchors to completion
+
+        assertEquals(
+            1,
+            http.calls.size,
+            "TTL must be measured from fetch-completion (t=40_000), not dispatch (t=0) — 99s " +
+                "since dispatch would wrongly expire a completion-anchored memo if the write " +
+                "used the pre-fetch timestamp",
+        )
+    }
+
     // --- Test helpers -------------------------------------------------------
 
     private fun convertConfig(
@@ -176,6 +212,12 @@ internal class ApiManagerPreviewConfigFetchTest {
             Arguments.of(null),
             Arguments.of("dbg-canary-2"),
         )
+
+        /** Simulated fetch latency for the Finding 3 TTL-anchor test. */
+        private const val FETCH_LATENCY_MILLIS: Long = 40_000L
+
+        /** Elapsed time since fetch-COMPLETION, still inside the 60s TTL. */
+        private const val POST_COMPLETION_ADVANCE_MILLIS: Long = 59_000L
     }
 
     /**
@@ -218,6 +260,37 @@ internal class ApiManagerPreviewConfigFetchTest {
             headers: Map<String, String>,
         ): HttpClient.HttpResponse {
             calls += RecordedCall("POST", url, headers)
+            return HttpClient.HttpResponse(statusCode = statusCode, body = this.body, headers = emptyMap())
+        }
+    }
+
+    /**
+     * [HttpClient] that advances [clock] by [delayMillis] before returning
+     * a canned response — simulates the latency between fetch dispatch and
+     * fetch completion (e.g. the Story 5.2 retry backoff) for TTL-anchor
+     * testing (qs-02 AND-4, Review R2 Finding 3).
+     */
+    private class SlowFakeHttpClient(
+        private val statusCode: Int,
+        private val body: String,
+        private val clock: FakeClock,
+        private val delayMillis: Long,
+    ) : HttpClient {
+        val calls: MutableList<String> = mutableListOf()
+
+        override suspend fun get(url: String, headers: Map<String, String>): HttpClient.HttpResponse {
+            calls += url
+            clock.advanceBy(delayMillis)
+            return HttpClient.HttpResponse(statusCode = statusCode, body = body, headers = emptyMap())
+        }
+
+        override suspend fun post(
+            url: String,
+            body: String,
+            headers: Map<String, String>,
+        ): HttpClient.HttpResponse {
+            calls += url
+            clock.advanceBy(delayMillis)
             return HttpClient.HttpResponse(statusCode = statusCode, body = this.body, headers = emptyMap())
         }
     }

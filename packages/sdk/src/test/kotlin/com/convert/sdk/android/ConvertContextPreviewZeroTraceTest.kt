@@ -7,11 +7,14 @@ package com.convert.sdk.android
 
 import android.content.Context
 import android.os.Looper
+import android.util.Log
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.Configuration
 import androidx.work.WorkManager
 import androidx.work.testing.WorkManagerTestInitHelper
 import com.convert.sdk.android.worker.EventFlushWorker
+import com.convert.sdk.core.api.ApiManager
+import com.convert.sdk.core.config.ConvertConfig
 import com.convert.sdk.core.event.SystemEvents
 import com.convert.sdk.core.model.GoalData
 import com.convert.sdk.core.model.GoalDataKey
@@ -22,7 +25,10 @@ import com.convert.sdk.core.model.generated.ConfigProject
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
 import com.convert.sdk.core.model.generated.RuleObject
+import com.convert.sdk.core.port.HttpClient
+import com.convert.sdk.core.port.Logger
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -30,12 +36,14 @@ import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.shadows.ShadowLog
 import java.math.BigDecimal
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -97,6 +105,7 @@ internal class ConvertContextPreviewZeroTraceTest {
         server = MockWebServer()
         server.dispatcher = TrackOnlyDispatcher()
         server.start()
+        ShadowLog.clear()
     }
 
     @After
@@ -324,6 +333,135 @@ internal class ConvertContextPreviewZeroTraceTest {
         assertTrue(
             "the preview context must still carry zero sticky-bucketing writes",
             previewStore.bucketing.isNullOrEmpty(),
+        )
+    }
+
+    // ---------------------------------------------------------------
+    // Review R2 (Finding 1 sweep) — inert-on-bad-input must RESUME
+    // tracking/persistence, not just decide normally
+    // ---------------------------------------------------------------
+    //
+    // ConvertContextSetPreviewTest's existing inert tests only assert the
+    // DECISION (runExperience returns the normally-bucketed variation).
+    // That is necessary but not sufficient: contract §2 "Inert on bad
+    // input" requires the context to behave FULLY normally, which
+    // includes tracking enqueue and sticky-bucketing persistence — both
+    // of which stay gated by ConvertContext.isPreviewActive() regardless
+    // of what runExperience returns. These two table-driven tests (a
+    // shared assertion helper, one @Test per bad-input case) close that
+    // coverage gap for both bad-input paths: an unknown experience id
+    // (resolved async via the AND-4 ?exp= fetch) and an unknown variation
+    // id (resolved synchronously against a config-resident experience).
+
+    @Test
+    fun `unknown experience id after the exp fetch resumes tracking and persistence`() {
+        val sdk = buildSdk("sk-bad-exp-zt")
+        sdk.attachTestApiManager(fakeApiManagerReturningEmptyExpFetch())
+        val ctx = sdk.createContext("visitor_bad_exp_zt")
+
+        ctx.setPreview(experienceId = "exp-does-not-exist", variationId = "var-z")
+        awaitCondition {
+            ShadowLog.getLogs().any { it.type == Log.WARN && it.msg.contains("exp-does-not-exist") }
+        }
+
+        assertBadPreviewInputResumesTrackingAndPersistence(
+            sdk = sdk,
+            ctx = ctx,
+            visitorId = "visitor_bad_exp_zt",
+            experienceKey = "welcome",
+            goalKey = "zt-goal",
+        )
+    }
+
+    @Test
+    fun `unknown variation id resumes tracking and persistence`() {
+        val sdk = buildSdk("sk-bad-var-zt")
+        val ctx = sdk.createContext("visitor_bad_var_zt")
+
+        ctx.setPreview(experienceId = "exp-1", variationId = "var-does-not-exist")
+
+        assertBadPreviewInputResumesTrackingAndPersistence(
+            sdk = sdk,
+            ctx = ctx,
+            visitorId = "visitor_bad_var_zt",
+            experienceKey = "welcome",
+            goalKey = "zt-goal",
+        )
+    }
+
+    /**
+     * Shared assertion for both bad-input scenarios above: a normal
+     * bucketing call followed by a conversion must enqueue a tracking
+     * event AND persist the sticky decision — proving
+     * [ConvertContext.isPreviewActive] went back to `false` rather than
+     * staying stuck on `true` forever (the Finding 1 defect).
+     */
+    private fun assertBadPreviewInputResumesTrackingAndPersistence(
+        sdk: ConvertSDK,
+        ctx: ConvertContext,
+        visitorId: String,
+        experienceKey: String,
+        goalKey: String,
+    ) {
+        val decision = ctx.runExperience(experienceKey)
+        assertNotNull("bad preview input must not block normal bucketing", decision)
+
+        val conversionLatch = CountDownLatch(1)
+        sdk.on(SystemEvents.CONVERSION) { conversionLatch.countDown() }
+        ctx.trackConversion(goalKey = goalKey)
+        assertTrue(
+            "CONVERSION must fire for a normally-dispatched conversion",
+            conversionLatch.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS),
+        )
+
+        assertTrue(
+            "bad preview input must NOT permanently suppress the tracking enqueue — the " +
+                "queue must be non-empty once the context resumes normal behaviour",
+            sdk.apiManager!!.snapshotQueue().isNotEmpty(),
+        )
+        val store = sdk.dataManager.getStoreData(visitorId)
+        assertTrue(
+            "bad preview input must NOT permanently suppress sticky-bucketing persistence",
+            store.bucketing?.containsKey(experienceKey) == true,
+        )
+    }
+
+    /**
+     * Real [ApiManager] whose `?exp=` (and any other GET) fetch always
+     * resolves to an empty config (`{}` decodes to every field `null`) —
+     * used to exercise the "experience genuinely unknown after the fetch"
+     * bad-input path deterministically.
+     */
+    private fun fakeApiManagerReturningEmptyExpFetch(): ApiManager {
+        val http = object : HttpClient {
+            override suspend fun get(
+                url: String,
+                headers: Map<String, String>,
+            ): HttpClient.HttpResponse = HttpClient.HttpResponse(
+                statusCode = 200,
+                body = "{}",
+                headers = emptyMap(),
+            )
+
+            override suspend fun post(
+                url: String,
+                body: String,
+                headers: Map<String, String>,
+            ): HttpClient.HttpResponse = HttpClient.HttpResponse(
+                statusCode = 200,
+                body = "",
+                headers = emptyMap(),
+            )
+        }
+        val json = Json {
+            ignoreUnknownKeys = true
+            explicitNulls = false
+        }
+        return ApiManager(
+            httpClient = http,
+            logger = Logger.NoOp,
+            config = ConvertConfig(sdkKey = "sk-bad-exp-fetch"),
+            json = json,
         )
     }
 

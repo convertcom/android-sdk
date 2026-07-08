@@ -1032,9 +1032,16 @@ public open class ApiManager(
         val url = buildConfigUrl(experienceId) ?: return@withContext null
         val fetched = performConfigFetch(url) ?: return@withContext null
 
+        // Review R2 Finding 3 — re-read the clock at write time so the 60s
+        // TTL starts at fetch COMPLETION, not the pre-fetch dispatch time
+        // captured in `now` above. Matters under the Story 5.2 retry
+        // backoff (10s/20s/40s): a slow fetch must not make its own memo
+        // entry appear to have aged past the TTL sooner than a fetch that
+        // returned instantly.
+        val writeTime = clock()
         synchronized(previewConfigMemoLock) {
-            sweepExpiredPreviewMemoEntries(now)
-            previewConfigMemo[experienceId] = PreviewConfigMemoEntry(fetched, now)
+            sweepExpiredPreviewMemoEntries(writeTime)
+            previewConfigMemo[experienceId] = PreviewConfigMemoEntry(fetched, writeTime)
         }
         fetched
     }
@@ -1292,8 +1299,14 @@ public open class ApiManager(
         /** Marker substituted for a redacted `debug_token` value — qs-02 AC3. */
         private const val REDACTED_MARKER: String = "[REDACTED]"
 
-        /** Matches a `debug_token=<value>` query param up to `&` or end of string. */
-        private val DEBUG_TOKEN_QUERY_PARAM_REGEX: Regex = Regex("debug_token=[^&]*")
+        /**
+         * Matches a `debug_token=<value>` query param up to `&` or end of
+         * string. Anchored (Review R2 Finding 2) to a `?`/`&` immediately
+         * preceding `debug_token=` via a lookbehind, so a lookalike param
+         * name that merely ENDS in `debug_token` (e.g. `not_debug_token=`)
+         * is left fully intact rather than partially redacted.
+         */
+        private val DEBUG_TOKEN_QUERY_PARAM_REGEX: Regex = Regex("(?<=[?&])debug_token=[^&]*")
 
         /**
          * qs-02 AND-4 / AC8 — TTL for [previewConfigMemo] entries: 60

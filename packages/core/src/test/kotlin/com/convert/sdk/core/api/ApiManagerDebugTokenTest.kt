@@ -143,6 +143,41 @@ internal class ApiManagerDebugTokenTest {
         )
     }
 
+    @Test
+    fun `fetchConfig error log redacts only the real debug_token param, leaving a lookalike param name intact`() =
+        runTest {
+            // Review R2 Finding 2 — the unanchored regex `debug_token=[^&]*`
+            // also matches the tail of a DIFFERENT param name that merely
+            // ENDS in `debug_token` (e.g. `not_debug_token=`), corrupting
+            // that param's own value even though it carries no secret. The
+            // fix anchors the match to a `?`/`&` immediately preceding
+            // `debug_token=`.
+            val http = ThrowingHttpClient(java.io.IOException("boom"))
+            val logger = CapturingLogger()
+            val config = convertConfig(
+                sdkKey = "sk-abc",
+                debugToken = "SECRET",
+                environment = "not_debug_token=xyz",
+            )
+            val api = ApiManager(http, logger, config, json)
+
+            api.fetchConfig()
+
+            val warnMessages = logger.warnMessages()
+            assertTrue(
+                warnMessages.any { it.contains("not_debug_token=xyz") },
+                "lookalike param 'not_debug_token=xyz' must be left fully intact, got: $warnMessages",
+            )
+            assertTrue(
+                warnMessages.any { it.contains("debug_token=[REDACTED]") },
+                "the real debug_token value must still be redacted, got: $warnMessages",
+            )
+            assertFalse(
+                warnMessages.any { it.contains("SECRET") },
+                "raw debug token must never appear in a WARN log: $warnMessages",
+            )
+        }
+
     // --- Test helpers -------------------------------------------------------
 
     private fun convertConfig(
@@ -150,11 +185,13 @@ internal class ApiManagerDebugTokenTest {
         debugToken: String? = null,
         cacheLevel: String? = null,
         data: ConfigResponseData? = null,
+        environment: String = "staging",
     ): ConvertConfig = ConvertConfig(
         sdkKey = sdkKey,
         debugToken = debugToken,
         network = NetworkConfig(cacheLevel = cacheLevel),
         data = data,
+        environment = environment,
     )
 
     private companion object {
