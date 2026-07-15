@@ -358,7 +358,7 @@ internal class ConvertContextMutualExclusionTest {
         // Evaluate the exclusion rule WITHOUT ever running exp-a first.
         ctx.runExperience(EXP_B_KEY)
 
-        Thread.sleep(EVENT_SETTLE_MS)
+        awaitCondition { recordingApi.enqueueBucketingCalls.any { it.experienceId == EXP_B_ID } }
 
         assertTrue(
             "evaluating the exclusion rule must never bucket the target experience (exp-a)",
@@ -443,7 +443,6 @@ internal class ConvertContextMutualExclusionTest {
 
     private companion object {
         private const val PREFS_NAME = "com.convert.sdk.visitor"
-        private const val EVENT_SETTLE_MS = 300L
         private const val HUNDRED_PERCENT = 100.0
 
         private const val EXP_A_ID = "100111"
