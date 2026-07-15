@@ -354,7 +354,7 @@ internal class ConvertContextMutualExclusionTest {
         val recordingApi = ConvertContextRunExperienceTest.RecordingApiManager()
         sdk.attachTestApiManager(recordingApi)
         var bucketingFired = false
-        sdk.on(SystemEvents.BUCKETING) { bucketingFired = true }
+        sdk.on(SystemEvents.BUCKETING) { data -> if (data["experienceKey"] == EXP_A_KEY) bucketingFired = true }
 
         val visitorId = "visitor_read_only"
         val ctx = sdk.createContext(visitorId)
@@ -377,9 +377,11 @@ internal class ConvertContextMutualExclusionTest {
             !bucketingFired,
         )
         assertTrue(
-            "evaluating the exclusion rule must perform zero SharedPreferences writes " +
-                "(the getStoreData lazy READ is allowed; only writes are forbidden)",
-            putCalls.isEmpty(),
+            "evaluating the exclusion rule must never persist a bucketing entry for the " +
+                "target (exp-a) in any SharedPreferences write (the getStoreData lazy READ is " +
+                "allowed; exp-b's OWN normal bucketing write, since this visitor is correctly " +
+                "NOT excluded, is expected and out of scope for this assertion)",
+            putCalls.none { it.second.contains(EXP_A_KEY) },
         )
     }
 

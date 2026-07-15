@@ -16,6 +16,7 @@ import com.convert.sdk.core.model.generated.ConfigLocation
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
 import com.convert.sdk.core.preview.PreviewDecision
+import com.convert.sdk.core.rules.BucketedExperienceResolver
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -1427,6 +1428,21 @@ private fun passesAudienceGate(
         ?.mapNotNull { audience -> audience.id?.let { id -> id to audience } }
         ?.toMap()
         .orEmpty()
+    // AND-2 (qs-03) — resolves `bucketed_into_experience_key` leaves for the
+    // AUDIENCE tree only (never threaded into passesLocationGate's location
+    // rule-walk, which stays resolver-free and falls closed by construction).
+    // Keyed by experience KEY per Android's StoreData.bucketing shape — the
+    // qs-03 spec's id.toString() is the JS SDK's storage shape, not
+    // Android's; see decision-log. Read-only: only reads the already-loaded
+    // stored bucketing map, never buckets the target or writes StoreData.
+    val bucketedResolver = BucketedExperienceResolver { targetKey ->
+        val target = data.experiences?.firstOrNull { it.key == targetKey }
+        if (target == null) {
+            null
+        } else {
+            sdk.dataManager.getStoreData(context.visitorId).bucketing?.containsKey(targetKey) == true
+        }
+    }
     val anyMatch = audienceIds.any { audienceId ->
         val audience = audiencesById[audienceId]
         if (audience == null) {
@@ -1437,7 +1453,7 @@ private fun passesAudienceGate(
             )
             false
         } else {
-            sdk.ruleManager.evaluate(audience.rules, context.currentAttributes())
+            sdk.ruleManager.evaluate(audience.rules, context.currentAttributes(), bucketedResolver)
         }
     }
     if (!anyMatch) {
