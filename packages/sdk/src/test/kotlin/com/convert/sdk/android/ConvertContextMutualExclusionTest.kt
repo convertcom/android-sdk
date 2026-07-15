@@ -60,11 +60,11 @@ import java.math.BigDecimal
  *    the test method as a whole still fails via the sibling assertion
  *    above.
  *
- * AC5 (read-only) is the one exception: because the audience gate
- * already fails closed for everyone today, its "zero writes / zero
- * tracking / no target bucketing" assertions hold trivially both before
- * and after AND-2's GREEN wiring — it is a regression lock, not a RED
- * signal.
+ * AC5 (read-only) is target-scoped (exp-a): evaluating the exclusion
+ * rule must not bucket, write, or track the TARGET (exp-a) itself. The
+ * outer experience (exp-b) bucketing normally for an un-excluded
+ * visitor is expected (AC2) and out of scope for these assertions —
+ * they do not claim anything about exp-b.
  *
  * ### Android storage-shape reality divergence (id vs. KEY)
  *
