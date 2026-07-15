@@ -31,6 +31,15 @@ import kotlinx.serialization.Transient
  *   Convert CDN.
  * @property sdkKeySecret confidential SDK secret; never logged, never
  *   persisted in plaintext (NFR6 — enforced in Story 2.2).
+ * @property debugToken optional QA debug token (qs-02 AND-1 contract §1).
+ *   When set, every config-fetch URL carries `debug_token=<value>` and a
+ *   forced `_conv_low_cache=1` (regardless of [NetworkConfig.cacheLevel]),
+ *   the on-disk config cache is neither read nor written, and the value
+ *   must never appear in logs in clear. Top-level field (not nested in
+ *   [NetworkConfig]) so this class's manual [toString] override — the
+ *   same mechanism that already redacts [sdkKeySecret] — can redact it
+ *   too; [NetworkConfig] is a plain data class whose compiler-generated
+ *   `toString` would leak it.
  * @property data pre-fetched configuration blob; when non-null the SDK
  *   skips the initial HTTP fetch.
  * @property environment deployment environment hint
@@ -58,6 +67,7 @@ import kotlinx.serialization.Transient
 public data class ConvertConfig(
     val sdkKey: String? = null,
     val sdkKeySecret: String? = null,
+    val debugToken: String? = null,
     val data: ConfigResponseData? = null,
     val environment: String = "staging",
     val api: ApiConfig? = null,
@@ -87,6 +97,14 @@ public data class ConvertConfig(
             append(", sdkKeySecret=[REDACTED]")
         } else {
             append(", sdkKeySecret=null")
+        }
+        // qs-02 AC3: debugToken must never appear in clear in any
+        // rendered representation of this config — same redaction
+        // mechanism as sdkKeySecret above.
+        if (debugToken != null) {
+            append(", debugToken=[REDACTED]")
+        } else {
+            append(", debugToken=null")
         }
         append(", data=").append(data)
         append(", environment=").append(environment)

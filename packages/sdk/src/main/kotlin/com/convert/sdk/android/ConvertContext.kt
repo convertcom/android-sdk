@@ -15,6 +15,7 @@ import com.convert.sdk.core.model.generated.ConfigExperience
 import com.convert.sdk.core.model.generated.ConfigLocation
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
+import com.convert.sdk.core.preview.PreviewDecision
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -99,6 +100,96 @@ public class ConvertContext internal constructor(
     @Volatile private var customSegments: Map<String, Any?>? = null
 
     /**
+     * qs-02 / AND-5 (contract §2 "Preview input", §3 "Precedence", AC7) —
+     * the active preview target for this context, or `null` when no
+     * preview is set. `@Volatile` for the same single-reference-swap
+     * visibility reasoning as [attributes] et al. (Gotcha 6): [setPreview]
+     * and [resolvePreviewFetch] each perform a single reference write, so
+     * concurrent [runExperience] calls on this SAME context observe a
+     * consistent snapshot without a `Mutex`.
+     *
+     * Deliberately a per-instance field — NEVER written to [ConvertSDK]'s
+     * shared [ConvertSDK.dataManager] / [ConvertSDK.apiManager] state.
+     * That is what guarantees a concurrent non-preview [ConvertContext] on
+     * the same [ConvertSDK] buckets, persists, and tracks completely
+     * normally (AC7 isolation).
+     */
+    @Volatile private var previewState: PreviewState? = null
+
+    /**
+     * qs-02 / AND-6 (contract §2 "Zero-trace") / Review R3 (F1, JS parity)
+     * — `true` when a preview target is GENUINELY forceable on this
+     * context: [previewState] is set AND its [PreviewState.experience]
+     * has resolved. [allocateAndRecord] / [resolveSticky], [trackConversion]
+     * / [dispatchConversion], and the file-scope [persistSegmentsToStore]
+     * gate their network-enqueue, internal-event-fire, and persistence
+     * side effects on this flag: "while preview is set on the context,
+     * ALL tracking is disabled ... and ALL visitor-state persistence
+     * writes are disabled" — for every experience/goal/segment write on
+     * this context, not just the previewed experience (other experiences
+     * still evaluate and decide normally for coherent rendering, per
+     * contract §2). `internal` (not `private`) so the file-scope helper
+     * functions below the class body can read it — Kotlin's `private`
+     * on a class member is invisible outside the class body, even in
+     * the same file.
+     *
+     * ### Review R3 F1 — checking `experience != null`, not just non-null state
+     *
+     * [setPreview]'s async branch writes [previewState] with
+     * `experience = null` the INSTANT it dispatches the AND-4 `?exp=`
+     * fetch, before the fetch resolves. Gating on `previewState != null`
+     * (the pre-R3 predicate) engaged zero-trace suppression for the
+     * entire in-flight window — often ~70s under the Story 5.2 retry
+     * backoff — even for what turns out to be a typo'd experience id
+     * that will resolve to "inert." That diverges from the JS/Python
+     * oracles, whose `_preview` / `self._preview` field stays `None`
+     * until the async lookup actually lands (see `context.ts:154-204`:
+     * `this._preview` is assigned only after `await getConfigByExperience`
+     * resolves and the variation validates). Checking `experience != null`
+     * here instead means suppression engages ONLY once a preview is
+     * genuinely forceable — during the in-flight window (and after a
+     * bad-input resolution that clears [previewState] to `null`), this
+     * context behaves completely normally: bucketing/conversion enqueue,
+     * the internal [SystemEvents] fire, and visitor-state persistence
+     * all proceed exactly as they would with no preview set at all.
+     *
+     * ### Review R3 F2 — the in-process SystemEvents bus IS now gated
+     *
+     * Earlier revisions of this method left the in-process
+     * [SystemEvents] bus (`SystemEvents.BUCKETING` / `SystemEvents.CONVERSION`)
+     * deliberately ungated, reasoning that AC6's "zero trace" enumerates
+     * only the durable/network surfaces (track-endpoint requests,
+     * durable-queue entries, WorkManager enqueues, sticky-bucketing
+     * writes) and says nothing about in-process observer callbacks. That
+     * left Android as the only Convert SDK still firing internal
+     * bucketing/conversion events during an active preview — the JS SDK
+     * (`context.ts:260/320/391/472` — `if (!this._preview) { fire }`)
+     * and the Python SDK (`context.py:587` — `if enable_tracking and
+     * self._tracker is not None and self._preview is None`) both
+     * suppress it. This method's result is now consulted at every
+     * `SystemEvents.BUCKETING` / `SystemEvents.CONVERSION` fire site
+     * too, closing that parity gap.
+     */
+    internal fun isPreviewActive(): Boolean = previewState?.experience != null
+
+    /**
+     * qs-02 / AND-5 — one context's preview target: the previewed
+     * [experienceId] / [variationId] pair exactly as supplied to
+     * [setPreview] (numeric-id strings, contract §2), plus the resolved
+     * [ConfigExperience] once available.
+     *
+     * [experience] starts `null` when [experienceId] required the AND-4
+     * `?exp=` fetch (contract §2 "Resolution") and that fetch is still in
+     * flight; [resolvePreviewOverride] treats a `null` [experience] the
+     * same as "no active preview" — inert until the fetch lands.
+     */
+    private data class PreviewState(
+        val experienceId: String,
+        val variationId: String,
+        val experience: ConfigExperience?,
+    )
+
+    /**
      * Evaluates a single experience for this visitor and returns the
      * bucketed [Variation] — Story 3.2 AC-6 / AC-7 / AC-9 / AC-10.
      *
@@ -179,6 +270,15 @@ public class ConvertContext internal constructor(
 
         val sdk = this.sdk ?: return null
 
+        // qs-02 AND-5 — preview forcing (contract §3 "Precedence") beats
+        // EVERYTHING below for the previewed experience on this context
+        // only: the config-ready gate, sticky, the rule gates, and normal
+        // bucketing. Checked first so a previewed draft experience that is
+        // absent from `sdk.dataManager.data` (delivered only via the AND-4
+        // `?exp=` fetch, AC4) can still decide even though the ordinary
+        // Step 2 lookup below would never find it.
+        resolvePreviewOverride(experienceKey)?.let { return it }
+
         // Step 1 — config-ready gate.
         if (!sdk.dataManager.hasData()) {
             sdk.logger.debug(
@@ -245,6 +345,17 @@ public class ConvertContext internal constructor(
      * outbound view-experience event was already enqueued on the
      * original bucketing call (Story 3.2 AC-7).
      *
+     * ### Review R3 (F2 sweep) — also gated by [isPreviewActive]
+     *
+     * A DIFFERENT (non-previewed) experience on a preview context can
+     * still reach this method via its own prior sticky decision — the
+     * JS SDK's single `if (!this._preview) { fire }` gate in
+     * `context.ts` covers this path too (JS has no separate
+     * sticky/fresh-bucket branch; the same gate applies uniformly to
+     * whatever `selectVariation` returns). Gating the fire here keeps
+     * that parity: sticky recall never leaks a `SystemEvents.BUCKETING`
+     * observer callback while any preview is active on this context.
+     *
      * Extracted from [runExperience] so the main method stays under
      * detekt's `LongMethod` ceiling.
      */
@@ -267,7 +378,7 @@ public class ConvertContext internal constructor(
             // Caller will re-bucket on the next step.
             return null
         }
-        if (enableTracking) {
+        if (enableTracking && !isPreviewActive()) {
             sdk.eventManager.fire(
                 event = SystemEvents.BUCKETING,
                 data = mapOf(
@@ -281,6 +392,54 @@ public class ConvertContext internal constructor(
         // value is unknown — pass null to match the JS SDK's sticky branch
         // (`bucketingAllocation` is only populated on the fresh-bucket path).
         return toPublicVariation(experience, variation, bucketingAllocationValue = null)
+    }
+
+    /**
+     * qs-02 / AND-5 (contract §2 "Decision", §3 "Precedence") — resolves
+     * the forced preview decision for [experienceKey] when this context
+     * has an active preview target whose resolved experience's KEY
+     * matches.
+     *
+     * Matches by [ConfigExperience.key] — not [PreviewState.experienceId]
+     * — because callers invoke [runExperience] by key, and the previewed
+     * experience may be a draft delivered only via [PreviewState.experience]
+     * (the AND-4 `?exp=` fetch result) and therefore absent from
+     * `sdk.dataManager.data` under its id.
+     *
+     * Returns `null` (inert-on-bad-input, contract §2 — the caller falls
+     * through to the normal [runExperience] steps 1-8 unmodified) when:
+     *  - no preview is set on this context,
+     *  - [PreviewState.experience] has not resolved yet (the AND-4 fetch
+     *    is still in flight — treated as "no preview" rather than
+     *    blocking), or
+     *  - the resolved preview experience's key does not match
+     *    [experienceKey] (a DIFFERENT experience is being run — it
+     *    decides normally, per contract §2 "other experiences still
+     *    evaluate normally").
+     *
+     * ### Review R2 (Finding 1 sweep) — no bad-variation branch here anymore
+     *
+     * [setPreview] and [resolvePreviewFetch] now EAGERLY validate
+     * [PreviewState.variationId] against the resolved experience the
+     * moment it becomes known — the sync path validates immediately
+     * against a config-resident experience, the async path validates once
+     * the AND-4 fetch lands — and clear [previewState] to `null` on a
+     * miss (contract §2 "Inert on bad input", parity with the Python
+     * SDK's `set_preview` clearing `self._preview` on every bad-input
+     * case). A [previewState] that reaches this method with a non-null
+     * [PreviewState.experience] therefore ALWAYS carries a
+     * [PreviewState.variationId] that resolves within it —
+     * [PreviewDecision.resolve] can no longer return `null` here, so the
+     * previous per-call WARN + null-check at this site was dead code
+     * (and would have double-logged alongside the eager-validation WARN)
+     * and has been removed.
+     */
+    @Suppress("ReturnCount")
+    private fun resolvePreviewOverride(experienceKey: String): Variation? {
+        val preview = previewState ?: return null
+        val previewExperience = preview.experience ?: return null
+        if (previewExperience.key != experienceKey) return null
+        return PreviewDecision.resolve(previewExperience, preview.variationId)
     }
 
     /**
@@ -326,19 +485,34 @@ public class ConvertContext internal constructor(
             ?: return null
 
         // Persist sticky (atomic under DataManager's visitor lock).
-        sdk.dataManager.updateBucketing(
-            visitorId = visitorId,
-            experienceKey = experienceKey,
-            variationId = allocation.variationId,
-        )
+        // qs-02 AND-6 (contract §2 "Zero-trace") — suppressed for the
+        // ENTIRE context while ANY preview is active, not just for the
+        // previewed experience: "ALL visitor-state persistence writes
+        // are disabled" while preview is set. Other experiences still
+        // decide normally (below) so the UI renders coherently; only
+        // this write is skipped.
+        if (!isPreviewActive()) {
+            sdk.dataManager.updateBucketing(
+                visitorId = visitorId,
+                experienceKey = experienceKey,
+                variationId = allocation.variationId,
+            )
+        }
 
         // Outbound tracking AND internal event bus — both gated by the
         // per-call flag (F-134 remediation: AC-10 suppresses the internal
         // BUCKETING fire when enableTracking is false so observers do not
         // receive misleading bucketing signals during silent runs).
         // Story 5.4 also gates the network enqueue by the SDK-level
-        // tracking toggle on ApiManager.
-        if (enableTracking) {
+        // tracking toggle on ApiManager. qs-02 AND-6 / Review R3 (F2, JS
+        // parity) additionally suppresses BOTH the network enqueue AND
+        // the in-process SystemEvents.BUCKETING fire while a preview is
+        // active on this context (contract §2 "Zero-trace") — matching
+        // the JS SDK's single `if (!this._preview) { fire }` gate in
+        // `context.ts` and the Python SDK's `self._preview is None`
+        // check in `context.py`. See [isPreviewActive] for the full
+        // rationale.
+        if (enableTracking && !isPreviewActive()) {
             sdk.apiManager?.enqueueBucketingEvent(
                 visitorId = visitorId,
                 experienceId = experience.id.orEmpty(),
@@ -668,7 +842,18 @@ public class ConvertContext internal constructor(
         // (firstMark=false) take deterministically different paths.
         val forceMultipleTransactions =
             (conversionSetting?.get(FORCE_MULTIPLE_TRANSACTIONS_KEY) as? Boolean) == true
-        val firstMark = sdk.dataManager.markGoalTracked(visitorId = visitorId, goalId = goalId)
+        // qs-02 AND-6 (contract §2 "Zero-trace") — while a preview is
+        // active on this context, skip the persisted goal-tracked
+        // check-and-set entirely (no visitor-state write) and treat the
+        // call as "first" so it still proceeds to dispatchConversion for
+        // coherent rendering/observer feedback — but see
+        // [dispatchConversion], which additionally suppresses the
+        // network enqueue in that branch.
+        val firstMark = if (isPreviewActive()) {
+            true
+        } else {
+            sdk.dataManager.markGoalTracked(visitorId = visitorId, goalId = goalId)
+        }
 
         if (!firstMark && !forceMultipleTransactions) {
             // Pure dedup path. JS SDK parity: convert() returns undefined
@@ -754,22 +939,35 @@ public class ConvertContext internal constructor(
                 // the event should actually be emitted. Story 4.4 wires
                 // the merged default+custom segments snapshot into the
                 // outbound call (AC-3).
-                sdk.apiManager?.enqueueConversionEvent(
-                    visitorId = visitorId,
-                    goalId = goalId,
-                    goalData = goalData?.takeIf { it.isNotEmpty() },
-                    segments = getMergedSegments(),
-                )
-                // Step 5 — internal event fire. JS SDK parity:
-                // `{visitorId, goalKey}` — not goalId. Downstream consumers
-                // that need the id re-resolve via the config.
-                sdk.eventManager.fire(
-                    event = SystemEvents.CONVERSION,
-                    data = mapOf(
-                        "visitorId" to visitorId,
-                        "goalKey" to goalKey,
-                    ),
-                )
+                // qs-02 AND-6 / Review R3 (F2, JS parity) — the ENTIRE
+                // step (network enqueue AND the internal CONVERSION fire)
+                // is suppressed while a preview is active on this
+                // context; the trackConversion caller already skipped
+                // the persisted markGoalTracked write for this same call
+                // (see there). This mirrors the JS SDK's trackConversion,
+                // which returns before its `SystemEvents.CONVERSION` fire
+                // when `this._preview` is set (`context.ts:514-521`) —
+                // conversion tracking is a documented full no-op during
+                // preview, matching the Python SDK's
+                // `self._preview is not None` short-circuit.
+                if (!isPreviewActive()) {
+                    sdk.apiManager?.enqueueConversionEvent(
+                        visitorId = visitorId,
+                        goalId = goalId,
+                        goalData = goalData?.takeIf { it.isNotEmpty() },
+                        segments = getMergedSegments(),
+                    )
+                    // Step 5 — internal event fire. JS SDK parity:
+                    // `{visitorId, goalKey}` — not goalId. Downstream
+                    // consumers that need the id re-resolve via the config.
+                    sdk.eventManager.fire(
+                        event = SystemEvents.CONVERSION,
+                        data = mapOf(
+                            "visitorId" to visitorId,
+                            "goalKey" to goalKey,
+                        ),
+                    )
+                }
             } catch (t: Throwable) {
                 // AC-4: catch, log, swallow. Never propagate to the host
                 // application. TooGenericExceptionCaught suppressed
@@ -900,6 +1098,185 @@ public class ConvertContext internal constructor(
     public fun setLocationProperties(properties: Map<String, Any?>): ConvertContext {
         locationProperties = properties
         return this
+    }
+
+    /**
+     * Sets a forced preview decision for [experienceId] on this context —
+     * qs-02 / AND-5 (contract §2 "Preview input", AC4, AC7).
+     *
+     * ### Resolution (contract §2 "Resolution")
+     *
+     * If [experienceId] is already present in the currently-loaded config
+     * ([ConvertSDK.dataManager]), the matching [ConfigExperience] is
+     * stored immediately — no network round-trip. Otherwise the target
+     * experience is fetched via [com.convert.sdk.core.api.ApiManager.fetchConfig]
+     * (the AND-4 `?exp=` fetch, 60s in-memory memo) on [ConvertSDK.scope];
+     * the preview becomes forceable once that fetch lands. The fetch is
+     * fire-and-forget by design — "the fetch rides the deep-link
+     * navigation" (contract §2) — so callers are expected to invoke
+     * [setPreview] before navigating to the screen that will call
+     * [runExperience] for [experienceId].
+     *
+     * ### Decision & precedence (contract §2 "Decision", §3 "Precedence")
+     *
+     * Once resolved, the next [runExperience] call whose KEY matches the
+     * resolved experience's [ConfigExperience.key] returns
+     * [PreviewDecision.resolve]'s forced [Variation] instead of the
+     * normal sticky / rule / bucketing pipeline — beating any pre-existing
+     * stored (sticky) decision for that experience on THIS context only.
+     * Every other experience on this context continues to decide
+     * normally (see [resolvePreviewOverride]).
+     *
+     * ### Isolation (AC7)
+     *
+     * [previewState] is a per-instance field only — this call never
+     * writes [ConvertSDK.dataManager] or [ConvertSDK.apiManager]'s shared
+     * state, so a concurrent non-preview [ConvertContext] on the same
+     * [ConvertSDK] buckets, persists, and tracks completely normally.
+     *
+     * ### Inert on bad input (contract §2 "Inert on bad input")
+     *
+     * Validation is EAGER, not deferred to decision time (Review R2,
+     * parity with the Python SDK's `set_preview` clearing `self._preview`
+     * on every bad-input case — `context.py:478-496`): a bad
+     * [experienceId] OR a bad [variationId] both clear [previewState] to
+     * `null` the moment the badness is known, so [isPreviewActive]
+     * returns `false` again and the context resumes FULLY normal
+     * tracking/persistence immediately — not just normal decisions.
+     *
+     *  - An [experienceId] resolvable in the loaded config but an unknown
+     *    [variationId]: validated synchronously, right here, against
+     *    [PreviewDecision.resolve] — a WARN is logged and [previewState]
+     *    is left `null` before this method returns.
+     *  - An [experienceId] absent from the loaded config: validated
+     *    inside [resolvePreviewFetch] once the AND-4 `?exp=` fetch lands,
+     *    covering both "the experience itself does not exist" and "the
+     *    experience resolved but [variationId] does not" — either miss
+     *    clears [previewState] and logs a WARN.
+     *
+     * @param experienceId numeric-id string identifying the previewed
+     *   experience — NOT the merchant-defined key.
+     * @param variationId numeric-id string identifying the variation to
+     *   force.
+     * @return this context for fluent chaining (mirrors [setAttributes]).
+     */
+    @Suppress("ReturnCount")
+    public fun setPreview(experienceId: String, variationId: String): ConvertContext {
+        val sdk = this.sdk ?: return this
+        val existing = sdk.dataManager.data?.experiences?.firstOrNull { it.id == experienceId }
+        if (existing != null) {
+            // Review R2 (Finding 1b) — eager sync validation, parity with
+            // the Python SDK's set_preview (context.py:492-496): validate
+            // variationId THE MOMENT the experience resolves rather than
+            // deferring to decision time, so a bad variation id clears
+            // previewState immediately instead of leaving zero-trace
+            // suppression permanently ON for this context (contract §2
+            // "Inert on bad input" — the context must behave FULLY
+            // normally, not just decide normally).
+            if (PreviewDecision.resolve(existing, variationId) == null) {
+                sdk.logger.warn(
+                    message = "ConvertContext.setPreview: preview variation '$variationId' not " +
+                        "found in previewed experience '$experienceId'; preview inert",
+                    tag = TAG,
+                )
+                previewState = null
+            } else {
+                previewState = PreviewState(experienceId, variationId, existing)
+            }
+            return this
+        }
+
+        // Not in the currently-loaded config — dispatch the AND-4 `?exp=`
+        // fetch. `experience = null` marks the preview as "not yet
+        // forceable"; resolvePreviewOverride treats that as "no preview"
+        // rather than blocking runExperience on the in-flight fetch.
+        // resolvePreviewFetch performs the same eager variation
+        // validation once the fetch lands (Review R2, Finding 1a/1b).
+        previewState = PreviewState(experienceId, variationId, experience = null)
+        sdk.scope.launch { resolvePreviewFetch(sdk, experienceId) }
+        return this
+    }
+
+    /**
+     * Runs the AND-4 `?exp=` fetch for [experienceId] and, if this is
+     * still the active preview target when the fetch completes (a later
+     * [setPreview] call may have superseded it in the meantime), either
+     * writes the resolved experience into [previewState] or — on ANY bad
+     * input — clears [previewState] to `null` (Review R2, contract §2
+     * "Inert on bad input", parity with the Python SDK's `set_preview`
+     * clearing `self._preview` on every bad-input case).
+     *
+     * Two independent bad-input cases, both logged as a WARN and both
+     * clearing [previewState]:
+     *  - [experienceId] resolves to nothing even after the fetch (the
+     *    experience itself is genuinely unknown).
+     *  - [experienceId] resolves, but [PreviewState.variationId] does not
+     *    match any variation within it (mirrors the synchronous
+     *    validation [setPreview] performs on its config-resident path —
+     *    this is the async-path equivalent, since the resolved experience
+     *    is not yet known at [setPreview] call time here).
+     *
+     * ### Review R3 (F3) — read-once guard against clobbering a concurrent preview
+     *
+     * A later [setPreview] call for a DIFFERENT `experienceId` (call it
+     * "B") may land on this context while THIS coroutine ("A") is still
+     * awaiting the fetch above. Naively re-reading [previewState] at
+     * write time (e.g. `previewState = previewState?.takeIf { ... }
+     * ?.copy(...)`) is unsafe: `previewState` is dereferenced multiple
+     * times across that expression, so if B's write happens to land in
+     * between, the expression can end up writing A's stale result back
+     * over B's live state (nulling B out, or worse — copying A's
+     * resolved [ConfigExperience] onto B's `experienceId`/`variationId`
+     * pair). The fix: at each of the three write sites below, read
+     * [previewState] into a local EXACTLY ONCE, then only write when
+     * that SAME local's `experienceId` still equals THIS coroutine's
+     * [experienceId] parameter. A mismatch means a different preview
+     * (B) is now active — leave it completely untouched; never null it
+     * and never overwrite it with A's result.
+     *
+     * Extracted from [setPreview] so the public method stays a simple,
+     * synchronous dispatch and [runExperience] never has to await a
+     * suspend call.
+     */
+    @Suppress("ReturnCount")
+    private suspend fun resolvePreviewFetch(sdk: ConvertSDK, experienceId: String) {
+        val fetched = sdk.apiManager?.fetchConfig(experienceId)
+        val resolvedExperience = fetched?.experiences?.firstOrNull { it.id == experienceId }
+        if (resolvedExperience == null) {
+            sdk.logger.warn(
+                message = "ConvertContext.setPreview: experience '$experienceId' not found " +
+                    "via ?exp= fetch; preview inert",
+                tag = TAG,
+            )
+            val stateAtMiss = previewState
+            if (stateAtMiss?.experienceId == experienceId) {
+                previewState = null
+            }
+            return
+        }
+
+        val stateForVariationLookup = previewState
+        val activeVariationId = stateForVariationLookup
+            ?.takeIf { it.experienceId == experienceId }
+            ?.variationId
+            ?: return
+        if (PreviewDecision.resolve(resolvedExperience, activeVariationId) == null) {
+            sdk.logger.warn(
+                message = "ConvertContext.setPreview: preview variation '$activeVariationId' not " +
+                    "found in previewed experience '$experienceId'; preview inert",
+                tag = TAG,
+            )
+            val stateAtVariationMiss = previewState
+            if (stateAtVariationMiss?.experienceId == experienceId) {
+                previewState = null
+            }
+            return
+        }
+
+        val stateAtWrite = previewState
+        if (stateAtWrite?.experienceId == experienceId) {
+            previewState = stateAtWrite.copy(experience = resolvedExperience)
+        }
     }
 
     /**
@@ -1141,9 +1518,19 @@ private fun passesLocationGate(
  * Lives at file scope (same rationale as [passesAudienceGate] /
  * [passesLocationGate]) so [ConvertContext] stays under detekt's
  * `TooManyFunctions` threshold.
+ *
+ * qs-02 AND-6 (contract §2 "Zero-trace") — also a no-op while
+ * [ConvertContext.isPreviewActive]: "ALL visitor-state persistence
+ * writes are disabled" for the entire context while any preview is
+ * active, not only for the previewed experience. The in-memory
+ * `defaultSegments` / `customSegments` field assignment in
+ * [ConvertContext.setDefaultSegments] / [ConvertContext.setCustomSegments]
+ * still happens before this call — only this SharedPreferences write is
+ * skipped (per-context scratch only, per contract).
  */
 private fun persistSegmentsToStore(context: ConvertContext) {
     val sdk = context.sdk ?: return
+    if (context.isPreviewActive()) return
     val current = sdk.dataManager.getStoreData(context.visitorId)
     sdk.dataManager.setStoreData(
         context.visitorId,

@@ -7,6 +7,7 @@ package com.convert.sdk.android.adapter
 
 import com.convert.sdk.android.CONVERT_AGENT_USER_AGENT
 import com.convert.sdk.core.port.HttpClient
+import com.convert.sdk.core.port.Logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -387,5 +388,68 @@ internal class OkHttpClientAdapterTest {
             0,
             okHttpClient.dispatcher.runningCallsCount(),
         )
+    }
+
+    // -------------------------------------------------------------------------
+    // qs-02 AC3 — token hygiene: onFailure must never log the raw query string
+    // -------------------------------------------------------------------------
+
+    /**
+     * qs-02 AC3 review defect: `onFailure` logged `request.url` verbatim,
+     * which includes the full query string. A config-fetch URL built while
+     * `debugToken` is configured carries `debug_token=<secret>` — any IO
+     * failure (connection refused, TLS, timeout, DNS) leaked it to logcat
+     * in clear via [Logger.warn]. This drives the request through a real
+     * [OkHttpClientAdapter] (not a fake) against a real connection-refused
+     * failure so `onFailure` actually fires, and asserts the canary token
+     * is absent from every captured WARN log line.
+     */
+    @Test
+    fun `onFailure never logs the raw query string so a debug_token canary cannot leak`() = runTest {
+        // Shut the server down first so the GET fails with ConnectException,
+        // driving the adapter's real onFailure callback (mirrors the
+        // existing "unreachable url" test's technique).
+        server.shutdown()
+        val capturingLogger = CapturingLogger()
+        val loggingAdapter = OkHttpClientAdapter(okHttpClient, capturingLogger)
+        val urlWithCanary = "http://127.0.0.1:1/api/v1/config/sk-abc" +
+            "?environment=staging&debug_token=CANARY-SECRET-TOKEN&_conv_low_cache=1"
+
+        loggingAdapter.get(urlWithCanary)
+
+        val warnMessages = capturingLogger.warnMessages()
+        assertTrue("expected at least one WARN log from onFailure", warnMessages.isNotEmpty())
+        assertTrue(
+            "raw debug_token canary must never appear in a WARN log: $warnMessages",
+            warnMessages.none { it.contains("CANARY-SECRET-TOKEN") },
+        )
+    }
+
+    /**
+     * Capturing [Logger] — collects every call so tests can assert log
+     * expectations. Same pattern as ApiManagerDebugTokenTest.CapturingLogger
+     * / FileConfigCacheTest.CapturingLogger, exposed here via this test
+     * file (SonarQube CPD: kept intentionally minimal, one shared helper
+     * per test file rather than a cross-module extraction).
+     */
+    private class CapturingLogger : Logger {
+        data class Entry(val level: String, val message: String, val tag: String?)
+
+        private val entries: MutableList<Entry> = mutableListOf()
+
+        override fun error(message: String, throwable: Throwable?, tag: String?) {
+            entries += Entry("ERROR", message, tag)
+        }
+        override fun warn(message: String, throwable: Throwable?, tag: String?) {
+            entries += Entry("WARN", message, tag)
+        }
+        override fun info(message: String, tag: String?) {
+            entries += Entry("INFO", message, tag)
+        }
+        override fun debug(message: String, tag: String?) {
+            entries += Entry("DEBUG", message, tag)
+        }
+
+        fun warnMessages(): List<String> = entries.filter { it.level == "WARN" }.map { it.message }
     }
 }

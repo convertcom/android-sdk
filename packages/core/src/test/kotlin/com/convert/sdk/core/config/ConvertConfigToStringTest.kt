@@ -40,6 +40,31 @@ internal class ConvertConfigToStringTest {
     }
 
     @Test
+    fun `toString redacts debugToken when set (qs-02 AND-1 AC3)`() {
+        // qs-02 AND-1 contract §1 / AC3: the debug token must never appear
+        // in clear in any rendered representation of this config — mirrors
+        // the sdkKeySecret redaction above. RED phase: ConvertConfig's
+        // toString() currently passes debugToken through unredacted (see
+        // the TODO(AND-1 GREEN) marker in ConvertConfig.kt), so this fails
+        // on both assertions until GREEN wires the redaction.
+        val config = ConvertConfig(
+            sdkKey = "pub-key",
+            debugToken = "debug-token-canary-9999",
+        )
+
+        val rendered = config.toString()
+
+        assertFalse(
+            rendered.contains("debug-token-canary-9999"),
+            "debug token value must not appear in toString: $rendered",
+        )
+        assertTrue(
+            rendered.contains("debugToken=[REDACTED]"),
+            "toString must indicate debugToken redaction occurred: $rendered",
+        )
+    }
+
+    @Test
     fun `toString includes non-secret fields verbatim`() {
         val config = ConvertConfig(
             sdkKey = "pub-key",

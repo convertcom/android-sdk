@@ -627,8 +627,13 @@ public class ConvertSDK internal constructor(
                     dataManager.setData(fetched)
                     // Fire-and-forget cache refresh. Failures inside write()
                     // are absorbed by FileConfigCache's own try/catch.
-                    fileConfigCache?.let { cache ->
-                        scope.launch { cache.write(fetched) }
+                    // Skipped while a debugToken is set — qs-02 AND-1 AC2:
+                    // the on-disk cache must never be written during a
+                    // debug session, including from the refresh loop.
+                    if (config.debugToken == null) {
+                        fileConfigCache?.let { cache ->
+                            scope.launch { cache.write(fetched) }
+                        }
                     }
                 }
             }
@@ -1062,6 +1067,7 @@ public class ConvertSDK internal constructor(
 
         private var sdkKey: String? = null
         private var sdkKeySecret: String? = null
+        private var debugToken: String? = null
         private var data: ConfigResponseData? = null
         private var environment: String? = null
         private var configEndpoint: String? = null
@@ -1086,6 +1092,20 @@ public class ConvertSDK internal constructor(
 
         /** Sets the confidential SDK secret. */
         public fun sdkKeySecret(value: String): Builder = apply { sdkKeySecret = value }
+
+        /**
+         * Sets a QA debug token (qs-02 AND-1 contract §1). When set, every
+         * config-fetch URL carries `debug_token=<value>` plus a forced
+         * `_conv_low_cache=1` (regardless of [cacheLevel]), and the
+         * on-disk config cache is neither read nor written while set.
+         * The token is never sent to the track endpoint and never logged
+         * in clear.
+         *
+         * RED-phase note (AND-1): this setter currently only threads the
+         * value onto the assembled [ConvertConfig] — the transport /
+         * cache-bypass / redaction behavior lands in the GREEN phase.
+         */
+        public fun debugToken(value: String): Builder = apply { debugToken = value }
 
         /**
          * Provides a pre-fetched configuration blob, skipping the initial HTTP fetch.
@@ -1434,6 +1454,7 @@ public class ConvertSDK internal constructor(
             return ConvertConfig(
                 sdkKey = sdkKey,
                 sdkKeySecret = sdkKeySecret,
+                debugToken = debugToken,
                 data = data,
                 environment = environment ?: defaults.environment,
                 api = apiConfig,
@@ -1518,14 +1539,28 @@ private fun launchInitialDataSeed(
     }
     if (assembled.sdkKey == null) return
 
+    val debugSession = assembled.debugToken != null
     sdk.scope.launch {
         val fetched = apiManager.fetchConfig()
         if (fetched != null) {
             dataManager.setData(fetched)
             // Fire-and-forget cache write — the cache is strictly a
             // fallback, so a failure here must not block the main flow
-            // (AC-5).
-            sdk.scope.launch { fileConfigCache.write(fetched) }
+            // (AC-5). Skipped while a debugToken is set — qs-02 AND-1
+            // AC2: a debug session must never seed the on-disk cache.
+            if (!debugSession) {
+                sdk.scope.launch { fileConfigCache.write(fetched) }
+            }
+        } else if (debugSession) {
+            // qs-02 AND-1 AC2: never fall back to a pre-seeded on-disk
+            // cache while a debug session is active — onReady must not
+            // fire from stale cached data while `debugToken` is set.
+            logger.warn(
+                message = "ApiManager: debugToken fetch failed, on-disk cache is disabled " +
+                    "for debug sessions; SDK will return null from public methods until " +
+                    "network fetch succeeds",
+                tag = INIT_SEED_TAG,
+            )
         } else {
             val cached = fileConfigCache.read()
             if (cached != null) {
