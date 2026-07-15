@@ -27,38 +27,34 @@ import org.robolectric.RobolectricTestRunner
 import java.math.BigDecimal
 
 /**
- * RED-phase tests for AND-2 (qs-03 mutual-exclusion rule,
- * `bucketed_into_experience_key`) — end-to-end at the
- * [ConvertContext] audience gate.
+ * End-to-end tests for AND-2 (qs-03 mutual-exclusion rule,
+ * `bucketed_into_experience_key`) at the [ConvertContext] audience
+ * gate. GREEN — the production seam is wired.
  *
  * ### Scope
  *
- * AND-1 (already GREEN) gave [RuleManager][com.convert.sdk.core.rules.RuleManager]
+ * AND-1 gave [RuleManager][com.convert.sdk.core.rules.RuleManager]
  * an optional [BucketedExperienceResolver][com.convert.sdk.core.rules.BucketedExperienceResolver]
- * seam. This file exercises the seam through the REAL production
- * surface — [ConvertContext.runExperience] — which today still calls
- * `sdk.ruleManager.evaluate(audience.rules, context.currentAttributes())`
- * (the 2-arg overload, no resolver) at `ConvertContext.kt:1440`
- * (`passesAudienceGate`). Wiring a real KEY-keyed resolver there is
- * AND-2's GREEN-phase production change — deliberately NOT made in this
- * commit.
+ * seam. AND-2 wires it at the REAL production surface —
+ * [ConvertContext.runExperience]'s `passesAudienceGate` builds a
+ * read-only, KEY-keyed [BucketedExperienceResolver] from the
+ * already-loaded config and the visitor's stored bucketing map, and
+ * passes it as the 3rd argument to `sdk.ruleManager.evaluate(audience.rules,
+ * context.currentAttributes(), bucketedResolver)` (`ConvertContext.kt:1456`).
+ * The location gate (`passesLocationGate`, `ConvertContext.kt:1508`) is
+ * unchanged — it stays on the 2-arg, resolver-free overload and falls
+ * closed by construction (`RuleManager.kt:380-382`), the same fail-closed
+ * shape every other unresolvable rule element in the location rule-walk
+ * gets.
  *
- * ### Why these tests currently FAIL (and must)
+ * ### What these tests verify
  *
- * With no resolver threaded, [RuleManager]'s
- * `evaluateBucketedIntoExperienceKey` short-circuits to plain `false`
- * — WITHOUT applying `negated` — for every `bucketed_into_experience_key`
- * leaf (`RuleManager.kt:380-382`). Every audience below carries that
- * leaf negated (`NOT bucketed into exp-a`), so **today** the leaf is
- * always `false` and the audience it lives in never matches, REGARDLESS
- * of whether the visitor actually ran exp-a. Concretely:
- *  - a visitor who never ran exp-a is (wrongly) excluded from exp-b/c/d
- *    today — the assertions expecting a normal bucket (`VAR_B_ID` /
- *    `VAR_C_ID` / `VAR_D_ID`) fail against an actual `null`.
- *  - a visitor who DID run exp-a is (right, but for the wrong reason)
- *    excluded today too — those assertions do not RED on their own, but
- *    the test method as a whole still fails via the sibling assertion
- *    above.
+ * End-to-end coverage of AC2 (exclusion: a visitor who runs exp-a is
+ * excluded from an audience carrying `NOT bucketed_into_experience_key(exp-a)`;
+ * a visitor who never ran exp-a buckets into exp-b/c/d normally), AC3
+ * (cross-restart persistence via warm `SharedPreferences`), AC4 (empty
+ * visitor attributes throughout), and AC6 (combination with a generic
+ * rule under `ALL`/`ANY`).
  *
  * AC5 (read-only) is target-scoped (exp-a): evaluating the exclusion
  * rule must not bucket, write, or track the TARGET (exp-a) itself. The

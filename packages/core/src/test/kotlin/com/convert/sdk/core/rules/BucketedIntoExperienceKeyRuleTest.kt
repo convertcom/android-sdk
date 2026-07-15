@@ -19,8 +19,8 @@ import org.junit.jupiter.params.provider.MethodSource
 import java.util.stream.Stream
 
 /**
- * RED-phase tests for AND-1 (qs-03 mutual-exclusion rule,
- * `bucketed_into_experience_key`).
+ * Tests for AND-1 (qs-03 mutual-exclusion rule,
+ * `bucketed_into_experience_key`). GREEN.
  *
  * ### Android storage-shape reality divergence (see decision-log)
  *
@@ -35,11 +35,11 @@ import java.util.stream.Stream
  * literals to experience KEY; every expected `matched` value is UNCHANGED
  * from the spec table.
  *
- * ### The seam under test (does not exist yet — GREEN phase creates it)
+ * ### The seam under test (exists at HEAD)
  *
- * [RuleManager.evaluate] gains an optional third parameter,
+ * [RuleManager.evaluate] has an optional third parameter,
  * `resolver: BucketedExperienceResolver?`, threaded through the OR/AND/OR_WHEN
- * walk so the new `bucketed_into_experience_key` leaf is resolved in place
+ * walk so the `bucketed_into_experience_key` leaf is resolved in place
  * (required for AC6 nested ALL/ANY). [BucketedExperienceResolver.isBucketed]
  * returns three logical states collapsed into a nullable `Boolean`:
  *
