@@ -305,76 +305,34 @@ internal class BucketedIntoExperienceKeyRuleTest {
     }
 
     companion object {
+
+        /**
+         * Builds one [FixtureRow] by position — keeps [fixtureRows] a one-line-per-row table.
+         * `expectWarn` is derived, not passed: per the class KDoc, WARN fires exactly when
+         * the target key is unknown, i.e. `bucketedRaw == null` (rows 6/7) — true for every
+         * row in this fixture, so it is computed here rather than threaded as a 6th parameter.
+         */
+        private fun row(
+            rowNumber: Int,
+            bucketedRaw: Boolean?,
+            negated: Boolean,
+            expectedMatched: Boolean,
+            notes: String,
+        ) = FixtureRow(rowNumber, bucketedRaw, negated, expectedMatched, expectWarn = bucketedRaw == null, notes)
+
         @JvmStatic
         fun fixtureRows(): Stream<FixtureRow> = Stream.of(
-            FixtureRow(
-                rowNumber = 1,
-                bucketedRaw = false,
-                negated = false,
-                expectedMatched = false,
-                expectWarn = false,
-                notes = "known target, not bucketed, no warn",
-            ),
-            FixtureRow(
-                rowNumber = 2,
-                bucketedRaw = false,
-                negated = true,
-                expectedMatched = true,
-                expectWarn = false,
-                notes = "known target, not bucketed, negation applied",
-            ),
-            FixtureRow(
-                rowNumber = 3,
-                bucketedRaw = true,
-                negated = false,
-                expectedMatched = true,
-                expectWarn = false,
-                notes = "known target, bucketed, no negation",
-            ),
-            FixtureRow(
-                rowNumber = 4,
-                bucketedRaw = true,
-                negated = true,
-                expectedMatched = false,
-                expectWarn = false,
-                notes = "known target, bucketed, negated -> excluded",
-            ),
-            FixtureRow(
-                rowNumber = 5,
-                bucketedRaw = false,
-                negated = true,
-                expectedMatched = true,
-                expectWarn = false,
-                notes = "known target, bucketed into a DIFFERENT experience only, no warn",
-            ),
-            FixtureRow(
-                rowNumber = 6,
-                bucketedRaw = null,
-                negated = false,
-                expectedMatched = false,
-                expectWarn = true,
-                notes = "unknown target key -> warn",
-            ),
-            FixtureRow(
-                rowNumber = 7,
-                bucketedRaw = null,
-                negated = true,
-                expectedMatched = true,
-                expectWarn = true,
-                notes = "unknown target key, negated -> exclusion dissolves, still warns",
-            ),
-            FixtureRow(
-                rowNumber = 8,
-                bucketedRaw = true,
-                negated = true,
-                expectedMatched = false,
-                expectWarn = false,
-                // Cross-restart persistence (warm SharedPreferences on a fresh
-                // SDK instance) is exercised end-to-end in AND-2; at the
-                // RuleManager-unit level the resolver simply reports a known,
-                // bucketed target — identical inputs to row 4.
-                notes = "cross-restart (AND-2 end-to-end); unit-level equivalent to row 4",
-            ),
+            row(1, false, false, false, "known target, not bucketed, no warn"),
+            row(2, false, true, true, "known target, not bucketed, negation applied"),
+            row(3, true, false, true, "known target, bucketed, no negation"),
+            row(4, true, true, false, "known target, bucketed, negated -> excluded"),
+            row(5, false, true, true, "known target, bucketed into a DIFFERENT experience only, no warn"),
+            row(6, null, false, false, "unknown target key -> warn"),
+            row(7, null, true, true, "unknown target key, negated -> exclusion dissolves, still warns"),
+            // Cross-restart persistence (warm SharedPreferences on a fresh SDK instance) is
+            // exercised end-to-end in AND-2; at the RuleManager-unit level the resolver simply
+            // reports a known, bucketed target — identical inputs to row 4.
+            row(8, true, true, false, "cross-restart (AND-2 end-to-end); unit-level equivalent to row 4"),
         )
     }
 }

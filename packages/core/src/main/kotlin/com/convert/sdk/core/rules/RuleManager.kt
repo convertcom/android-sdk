@@ -105,17 +105,27 @@ public class RuleManager(
      * @param attributes the visitor's attribute map (or any other
      *   key/value data the rule tree expects — location properties,
      *   custom segments, etc.).
+     * @param resolver optional three-state lookup (AND-1, qs-03) that
+     *   backs the `bucketed_into_experience_key` mutual-exclusion leaf.
+     *   `null` (the default) mirrors every other call site that hasn't
+     *   threaded visitor bucketing state — such a leaf falls closed to
+     *   `false` without applying negation. See [BucketedExperienceResolver]
+     *   for the three-state contract.
      * @return `true` if the visitor matches the rule set, `false`
      *   otherwise.
      */
-    public fun evaluate(rules: RuleObjectAudience?, attributes: Map<String, JsonElement>): Boolean {
+    public fun evaluate(
+        rules: RuleObjectAudience?,
+        attributes: Map<String, JsonElement>,
+        resolver: BucketedExperienceResolver? = null,
+    ): Boolean {
         val orGroups = rules?.OR
         if (orGroups.isNullOrEmpty()) {
             warnRuleNotValid()
             return false
         }
         return orGroups.any { orGroup ->
-            evaluateAndBlock(orGroup.AND, attributes)
+            evaluateAndBlock(orGroup.AND, attributes, resolver)
         }
     }
 
@@ -128,15 +138,22 @@ public class RuleManager(
      *
      * `null` or empty / absent `OR` → WARN + `false`, same as the
      * audience overload (F-024).
+     *
+     * @param resolver see [evaluate] (audience overload) — same
+     *   `bucketed_into_experience_key` contract.
      */
-    public fun evaluate(rules: RuleObject?, attributes: Map<String, JsonElement>): Boolean {
+    public fun evaluate(
+        rules: RuleObject?,
+        attributes: Map<String, JsonElement>,
+        resolver: BucketedExperienceResolver? = null,
+    ): Boolean {
         val orGroups = rules?.OR
         if (orGroups.isNullOrEmpty()) {
             warnRuleNotValid()
             return false
         }
         return orGroups.any { orGroup ->
-            evaluateLocationAndBlock(orGroup.AND, attributes)
+            evaluateLocationAndBlock(orGroup.AND, attributes, resolver)
         }
     }
 
@@ -166,6 +183,7 @@ public class RuleManager(
     private fun evaluateAndBlock(
         andBlocks: List<com.convert.sdk.core.model.generated.RuleObjectAudienceORInnerANDInner>?,
         attributes: Map<String, JsonElement>,
+        resolver: BucketedExperienceResolver?,
     ): Boolean {
         if (andBlocks.isNullOrEmpty()) {
             logger.warn(
@@ -184,7 +202,7 @@ public class RuleManager(
                 return@all false
             }
             orWhen.any { element ->
-                evaluateRawElement(asRawObject(element, audience = true), attributes)
+                evaluateRawElement(asRawObject(element, audience = true), attributes, resolver)
             }
         }
     }
@@ -193,6 +211,7 @@ public class RuleManager(
     private fun evaluateLocationAndBlock(
         andBlocks: List<com.convert.sdk.core.model.generated.RuleObjectORInnerANDInner>?,
         attributes: Map<String, JsonElement>,
+        resolver: BucketedExperienceResolver?,
     ): Boolean {
         if (andBlocks.isNullOrEmpty()) {
             logger.warn(
@@ -211,7 +230,7 @@ public class RuleManager(
                 return@all false
             }
             orWhen.any { element ->
-                evaluateRawElement(asRawObject(element, audience = false), attributes)
+                evaluateRawElement(asRawObject(element, audience = false), attributes, resolver)
             }
         }
     }
@@ -267,8 +286,19 @@ public class RuleManager(
     private fun evaluateRawElement(
         raw: JsonObject?,
         attributes: Map<String, JsonElement>,
+        resolver: BucketedExperienceResolver?,
     ): Boolean {
         if (raw == null) return false
+
+        // M2: the mutual-exclusion leaf (AND-1, qs-03) is dispatched
+        // strictly on `rule_type`, BEFORE the generic match_type dispatch
+        // below — this rule_type never consults [Comparisons]; it computes
+        // its own negation. Generic elements carry no `rule_type` (or a
+        // different one) and always fall through unaffected (AC7).
+        val ruleType = (raw["rule_type"] as? JsonPrimitive)?.contentOrNull
+        if (ruleType == BUCKETED_INTO_EXPERIENCE_KEY_RULE_TYPE) {
+            return evaluateBucketedIntoExperienceKey(raw, resolver)
+        }
 
         val matching = raw["matching"] as? JsonObject
         val matchType = (matching?.get("match_type") as? JsonPrimitive)?.contentOrNull
@@ -328,6 +358,48 @@ public class RuleManager(
     }
 
     /**
+     * Handles the `bucketed_into_experience_key` mutual-exclusion leaf
+     * (AND-1, qs-03). This rule_type never reaches [Comparisons] — it
+     * computes `matched = if (negated) !bucketedRaw else bucketedRaw`
+     * itself (M2). A `null` [resolver] (call sites that haven't threaded
+     * visitor bucketing state, e.g. location/segment trees) falls closed
+     * to plain `false` WITHOUT applying negation — identical fail-closed
+     * shape to every other unresolvable rule element in this class.
+     *
+     * NOTE — Android storage-shape reality divergence: [resolver] is
+     * keyed by experience KEY per Android `StoreData.bucketing` shape;
+     * the qs-03 spec's `id.toString()` is the JS SDK shape — see
+     * decision-log (Android storage-shape reality divergence) at
+     * `ai-driven-product-dev/work/2026-07-15-android-sdk-mutual-exclusion/decision-log.md`.
+     */
+    private fun evaluateBucketedIntoExperienceKey(
+        raw: JsonObject,
+        resolver: BucketedExperienceResolver?,
+    ): Boolean {
+        val targetKey = (raw["value"] as? JsonPrimitive)?.contentOrNull
+        if (resolver == null || targetKey == null) {
+            return false
+        }
+
+        val negation = ((raw["matching"] as? JsonObject)?.get("negated") as? JsonPrimitive)
+            ?.booleanOrNull == true
+
+        val bucketedRaw = when (val resolved = resolver.isBucketed(targetKey)) {
+            null -> {
+                logger.warn(
+                    message = "RuleManager.evaluate(): bucketed_into_experience_key target " +
+                        "\"$targetKey\" is not a known experience; treating as not bucketed",
+                    tag = TAG,
+                )
+                false
+            }
+            else -> resolved
+        }
+
+        return if (negation) !bucketedRaw else bucketedRaw
+    }
+
+    /**
      * Test-only injection seam (F-108): when non-`null`, this value
      * **bypasses** the JS-SDK falsy-coalesce on
      * `config.rules?.keysCaseSensitive` and is used directly as the
@@ -384,5 +456,12 @@ public class RuleManager(
     private companion object {
         /** Log tag for every WARN emission — matches the class name for trivial grep. */
         const val TAG: String = "RuleManager"
+
+        /**
+         * The `rule_type` value that dispatches to
+         * [evaluateBucketedIntoExperienceKey] (AND-1, qs-03), strictly
+         * BEFORE the generic `match_type` dispatch.
+         */
+        const val BUCKETED_INTO_EXPERIENCE_KEY_RULE_TYPE: String = "bucketed_into_experience_key"
     }
 }
