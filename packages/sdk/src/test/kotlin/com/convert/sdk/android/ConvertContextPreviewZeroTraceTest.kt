@@ -211,6 +211,39 @@ internal class ConvertContextPreviewZeroTraceTest {
     }
 
     // ---------------------------------------------------------------
+    // Review R3 (F2) — non-vacuous baseline: the SAME observation
+    // mechanism used by the "must NOT fire" assertions below DOES detect
+    // a real fire when no preview is set at all. Without this, a broken
+    // subscription (e.g. a typo'd event name) could make every
+    // suppression assertion in this file pass for the wrong reason.
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `BUCKETING and CONVERSION fire normally when no preview is set (non-vacuous baseline)`() {
+        val sdk = buildSdk("sk-baseline-fires")
+        val ctx = sdk.createContext("visitor_baseline_fires")
+
+        val bucketingLatch = CountDownLatch(1)
+        sdk.on(SystemEvents.BUCKETING) { bucketingLatch.countDown() }
+        val decision = ctx.runExperience("promo")
+        assertEquals("var-p", decision?.id)
+        assertTrue(
+            "BUCKETING must fire normally with no preview set — proves the observation " +
+                "mechanism used by the suppression assertions in this file is capable of " +
+                "detecting a real fire",
+            bucketingLatch.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS),
+        )
+
+        val conversionLatch = CountDownLatch(1)
+        sdk.on(SystemEvents.CONVERSION) { conversionLatch.countDown() }
+        ctx.trackConversion(goalKey = "zt-goal")
+        assertTrue(
+            "CONVERSION must fire normally with no preview set (non-vacuous baseline)",
+            conversionLatch.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS),
+        )
+    }
+
+    // ---------------------------------------------------------------
     // AC6 — zero trace across bucketing, conversion, and background flush
     // ---------------------------------------------------------------
 
@@ -220,33 +253,57 @@ internal class ConvertContextPreviewZeroTraceTest {
         val ctx = sdk.createContext("visitor_preview_zt")
         ctx.setPreview(experienceId = "exp-1", variationId = "var-b")
 
+        // Review R3 (F2, JS parity) — Android is now the only Convert SDK
+        // to suppress the in-process SystemEvents bus during preview,
+        // matching the JS SDK's uniform `if (!this._preview) { fire }`
+        // gate (context.ts) and the Python SDK's `self._preview is None`
+        // check. Subscribed BEFORE any run/track call below so both
+        // negative assertions (no BUCKETING, no CONVERSION) cover the
+        // whole lifecycle.
+        var bucketingFired = false
+        sdk.on(SystemEvents.BUCKETING) { bucketingFired = true }
+        var conversionFired = false
+        sdk.on(SystemEvents.CONVERSION) { conversionFired = true }
+
         // Previewed experience decides as forced — bypasses allocateAndRecord
         // entirely (resolvePreviewOverride short-circuits runExperience), so
-        // this leg is inherently zero-trace by construction.
+        // this leg is inherently zero-trace by construction (and never fires
+        // SystemEvents.BUCKETING at all — resolvePreviewOverride returns
+        // directly without touching the event bus).
         val forced = ctx.runExperience("welcome")
         assertEquals("var-b", forced?.id)
 
         // A DIFFERENT experience on the SAME preview context (contract §2
         // "other experiences still evaluate and decide normally") — this is
-        // the leg that actually exercises the AND-6 gates inside
-        // allocateAndRecord (updateBucketing / enqueueBucketingEvent).
+        // the leg that actually exercises the AND-6 / Review R3 gates inside
+        // allocateAndRecord (updateBucketing / enqueueBucketingEvent / the
+        // SystemEvents.BUCKETING fire).
         val other = ctx.runExperience("promo")
         assertEquals("var-p", other?.id)
 
-        // A conversion attempt on the preview context. dispatchConversion
-        // still fires SystemEvents.CONVERSION internally (only the network
-        // enqueue + the markGoalTracked persistence are gated — see
-        // ConvertContext.isPreviewActive's KDoc) — subscribe to it as a
-        // deterministic completion signal for the fire-and-forget dispatch.
-        val conversionLatch = CountDownLatch(1)
-        sdk.on(SystemEvents.CONVERSION) { conversionLatch.countDown() }
+        // A conversion attempt on the preview context. Review R3 (F2) makes
+        // dispatchConversion's ENTIRE step — network enqueue AND the
+        // internal CONVERSION fire — a no-op while preview is active,
+        // mirroring the JS SDK's trackConversion returning before its
+        // CONVERSION fire (context.ts:514-521).
         ctx.trackConversion(
             goalKey = "zt-goal",
             goalData = listOf(GoalData(key = GoalDataKey.AMOUNT, value = JsonPrimitive(GOAL_AMOUNT))),
         )
+
+        // Neither event has a positive completion signal to await now that
+        // both are no-ops by design — settle over a bounded grace window
+        // generous enough for the fire-and-forget coroutines to have run
+        // if they were (incorrectly) going to fire, then assert absence.
+        Thread.sleep(EVENT_SETTLE_MS)
         assertTrue(
-            "CONVERSION must still fire internally even though tracking is suppressed",
-            conversionLatch.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS),
+            "BUCKETING must NOT fire internally for ANY experience while preview is active " +
+                "(Review R3 F2, JS/Python parity)",
+            !bucketingFired,
+        )
+        assertTrue(
+            "CONVERSION must NOT fire internally while preview is active (Review R3 F2, JS/Python parity)",
+            !conversionFired,
         )
 
         // Background transition — see the class doc for why this suite
@@ -337,6 +394,49 @@ internal class ConvertContextPreviewZeroTraceTest {
     }
 
     // ---------------------------------------------------------------
+    // Review R3 (F2 sweep) — a STICKY recall on the preview context must
+    // also suppress BUCKETING, not just a fresh allocateAndRecord decision
+    // ---------------------------------------------------------------
+    //
+    // resolveSticky is a SEPARATE fire site from allocateAndRecord's. The
+    // JS SDK has no equivalent branch split — its single
+    // `if (!this._preview) { fire }` gate in context.ts covers whatever
+    // selectVariation returns, sticky or fresh. This test locks in that
+    // resolveSticky's fire is gated the same way once a preview becomes
+    // active on the context, for a DIFFERENT (non-previewed) experience
+    // that the visitor was already stickily bucketed into.
+
+    @Test
+    fun `a sticky recall on the preview context does not fire BUCKETING`() {
+        val sdk = buildSdk("sk-sticky-suppress")
+        val ctx = sdk.createContext("visitor_sticky_zt")
+
+        // First call (no preview yet) buckets "promo" fresh and persists
+        // the sticky decision — deterministic, single 100% variation.
+        val firstDecision = ctx.runExperience("promo")
+        assertEquals("var-p", firstDecision?.id)
+
+        var bucketingFired = false
+        sdk.on(SystemEvents.BUCKETING) { bucketingFired = true }
+
+        ctx.setPreview(experienceId = "exp-1", variationId = "var-b")
+        // Recall "promo" — now hits resolveSticky, not allocateAndRecord.
+        val stickyRecall = ctx.runExperience("promo")
+        assertEquals(
+            "sticky recall must still resolve the same variation while preview is active",
+            "var-p",
+            stickyRecall?.id,
+        )
+
+        Thread.sleep(EVENT_SETTLE_MS)
+        assertTrue(
+            "BUCKETING must NOT fire for a sticky recall while preview is active on the context " +
+                "(Review R3 F2 sweep)",
+            !bucketingFired,
+        )
+    }
+
+    // ---------------------------------------------------------------
     // Review R2 (Finding 1 sweep) — inert-on-bad-input must RESUME
     // tracking/persistence, not just decide normally
     // ---------------------------------------------------------------
@@ -403,8 +503,18 @@ internal class ConvertContextPreviewZeroTraceTest {
         experienceKey: String,
         goalKey: String,
     ) {
+        // Review R3 (F1) — bad preview input clears previewState, so
+        // isPreviewActive() is false again and BUCKETING must fire
+        // normally for this decision, exactly as it would with no
+        // preview ever having been set.
+        val bucketingLatch = CountDownLatch(1)
+        sdk.on(SystemEvents.BUCKETING) { bucketingLatch.countDown() }
         val decision = ctx.runExperience(experienceKey)
         assertNotNull("bad preview input must not block normal bucketing", decision)
+        assertTrue(
+            "BUCKETING must fire normally once bad preview input resumes normal behaviour",
+            bucketingLatch.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS),
+        )
 
         val conversionLatch = CountDownLatch(1)
         sdk.on(SystemEvents.CONVERSION) { conversionLatch.countDown() }
@@ -472,6 +582,16 @@ internal class ConvertContextPreviewZeroTraceTest {
         private const val AWAIT_TIMEOUT_MS = 2_000L
         private const val AWAIT_POLL_MS = 10L
         private const val LATCH_TIMEOUT_SECONDS = 2L
+
+        /**
+         * Review R3 (F2) — grace window for the "must NOT fire" assertions
+         * in the main lifecycle test. Both BUCKETING and CONVERSION are
+         * no-ops by design during preview, so there is no positive
+         * completion signal to await; this bounded settle gives the
+         * fire-and-forget dispatch coroutines ample time to have run if
+         * they were (incorrectly) going to fire.
+         */
+        private const val EVENT_SETTLE_MS = 300L
         private const val FIFTY_FIFTY = 50.0
         private const val FULL_ALLOCATION = 100.0
         private const val GOAL_AMOUNT = 9.99

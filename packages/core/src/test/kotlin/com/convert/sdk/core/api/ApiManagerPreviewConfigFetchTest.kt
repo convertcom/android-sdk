@@ -10,12 +10,14 @@ import com.convert.sdk.core.port.HttpClient
 import com.convert.sdk.core.port.Logger
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.Arguments
@@ -48,12 +50,35 @@ import java.util.stream.Stream
  * overload of [fetchConfig] and no `clock` constructor parameter — every
  * test in this file fails to compile, which is the RED signal per the
  * qs-02 AND-4 brief.
+ *
+ * ### Review R3 (F4) — process-wide memo requires a per-test reset
+ *
+ * [ApiManager.fetchConfig]'s memo moved from a per-instance field to a
+ * companion-object (process-wide, JVM-static) store so that two DIFFERENT
+ * [ApiManager] instances sharing the same `sdkKey` collapse onto the same
+ * cached fetch (JS/Python parity — see [ApiManager.fetchConfig]'s KDoc).
+ * That process-wide sharing means the memo now persists across test
+ * METHODS within the same JVM/classloader — several tests below
+ * deliberately reuse `sdkKey = "sk-abc"` + `experienceId = "555"` to
+ * exercise TTL/memo-hit behaviour, so without a reset an earlier test's
+ * memoized entry would silently satisfy a later test's "fresh fetch"
+ * assertion. [resetMemo] clears it before every test.
  */
 internal class ApiManagerPreviewConfigFetchTest {
 
     private val json: Json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
+    }
+
+    @BeforeEach
+    fun resetMemo() {
+        ApiManager.resetPreviewConfigMemoForTest()
+    }
+
+    @AfterEach
+    fun clearMemoAfter() {
+        ApiManager.resetPreviewConfigMemoForTest()
     }
 
     // ------------------------------------------------------------------
@@ -135,6 +160,53 @@ internal class ApiManagerPreviewConfigFetchTest {
         assertEquals(2, http.calls.size)
         assertTrue(http.calls[0].url.contains("exp=555"))
         assertTrue(http.calls[1].url.contains("exp=777"))
+    }
+
+    // ------------------------------------------------------------------
+    // Review R3 (F4, JS + Python parity) — process-wide memo sharing
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `two DIFFERENT ApiManager instances sharing the same sdkKey collapse onto one HTTP request`() = runTest {
+        val logger = CapturingLogger()
+        val config = convertConfig(sdkKey = "sk-shared")
+        val httpOne = FakeHttpClient(statusCode = 200, body = "{}")
+        val instanceOne = ApiManager(httpOne, logger, config, json)
+        val httpTwo = FakeHttpClient(statusCode = 200, body = "{}")
+        val instanceTwo = ApiManager(httpTwo, logger, config, json)
+
+        val first = instanceOne.fetchConfig(experienceId = "555")
+        val second = instanceTwo.fetchConfig(experienceId = "555")
+
+        assertEquals(1, httpOne.calls.size, "the FIRST instance must perform the only HTTP request")
+        assertEquals(0, httpTwo.calls.size, "the SECOND instance must reuse the process-wide memo entry")
+        assertNotNull(first)
+        assertSame(
+            first,
+            second,
+            "a DIFFERENT ApiManager instance sharing the same sdkKey must read the SAME " +
+                "process-wide memoized entry",
+        )
+    }
+
+    @Test
+    fun `the same experienceId under DIFFERENT sdkKeys never collides in the process-wide memo`() = runTest {
+        val logger = CapturingLogger()
+        val httpA = FakeHttpClient(statusCode = 200, body = "{}")
+        val apiA = ApiManager(httpA, logger, convertConfig(sdkKey = "sk-project-a"), json)
+        val httpB = FakeHttpClient(statusCode = 200, body = "{}")
+        val apiB = ApiManager(httpB, logger, convertConfig(sdkKey = "sk-project-b"), json)
+
+        apiA.fetchConfig(experienceId = "555")
+        apiB.fetchConfig(experienceId = "555")
+
+        assertEquals(1, httpA.calls.size, "project A's own sdkKey must issue its own HTTP request")
+        assertEquals(
+            1,
+            httpB.calls.size,
+            "project B must NOT reuse project A's memo entry for the same numeric experienceId — " +
+                "the key must be sdkKey-scoped",
+        )
     }
 
     @Test

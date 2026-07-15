@@ -282,25 +282,11 @@ public open class ApiManager(
         val fetchedAtMillis: Long,
     )
 
-    /**
-     * Guards [previewConfigMemo]. Every read AND write sweeps expired
-     * entries first (superset of the "sweep-on-write" fix the python/ruby
-     * siblings' review required — sweeping on every touch, not just on
-     * write, means an experienceId that is read repeatedly but never
-     * re-fetched still gets pruned once its entry ages out, so the memo
-     * cannot grow unbounded regardless of call pattern).
-     */
-    private val previewConfigMemoLock: Any = Any()
-
-    /**
-     * In-memory-only memo, keyed by `experienceId`. Deliberately NOT keyed
-     * by any config/sdkKey identity: one [ApiManager] instance already
-     * corresponds to exactly one `ConvertConfig` (hence one sdkKey), so
-     * `experienceId` alone is an unambiguous key within this instance's
-     * lifetime. Never written to disk — see [fetchConfig] (experienceId
-     * overload) KDoc.
-     */
-    private val previewConfigMemo: MutableMap<String, PreviewConfigMemoEntry> = mutableMapOf()
+    // qs-02 AND-4 / Review R3 (F4, JS + Python parity) — [previewConfigMemoLock]
+    // and [previewConfigMemo] moved to the companion object (see below) so
+    // the memo is PROCESS-WIDE — shared by every [ApiManager] instance in
+    // the JVM — rather than scoped to this one instance. See the companion
+    // object declarations for the full rationale.
 
     private val batchSize: Int =
         config.events?.batchSize ?: ConfigDefaults.DEFAULT_EVENTS_BATCH_SIZE
@@ -1003,17 +989,39 @@ public open class ApiManager(
      * path as the param-less [fetchConfig] — identical network-error,
      * non-2xx, and malformed-body behaviour (log + return `null`).
      *
-     * ### Memoization (AC8)
+     * ### Memoization (AC8) — Review R3 (F4): PROCESS-WIDE, not per-instance
      *
      * Successful results are memoized **in memory only**, keyed by
-     * [experienceId], for [PREVIEW_CONFIG_MEMO_TTL_MILLIS] (60s). Two
-     * resolutions for the same [experienceId] inside the TTL window return
-     * the memoized value with **zero** additional network calls. The memo
-     * is never handed to [com.convert.sdk.android.adapter.FileConfigCache] —
-     * this method has no reference to that type, so the on-disk config
-     * cache is structurally unreachable from this path; the caller (a
-     * future qs-02 story) MUST NOT feed this method's result into
+     * `"${config.sdkKey}:$experienceId"`, for [PREVIEW_CONFIG_MEMO_TTL_MILLIS]
+     * (60s), in the [previewConfigMemo] companion-object (process-wide)
+     * store. Two resolutions for the same `(sdkKey, experienceId)` pair
+     * inside the TTL window return the memoized value with **zero**
+     * additional network calls — including when the two resolutions come
+     * from TWO DIFFERENT [ApiManager] instances that share the same
+     * sdkKey (JS SDK parity: `api-manager.ts`'s `configByExperienceCache`
+     * is a module-scope `Map`, not an instance field; the Python sibling
+     * memoizes per-process the same way). The memo is never handed to
+     * [com.convert.sdk.android.adapter.FileConfigCache] — this method
+     * has no reference to that type, so the on-disk config cache is
+     * structurally unreachable from this path; the caller (a future
+     * qs-02 story) MUST NOT feed this method's result into
      * `FileConfigCache.write`.
+     *
+     * In-flight-fetch collapsing (two truly-concurrent callers for the
+     * same key sharing ONE network call, as the JS SDK does by storing
+     * the in-flight `Promise` itself) was evaluated and deliberately
+     * deferred: doing so safely would require converting
+     * [previewConfigMemoLock] from a plain JVM monitor into a
+     * suspend-aware lock (`kotlinx.coroutines.sync.Mutex`) and the memo's
+     * value type from a completed [ConfigResponseData] into a
+     * `Deferred<ConfigResponseData?>` that concurrent callers `await()` —
+     * a materially larger concurrency-model change than this fix's scope,
+     * with its own failure/cancellation-propagation surface for awaiters
+     * of a fetch they did not initiate. The completion-stored,
+     * process-wide memo implemented here already collapses the common
+     * case (repeat resolutions within the 60s TTL, from any instance);
+     * pure-concurrent collapsing is left for a dedicated follow-up with
+     * its own test coverage.
      *
      * @param experienceId the previewed experience id (numeric-id string —
      *   see [com.convert.sdk.core.preview.PreviewParam]).
@@ -1022,10 +1030,11 @@ public open class ApiManager(
      *   fails or the fetch errored out. Never throws.
      */
     public suspend fun fetchConfig(experienceId: String): ConfigResponseData? = withContext(Dispatchers.IO) {
+        val cacheKey = previewConfigMemoKey(experienceId)
         val now = clock()
         val memoized = synchronized(previewConfigMemoLock) {
             sweepExpiredPreviewMemoEntries(now)
-            previewConfigMemo[experienceId]?.config
+            previewConfigMemo[cacheKey]?.config
         }
         if (memoized != null) return@withContext memoized
 
@@ -1041,17 +1050,33 @@ public open class ApiManager(
         val writeTime = clock()
         synchronized(previewConfigMemoLock) {
             sweepExpiredPreviewMemoEntries(writeTime)
-            previewConfigMemo[experienceId] = PreviewConfigMemoEntry(fetched, writeTime)
+            previewConfigMemo[cacheKey] = PreviewConfigMemoEntry(fetched, writeTime)
         }
         fetched
     }
+
+    /**
+     * Builds the process-wide [previewConfigMemo] key for [experienceId] —
+     * qs-02 AND-4 / Review R3 (F4). `"${config.sdkKey}:$experienceId"` so
+     * two [ApiManager] instances configured with DIFFERENT sdkKeys never
+     * share a memo entry for the same numeric [experienceId] (each
+     * project's preview-config lookups stay isolated), while instances
+     * sharing the SAME sdkKey do collapse onto one cached fetch. `sdkKey`
+     * is coerced with [String.orEmpty] rather than left nullable in the
+     * key — a `null` sdkKey already short-circuits [buildConfigUrl] before
+     * any network call, so the coercion only affects the (already-broken)
+     * no-sdkKey path and keeps the key a plain non-null `String`.
+     */
+    private fun previewConfigMemoKey(experienceId: String): String = "${config.sdkKey.orEmpty()}:$experienceId"
 
     /**
      * Removes every [previewConfigMemo] entry whose [PreviewConfigMemoEntry.fetchedAtMillis]
      * is [PREVIEW_CONFIG_MEMO_TTL_MILLIS] or more behind [now]. MUST be
      * called only while holding [previewConfigMemoLock] — bounds the
      * memo's size regardless of read/write call pattern (qs-02 AND-4:
-     * "evict expired entries so the memo cannot grow unbounded").
+     * "evict expired entries so the memo cannot grow unbounded"). Sweeps
+     * the process-wide store (Review R3 F4) — safe to call from any
+     * [ApiManager] instance since the map itself is shared.
      */
     private fun sweepExpiredPreviewMemoEntries(now: Long) {
         val iterator = previewConfigMemo.entries.iterator()
@@ -1199,12 +1224,16 @@ public open class ApiManager(
      * `"low"`).
      *
      * @param experienceId qs-02 AND-4 — when non-null, appends
-     *   `exp={experienceId}` right after `environment=` (mirroring the web
-     *   precedent's `?exp={expId}&_conv_low_cache=…` ordering — the
-     *   experience identifier is the primary axis of the preview fetch,
-     *   `debug_token` is the auxiliary QA transport, `_conv_low_cache=1`
-     *   always trails last) and forces `_conv_low_cache=1` the same way a
-     *   configured `debugToken` does.
+     *   `exp={experienceId}` right after `environment=` and forces
+     *   `_conv_low_cache=1` the same way a configured `debugToken` does.
+     *   Query-param ORDER is not semantically significant to the backend
+     *   (each param parses independently of position) — this builder's
+     *   own order (`environment`, `exp`, `debug_token`, `_conv_low_cache`)
+     *   does not match, and does not need to match, the JS SDK reference's
+     *   order in `api-manager.ts` (`exp`, `_conv_low_cache`, `debug_token`).
+     *   Review R3 (F5): a prior revision of this doc incorrectly asserted
+     *   `_conv_low_cache=1` "always trails last" as if that were a
+     *   byte-ordering parity requirement with the JS SDK; it is not.
      */
     private fun buildConfigQuery(experienceId: String? = null): String {
         val environment = config.environment
@@ -1279,6 +1308,50 @@ public open class ApiManager(
         private const val HEADER_AUTHORIZATION: String = "Authorization"
         private const val HEADER_CONTENT_TYPE: String = "Content-Type"
         private const val CONTENT_TYPE_JSON: String = "application/json"
+
+        /**
+         * qs-02 AND-4 / Review R3 (F4, JS + Python parity) — PROCESS-WIDE
+         * memoization store for [fetchConfig]'s `experienceId` overload.
+         *
+         * Companion-object (JVM-static) storage, not an instance field:
+         * the JS SDK's `configByExperienceCache` (module-scope `Map`) and
+         * the Python SDK's per-process memo are both shared by every
+         * client instance in the process, so an identical `(sdkKey,
+         * experienceId)` lookup from a DIFFERENT [ApiManager] instance —
+         * e.g. two [com.convert.sdk.android.ConvertContext]s sharing the
+         * same sdkKey — collapses into the SAME cached fetch instead of
+         * issuing its own redundant request. Keyed by
+         * `"$sdkKey:$experienceId"` (see [fetchConfig]) so distinct
+         * sdkKeys never collide. Never persisted outside process memory.
+         *
+         * [previewConfigMemoLock] guards [previewConfigMemo]. Every read
+         * AND write sweeps expired entries first (superset of the
+         * "sweep-on-write" fix the python/ruby siblings' review
+         * required — sweeping on every touch, not just on write, means a
+         * key that is read repeatedly but never re-fetched still gets
+         * pruned once its entry ages out, so the memo cannot grow
+         * unbounded regardless of call pattern).
+         */
+        private val previewConfigMemoLock: Any = Any()
+        private val previewConfigMemo: MutableMap<String, PreviewConfigMemoEntry> = mutableMapOf()
+
+        /**
+         * Test-only seam: clears the process-wide [previewConfigMemo].
+         * Companion-object storage means the memo otherwise persists for
+         * the lifetime of the JVM/test-run classloader, so table-driven
+         * tests that intentionally reuse the same `sdkKey` +
+         * `experienceId` pair across methods (a common pattern for
+         * exercising TTL/memo-hit assertions) MUST reset it in a
+         * `@BeforeEach`/`@Before` — otherwise an earlier test's memoized
+         * entry silently satisfies a later test's "fresh fetch" assertion.
+         * Production code never calls this.
+         */
+        @Suppress("unused") // consumed from :packages:core test sources only
+        internal fun resetPreviewConfigMemoForTest() {
+            synchronized(previewConfigMemoLock) {
+                previewConfigMemo.clear()
+            }
+        }
 
         /**
          * Mandatory URL path segment between the configured base endpoint

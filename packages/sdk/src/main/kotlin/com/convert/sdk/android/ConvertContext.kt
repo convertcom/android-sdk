@@ -117,31 +117,60 @@ public class ConvertContext internal constructor(
     @Volatile private var previewState: PreviewState? = null
 
     /**
-     * qs-02 / AND-6 (contract §2 "Zero-trace") — `true` when a preview
-     * target is active on this context, regardless of which experience
-     * it targets. [allocateAndRecord], [trackConversion] /
-     * [dispatchConversion], and the file-scope [persistSegmentsToStore]
-     * gate their network-enqueue and persistence side effects on this
-     * flag: "while preview is set on the context, ALL tracking is
-     * disabled ... and ALL visitor-state persistence writes are
-     * disabled" — for every experience/goal/segment write on this
-     * context, not just the previewed experience (other experiences
+     * qs-02 / AND-6 (contract §2 "Zero-trace") / Review R3 (F1, JS parity)
+     * — `true` when a preview target is GENUINELY forceable on this
+     * context: [previewState] is set AND its [PreviewState.experience]
+     * has resolved. [allocateAndRecord] / [resolveSticky], [trackConversion]
+     * / [dispatchConversion], and the file-scope [persistSegmentsToStore]
+     * gate their network-enqueue, internal-event-fire, and persistence
+     * side effects on this flag: "while preview is set on the context,
+     * ALL tracking is disabled ... and ALL visitor-state persistence
+     * writes are disabled" — for every experience/goal/segment write on
+     * this context, not just the previewed experience (other experiences
      * still evaluate and decide normally for coherent rendering, per
      * contract §2). `internal` (not `private`) so the file-scope helper
      * functions below the class body can read it — Kotlin's `private`
      * on a class member is invisible outside the class body, even in
      * the same file.
      *
-     * The in-process [SystemEvents] bus (developer observer callbacks
-     * such as `SystemEvents.BUCKETING` / `SystemEvents.CONVERSION`) is
-     * deliberately NOT gated by this flag — it is not part of the
-     * durable/network tracking path the contract's zero-trace
-     * requirement covers (AC6 asserts zero track-endpoint requests,
-     * zero durable-queue entries, zero WorkManager enqueues, and zero
-     * sticky-bucketing writes; it does not assert zero in-process
-     * observer callbacks).
+     * ### Review R3 F1 — checking `experience != null`, not just non-null state
+     *
+     * [setPreview]'s async branch writes [previewState] with
+     * `experience = null` the INSTANT it dispatches the AND-4 `?exp=`
+     * fetch, before the fetch resolves. Gating on `previewState != null`
+     * (the pre-R3 predicate) engaged zero-trace suppression for the
+     * entire in-flight window — often ~70s under the Story 5.2 retry
+     * backoff — even for what turns out to be a typo'd experience id
+     * that will resolve to "inert." That diverges from the JS/Python
+     * oracles, whose `_preview` / `self._preview` field stays `None`
+     * until the async lookup actually lands (see `context.ts:154-204`:
+     * `this._preview` is assigned only after `await getConfigByExperience`
+     * resolves and the variation validates). Checking `experience != null`
+     * here instead means suppression engages ONLY once a preview is
+     * genuinely forceable — during the in-flight window (and after a
+     * bad-input resolution that clears [previewState] to `null`), this
+     * context behaves completely normally: bucketing/conversion enqueue,
+     * the internal [SystemEvents] fire, and visitor-state persistence
+     * all proceed exactly as they would with no preview set at all.
+     *
+     * ### Review R3 F2 — the in-process SystemEvents bus IS now gated
+     *
+     * Earlier revisions of this method left the in-process
+     * [SystemEvents] bus (`SystemEvents.BUCKETING` / `SystemEvents.CONVERSION`)
+     * deliberately ungated, reasoning that AC6's "zero trace" enumerates
+     * only the durable/network surfaces (track-endpoint requests,
+     * durable-queue entries, WorkManager enqueues, sticky-bucketing
+     * writes) and says nothing about in-process observer callbacks. That
+     * left Android as the only Convert SDK still firing internal
+     * bucketing/conversion events during an active preview — the JS SDK
+     * (`context.ts:260/320/391/472` — `if (!this._preview) { fire }`)
+     * and the Python SDK (`context.py:587` — `if enable_tracking and
+     * self._tracker is not None and self._preview is None`) both
+     * suppress it. This method's result is now consulted at every
+     * `SystemEvents.BUCKETING` / `SystemEvents.CONVERSION` fire site
+     * too, closing that parity gap.
      */
-    internal fun isPreviewActive(): Boolean = previewState != null
+    internal fun isPreviewActive(): Boolean = previewState?.experience != null
 
     /**
      * qs-02 / AND-5 — one context's preview target: the previewed
@@ -316,6 +345,17 @@ public class ConvertContext internal constructor(
      * outbound view-experience event was already enqueued on the
      * original bucketing call (Story 3.2 AC-7).
      *
+     * ### Review R3 (F2 sweep) — also gated by [isPreviewActive]
+     *
+     * A DIFFERENT (non-previewed) experience on a preview context can
+     * still reach this method via its own prior sticky decision — the
+     * JS SDK's single `if (!this._preview) { fire }` gate in
+     * `context.ts` covers this path too (JS has no separate
+     * sticky/fresh-bucket branch; the same gate applies uniformly to
+     * whatever `selectVariation` returns). Gating the fire here keeps
+     * that parity: sticky recall never leaks a `SystemEvents.BUCKETING`
+     * observer callback while any preview is active on this context.
+     *
      * Extracted from [runExperience] so the main method stays under
      * detekt's `LongMethod` ceiling.
      */
@@ -338,7 +378,7 @@ public class ConvertContext internal constructor(
             // Caller will re-bucket on the next step.
             return null
         }
-        if (enableTracking) {
+        if (enableTracking && !isPreviewActive()) {
             sdk.eventManager.fire(
                 event = SystemEvents.BUCKETING,
                 data = mapOf(
@@ -464,20 +504,21 @@ public class ConvertContext internal constructor(
         // BUCKETING fire when enableTracking is false so observers do not
         // receive misleading bucketing signals during silent runs).
         // Story 5.4 also gates the network enqueue by the SDK-level
-        // tracking toggle on ApiManager. qs-02 AND-6 additionally
-        // suppresses the network enqueue (not the in-process event fire)
-        // while a preview is active on this context (contract §2
-        // "Zero-trace") — see [isPreviewActive] for why the internal
-        // SystemEvents bus stays ungated.
-        if (enableTracking) {
-            if (!isPreviewActive()) {
-                sdk.apiManager?.enqueueBucketingEvent(
-                    visitorId = visitorId,
-                    experienceId = experience.id.orEmpty(),
-                    variationId = allocation.variationId,
-                    segments = getMergedSegments(),
-                )
-            }
+        // tracking toggle on ApiManager. qs-02 AND-6 / Review R3 (F2, JS
+        // parity) additionally suppresses BOTH the network enqueue AND
+        // the in-process SystemEvents.BUCKETING fire while a preview is
+        // active on this context (contract §2 "Zero-trace") — matching
+        // the JS SDK's single `if (!this._preview) { fire }` gate in
+        // `context.ts` and the Python SDK's `self._preview is None`
+        // check in `context.py`. See [isPreviewActive] for the full
+        // rationale.
+        if (enableTracking && !isPreviewActive()) {
+            sdk.apiManager?.enqueueBucketingEvent(
+                visitorId = visitorId,
+                experienceId = experience.id.orEmpty(),
+                variationId = allocation.variationId,
+                segments = getMergedSegments(),
+            )
             sdk.eventManager.fire(
                 event = SystemEvents.BUCKETING,
                 data = mapOf(
@@ -898,13 +939,17 @@ public class ConvertContext internal constructor(
                 // the event should actually be emitted. Story 4.4 wires
                 // the merged default+custom segments snapshot into the
                 // outbound call (AC-3).
-                // qs-02 AND-6 (contract §2 "Zero-trace") — suppressed
-                // while a preview is active on this context; the
-                // trackConversion caller already skipped the persisted
-                // markGoalTracked write for this same call (see there).
-                // The internal CONVERSION fire below stays ungated (see
-                // [isPreviewActive] for why the in-process event bus is
-                // out of scope for zero-trace).
+                // qs-02 AND-6 / Review R3 (F2, JS parity) — the ENTIRE
+                // step (network enqueue AND the internal CONVERSION fire)
+                // is suppressed while a preview is active on this
+                // context; the trackConversion caller already skipped
+                // the persisted markGoalTracked write for this same call
+                // (see there). This mirrors the JS SDK's trackConversion,
+                // which returns before its `SystemEvents.CONVERSION` fire
+                // when `this._preview` is set (`context.ts:514-521`) —
+                // conversion tracking is a documented full no-op during
+                // preview, matching the Python SDK's
+                // `self._preview is not None` short-circuit.
                 if (!isPreviewActive()) {
                     sdk.apiManager?.enqueueConversionEvent(
                         visitorId = visitorId,
@@ -912,17 +957,17 @@ public class ConvertContext internal constructor(
                         goalData = goalData?.takeIf { it.isNotEmpty() },
                         segments = getMergedSegments(),
                     )
+                    // Step 5 — internal event fire. JS SDK parity:
+                    // `{visitorId, goalKey}` — not goalId. Downstream
+                    // consumers that need the id re-resolve via the config.
+                    sdk.eventManager.fire(
+                        event = SystemEvents.CONVERSION,
+                        data = mapOf(
+                            "visitorId" to visitorId,
+                            "goalKey" to goalKey,
+                        ),
+                    )
                 }
-                // Step 5 — internal event fire. JS SDK parity:
-                // `{visitorId, goalKey}` — not goalId. Downstream consumers
-                // that need the id re-resolve via the config.
-                sdk.eventManager.fire(
-                    event = SystemEvents.CONVERSION,
-                    data = mapOf(
-                        "visitorId" to visitorId,
-                        "goalKey" to goalKey,
-                    ),
-                )
             } catch (t: Throwable) {
                 // AC-4: catch, log, swallow. Never propagate to the host
                 // application. TooGenericExceptionCaught suppressed
@@ -1171,6 +1216,24 @@ public class ConvertContext internal constructor(
      *    this is the async-path equivalent, since the resolved experience
      *    is not yet known at [setPreview] call time here).
      *
+     * ### Review R3 (F3) — read-once guard against clobbering a concurrent preview
+     *
+     * A later [setPreview] call for a DIFFERENT `experienceId` (call it
+     * "B") may land on this context while THIS coroutine ("A") is still
+     * awaiting the fetch above. Naively re-reading [previewState] at
+     * write time (e.g. `previewState = previewState?.takeIf { ... }
+     * ?.copy(...)`) is unsafe: `previewState` is dereferenced multiple
+     * times across that expression, so if B's write happens to land in
+     * between, the expression can end up writing A's stale result back
+     * over B's live state (nulling B out, or worse — copying A's
+     * resolved [ConfigExperience] onto B's `experienceId`/`variationId`
+     * pair). The fix: at each of the three write sites below, read
+     * [previewState] into a local EXACTLY ONCE, then only write when
+     * that SAME local's `experienceId` still equals THIS coroutine's
+     * [experienceId] parameter. A mismatch means a different preview
+     * (B) is now active — leave it completely untouched; never null it
+     * and never overwrite it with A's result.
+     *
      * Extracted from [setPreview] so the public method stays a simple,
      * synchronous dispatch and [runExperience] never has to await a
      * suspend call.
@@ -1185,13 +1248,17 @@ public class ConvertContext internal constructor(
                     "via ?exp= fetch; preview inert",
                 tag = TAG,
             )
-            if (previewState?.experienceId == experienceId) {
+            val stateAtMiss = previewState
+            if (stateAtMiss?.experienceId == experienceId) {
                 previewState = null
             }
             return
         }
 
-        val activeVariationId = previewState?.takeIf { it.experienceId == experienceId }?.variationId
+        val stateForVariationLookup = previewState
+        val activeVariationId = stateForVariationLookup
+            ?.takeIf { it.experienceId == experienceId }
+            ?.variationId
             ?: return
         if (PreviewDecision.resolve(resolvedExperience, activeVariationId) == null) {
             sdk.logger.warn(
@@ -1199,11 +1266,17 @@ public class ConvertContext internal constructor(
                     "found in previewed experience '$experienceId'; preview inert",
                 tag = TAG,
             )
-            previewState = null
+            val stateAtVariationMiss = previewState
+            if (stateAtVariationMiss?.experienceId == experienceId) {
+                previewState = null
+            }
             return
         }
 
-        previewState = previewState?.copy(experience = resolvedExperience)
+        val stateAtWrite = previewState
+        if (stateAtWrite?.experienceId == experienceId) {
+            previewState = stateAtWrite.copy(experience = resolvedExperience)
+        }
     }
 
     /**
