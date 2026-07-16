@@ -15,6 +15,7 @@ import com.convert.sdk.core.model.generated.ConfigExperience
 import com.convert.sdk.core.model.generated.ConfigLocation
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
+import com.convert.sdk.core.model.generated.GenericListMatchingOptions
 import com.convert.sdk.core.preview.PreviewDecision
 import com.convert.sdk.core.rules.BucketedExperienceResolver
 import kotlinx.coroutines.launch
@@ -1403,9 +1404,11 @@ private const val GATE_TAG: String = "ConvertContext"
  * Audience gate (Story 3.4 AC-5) — resolves each ID in
  * `experience.audiences` against `data.audiences`, evaluates each
  * resolved [ConfigAudience]'s rules against [context]'s
- * `currentAttributes`, returns `true` when ANY audience matches (JS SDK
- * parity — `data-manager.ts:1110-1143`'s `selectAudiences` uses OR
- * semantics across the audience list).
+ * `currentAttributes`, and combines the per-audience results per
+ * `experience.settings.matchingOptions.audiences` (JS SDK parity —
+ * `data-manager.ts:419-428`): `ALL` requires every resolved audience to
+ * match (AND), while `ANY` (the default when absent/null) requires only
+ * one (OR).
  *
  * Empty / null `experience.audiences` skips the gate (no-constraint
  * semantics). A referenced ID missing from the audiences lookup counts
@@ -1443,7 +1446,7 @@ private fun passesAudienceGate(
             sdk.dataManager.getStoreData(context.visitorId).bucketing?.containsKey(targetKey) == true
         }
     }
-    val anyMatch = audienceIds.any { audienceId ->
+    val audienceMatches = audienceIds.map { audienceId ->
         val audience = audiencesById[audienceId]
         if (audience == null) {
             sdk.logger.debug(
@@ -1456,13 +1459,22 @@ private fun passesAudienceGate(
             sdk.ruleManager.evaluate(audience.rules, context.currentAttributes(), bucketedResolver)
         }
     }
-    if (!anyMatch) {
+    // JS parity (data-manager.ts:419-428) — `matching_options.audiences: ALL`
+    // combines the resolved per-audience matches with AND instead of the
+    // default OR; null/absent settings keep the pre-existing ANY semantics.
+    val matchingOptions = experience.settings?.matchingOptions?.audiences
+    val matched = if (matchingOptions == GenericListMatchingOptions.ALL) {
+        audienceMatches.all { it }
+    } else {
+        audienceMatches.any { it }
+    }
+    if (!matched) {
         sdk.logger.debug(
             message = "ConvertContext.runExperience: visitor not in audience for '$experienceKey'",
             tag = GATE_TAG,
         )
     }
-    return anyMatch
+    return matched
 }
 
 /**
