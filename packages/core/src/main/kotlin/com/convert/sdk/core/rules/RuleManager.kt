@@ -139,13 +139,14 @@ public class RuleManager(
      * `null` or empty / absent `OR` → WARN + `false`, same as the
      * audience overload (F-024).
      *
-     * @param resolver see [evaluate] (audience overload) — same
-     *   `bucketed_into_experience_key` contract.
+     * No `resolver` parameter: `bucketed_into_experience_key` (AND-1,
+     * qs-03) only appears in AUDIENCE rule trees — `passesLocationGate`
+     * stays resolver-free and falls closed by construction (never
+     * threads bucketing state into this overload).
      */
     public fun evaluate(
         rules: RuleObject?,
         attributes: Map<String, JsonElement>,
-        resolver: BucketedExperienceResolver? = null,
     ): Boolean {
         val orGroups = rules?.OR
         if (orGroups.isNullOrEmpty()) {
@@ -153,7 +154,7 @@ public class RuleManager(
             return false
         }
         return orGroups.any { orGroup ->
-            evaluateLocationAndBlock(orGroup.AND, attributes, resolver)
+            evaluateLocationAndBlock(orGroup.AND, attributes, null)
         }
     }
 
