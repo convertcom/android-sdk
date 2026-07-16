@@ -12,8 +12,11 @@ import androidx.test.core.app.ApplicationProvider
 import com.convert.sdk.core.event.SystemEvents
 import com.convert.sdk.core.model.generated.ConfigAudience
 import com.convert.sdk.core.model.generated.ConfigExperience
+import com.convert.sdk.core.model.generated.ConfigExperienceSettings
+import com.convert.sdk.core.model.generated.ConfigExperienceSettingsMatchingOptions
 import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
+import com.convert.sdk.core.model.generated.GenericListMatchingOptions
 import com.convert.sdk.core.model.generated.RuleObjectAudience
 import com.convert.sdk.core.rules.rawRuleSerializersModule
 import kotlinx.serialization.json.Json
@@ -53,8 +56,12 @@ import java.math.BigDecimal
  * excluded from an audience carrying `NOT bucketed_into_experience_key(exp-a)`;
  * a visitor who never ran exp-a buckets into exp-b/c/d normally), AC3
  * (cross-restart persistence via warm `SharedPreferences`), AC4 (empty
- * visitor attributes throughout), and AC6 (combination with a generic
- * rule under `ALL`/`ANY`).
+ * visitor attributes throughout), and AC6 (a separate generic audience
+ * combined with the exclusion audience via `matching_options.audiences:
+ * ALL`/`ANY` — the cross-audience axis, JS #416 parity; NOT a rule-tree
+ * AND/OR_WHEN combination within one audience, which is covered instead
+ * at the [com.convert.sdk.core.rules.RuleManager] unit level by
+ * `BucketedIntoExperienceKeyRuleTest`).
  *
  * AC5 (read-only) is target-scoped (exp-a): evaluating the exclusion
  * rule must not bucket, write, or track the TARGET (exp-a) itself. The
@@ -110,16 +117,25 @@ internal class ConvertContextMutualExclusionTest {
     private fun decodeAudienceRules(payload: String): RuleObjectAudience =
         ruleJson.decodeFromString(payload)
 
-    /** One experience, one variation, 100% allocation — deterministic bucketing (see class KDoc). */
+    /**
+     * One experience, one variation, 100% allocation — deterministic bucketing
+     * (see class KDoc). [matchingOptions] drives `settings.matching_options.audiences`
+     * (AC6's cross-audience ALL/ANY combination axis) — `null` (the default)
+     * omits `settings` entirely, matching every non-AC6 fixture below.
+     */
     private fun oneVariationExperience(
         id: String,
         key: String,
         variationId: String,
         audienceIds: List<String>? = null,
+        matchingOptions: GenericListMatchingOptions? = null,
     ): ConfigExperience = ConfigExperience(
         id = id,
         key = key,
         audiences = audienceIds,
+        settings = matchingOptions?.let {
+            ConfigExperienceSettings(matchingOptions = ConfigExperienceSettingsMatchingOptions(audiences = it))
+        },
         variations = listOf(
             ExperienceVariationConfig(
                 id = variationId,
@@ -142,32 +158,23 @@ internal class ConvertContextMutualExclusionTest {
         ),
     )
 
-    /** AC6 ALL semantics: two AND blocks — `plan == premium` AND `NOT bucketed into [targetKey]`. */
-    private fun exclusionAllAudience(id: String, targetKey: String): ConfigAudience = ConfigAudience(
-        id = id,
-        key = id,
-        rules = decodeAudienceRules(
-            """
-            {"OR":[{"AND":[
-              {"OR_WHEN":[{"rule_type":"generic_key_value","matching":{"match_type":"equals","negated":false},"key":"plan","value":"premium"}]},
-              {"OR_WHEN":[{"rule_type":"bucketed_into_experience_key","matching":{"match_type":"equals","negated":true},"value":"$targetKey"}]}
-            ]}]}
-            """.trimIndent(),
-        ),
-    )
-
     /**
-     * AC6 ANY semantics: one OR_WHEN block with BOTH leaves — either
-     * `plan == premium` OR `NOT bucketed into [targetKey]`.
+     * AC6 cross-audience axis: a dedicated single-leaf generic audience
+     * (`plan == premium`) held SEPARATE from the exclusion audience —
+     * mirrors JS #416's `makeGenericAudience()`. AC6's ALL/ANY combination
+     * is driven by `matching_options.audiences` combining THIS audience
+     * with [exclusionAudience], not by a rule-tree AND/OR_WHEN inside one
+     * audience (that in-audience combination is already covered by
+     * `BucketedIntoExperienceKeyRuleTest`'s "combination under ALL/ANY"
+     * cases at the [com.convert.sdk.core.rules.RuleManager] unit level).
      */
-    private fun exclusionAnyAudience(id: String, targetKey: String): ConfigAudience = ConfigAudience(
+    private fun genericAudience(id: String): ConfigAudience = ConfigAudience(
         id = id,
         key = id,
         rules = decodeAudienceRules(
             """
             {"OR":[{"AND":[{"OR_WHEN":[
-              {"rule_type":"generic_key_value","matching":{"match_type":"equals","negated":false},"key":"plan","value":"premium"},
-              {"rule_type":"bucketed_into_experience_key","matching":{"match_type":"equals","negated":true},"value":"$targetKey"}
+              {"rule_type":"generic_text_key_value","matching":{"match_type":"equals","negated":false},"key":"plan","value":"premium"}
             ]}]}]}
             """.trimIndent(),
         ),
@@ -275,60 +282,79 @@ internal class ConvertContextMutualExclusionTest {
     // --- AC6: combination semantics at the ConvertContext gate ---------------
 
     @Test
-    fun `AC6 ALL — generic rule AND NOT-bucketed-into-A must both pass`() {
+    fun `AC6 ALL — generic audience AND exclusion audience must both match`() {
         val config = ConfigResponseData(
             experiences = listOf(
                 oneVariationExperience(EXP_A_ID, EXP_A_KEY, VAR_A_ID),
-                oneVariationExperience(EXP_C_ID, EXP_C_KEY, VAR_C_ID, audienceIds = listOf(EXCLUDE_A_ALL_AUDIENCE)),
+                oneVariationExperience(
+                    EXP_C_ID,
+                    EXP_C_KEY,
+                    VAR_C_ID,
+                    audienceIds = listOf(GENERIC_AUDIENCE_ID, EXCLUDE_A_AUDIENCE),
+                    matchingOptions = GenericListMatchingOptions.ALL,
+                ),
             ),
-            audiences = listOf(exclusionAllAudience(EXCLUDE_A_ALL_AUDIENCE, EXP_A_KEY)),
+            audiences = listOf(
+                genericAudience(GENERIC_AUDIENCE_ID),
+                exclusionAudience(EXCLUDE_A_AUDIENCE, EXP_A_KEY),
+            ),
         )
         val sdk = buildSdk(config)
 
-        // Generic passes AND visitor is NOT bucketed into A -> ALL passes -> bucketed.
+        // Generic audience matches AND visitor is NOT bucketed into A -> ALL passes -> bucketed.
         val eligible = sdk.createContext("visitor_all_eligible")
         eligible.setAttributes(mapOf("plan" to "premium"))
         assertEquals(
-            "generic rule passes and visitor is NOT bucketed into exp-a: ALL must pass",
+            "generic audience matches and visitor is NOT bucketed into exp-a: ALL must pass",
             VAR_C_ID,
             eligible.runExperience(EXP_C_KEY)?.id,
         )
 
-        // Generic passes but visitor IS bucketed into A -> ALL fails -> excluded.
+        // Generic audience matches but visitor IS bucketed into A -> ALL fails -> excluded.
         val excluded = sdk.createContext("visitor_all_excluded")
         assertEquals(VAR_A_ID, excluded.runExperience(EXP_A_KEY)?.id)
         excluded.setAttributes(mapOf("plan" to "premium"))
         assertNull(
-            "generic rule passes but visitor IS bucketed into exp-a: ALL must fail",
+            "generic audience matches but visitor IS bucketed into exp-a: ALL must fail",
             excluded.runExperience(EXP_C_KEY),
         )
     }
 
     @Test
-    fun `AC6 ANY — either the generic rule or NOT-bucketed-into-A satisfies`() {
+    fun `AC6 ANY — either the generic audience or the exclusion audience satisfies`() {
         val config = ConfigResponseData(
             experiences = listOf(
                 oneVariationExperience(EXP_A_ID, EXP_A_KEY, VAR_A_ID),
-                oneVariationExperience(EXP_D_ID, EXP_D_KEY, VAR_D_ID, audienceIds = listOf(EXCLUDE_A_ANY_AUDIENCE)),
+                oneVariationExperience(
+                    EXP_D_ID,
+                    EXP_D_KEY,
+                    VAR_D_ID,
+                    audienceIds = listOf(GENERIC_AUDIENCE_ID, EXCLUDE_A_AUDIENCE),
+                    matchingOptions = GenericListMatchingOptions.ANY,
+                ),
             ),
-            audiences = listOf(exclusionAnyAudience(EXCLUDE_A_ANY_AUDIENCE, EXP_A_KEY)),
+            audiences = listOf(
+                genericAudience(GENERIC_AUDIENCE_ID),
+                exclusionAudience(EXCLUDE_A_AUDIENCE, EXP_A_KEY),
+            ),
         )
         val sdk = buildSdk(config)
 
-        // Generic fails (plan unset) but visitor is NOT bucketed into A ->
-        // the bucketed leaf alone satisfies ANY -> bucketed.
-        val viaBucketedLeaf = sdk.createContext("visitor_any_via_bucketed")
+        // Generic audience fails (plan unset) but visitor is NOT bucketed into A ->
+        // the exclusion audience alone satisfies ANY -> bucketed.
+        val viaExclusionAudience = sdk.createContext("visitor_any_via_exclusion")
         assertEquals(
-            "generic rule fails but visitor is NOT bucketed into exp-a: ANY must pass via the bucketed leaf",
+            "generic audience fails but visitor is NOT bucketed into exp-a: ANY must pass via " +
+                "the exclusion audience",
             VAR_D_ID,
-            viaBucketedLeaf.runExperience(EXP_D_KEY)?.id,
+            viaExclusionAudience.runExperience(EXP_D_KEY)?.id,
         )
 
-        // Generic fails AND visitor IS bucketed into A -> both leaves fail -> excluded.
+        // Generic audience fails AND visitor IS bucketed into A -> both audiences fail -> excluded.
         val bothFail = sdk.createContext("visitor_any_both_fail")
         assertEquals(VAR_A_ID, bothFail.runExperience(EXP_A_KEY)?.id)
         assertNull(
-            "generic rule fails and visitor IS bucketed into exp-a: ANY must fail",
+            "generic audience fails and visitor IS bucketed into exp-a: ANY must fail",
             bothFail.runExperience(EXP_D_KEY),
         )
     }
@@ -462,7 +488,6 @@ internal class ConvertContextMutualExclusionTest {
         private const val VAR_D_ID = "100904"
 
         private const val EXCLUDE_A_AUDIENCE = "aud-exclude-a"
-        private const val EXCLUDE_A_ALL_AUDIENCE = "aud-exclude-a-all"
-        private const val EXCLUDE_A_ANY_AUDIENCE = "aud-exclude-a-any"
+        private const val GENERIC_AUDIENCE_ID = "aud-generic-plan-premium"
     }
 }
