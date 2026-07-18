@@ -30,6 +30,21 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!--
+              qs-08 (experiment-preview) deep link. Canonical test URI:
+              convertdemo://preview?convert_preview=<experienceId>.<variationId>
+              Handled by MainActivity.handlePreviewIntent — see
+              README.md's "Try it: Experiment preview (deep links)".
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="convertdemo"
+                    android:host="preview" />
+            </intent-filter>
         </activity>
 
     </application>

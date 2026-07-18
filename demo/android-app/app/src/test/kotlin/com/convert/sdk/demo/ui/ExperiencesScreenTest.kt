@@ -45,8 +45,13 @@ import org.robolectric.annotation.Config
  * subscriber to emit the same event, so the test can assert both
  * card-render AND inspector-event correlation in a single flow.
  */
+// qs-08 (experiment-preview) — the new PreviewCard makes this screen's
+// content taller than Robolectric's legacy default 320x470dp window
+// (a pre-minSdk-24 device profile). `qualifiers = "w360dp-h640dp"`
+// matches Android's own smallest common modern-phone reference size
+// (e.g. Nexus 5-class), consistent with this SDK's minSdk 24 baseline.
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [34], qualifiers = "w360dp-h640dp")
 class ExperiencesScreenTest {
 
     @get:Rule

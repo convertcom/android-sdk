@@ -81,3 +81,17 @@
 # normally and experiences with location rules will be reported as
 # "no location properties set on context").
 # convertLocationProperties={"location":"pricing"}
+
+# ---------------------------------------------------------------------------
+# Debug token (qs-08 experiment preview — QA config transport)
+# ---------------------------------------------------------------------------
+# QA debug token passed to `ConvertSDK.Builder.debugToken(…)`. When set,
+# every config-fetch URL carries `debug_token=<value>` plus a forced
+# low-cache hint, and the on-disk config cache is neither read nor
+# written while set — so a QA build always sees the full fresh config,
+# draft and paused experiences included. Generate a token from the
+# Convert dashboard (Project settings → Debug token) or via the
+# `V2/Projects::generateDebugToken` API; it is redacted from logs and
+# never sent to the track endpoint. Default when omitted or blank: the
+# builder call is skipped entirely (no QA transport, normal caching).
+# convertDebugToken=your-debug-token-here
