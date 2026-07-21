@@ -33,6 +33,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.IOException
+import java.net.URLEncoder
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -1250,15 +1251,15 @@ public open class ApiManager(
 
         val builder = StringBuilder("?")
         if (environment.isNotEmpty()) {
-            builder.append("environment=").append(environment)
+            builder.append("environment=").append(URLEncoder.encode(environment, "UTF-8"))
         }
         if (experienceId != null) {
             if (builder.contains('=')) builder.append('&')
-            builder.append("exp=").append(experienceId)
+            builder.append("exp=").append(URLEncoder.encode(experienceId, "UTF-8"))
         }
         if (debugToken != null) {
             if (builder.contains('=')) builder.append('&')
-            builder.append("debug_token=").append(debugToken)
+            builder.append("debug_token=").append(URLEncoder.encode(debugToken, "UTF-8"))
         }
         if (isLowCache) {
             // Insert `&` only when an earlier `key=value` is already in the

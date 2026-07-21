@@ -71,6 +71,24 @@ internal class ApiManagerDebugTokenTest {
     }
 
     @Test
+    fun `fetchConfig percent-encodes a debugToken containing reserved query characters`() = runTest {
+        // Parity guard: iOS/Ruby/PHP/Python already URL-encode dynamic
+        // config-fetch query values. A debug token containing '+', '/', '='
+        // must be percent-encoded rather than concatenated raw, or it
+        // corrupts the query string / is misparsed by the backend.
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val logger = CapturingLogger()
+        val config = convertConfig(sdkKey = "sk-abc", debugToken = "dbg+tok/en=x", cacheLevel = null)
+        val api = ApiManager(http, logger, config, json)
+
+        api.fetchConfig()
+
+        val expectedUrl = "https://cdn-4.convertexperiments.com/api/v1/config/sk-abc" +
+            "?environment=staging&debug_token=dbg%2Btok%2Fen%3Dx&_conv_low_cache=1"
+        assertEquals(expectedUrl, http.calls.single().url)
+    }
+
+    @Test
     fun `fetchConfig without debugToken never adds debug_token param`() = runTest {
         // Regression lock: absence of debugToken must reproduce today's
         // exact URL shape (no debug_token, cacheLevel governs low-cache).
@@ -144,39 +162,47 @@ internal class ApiManagerDebugTokenTest {
     }
 
     @Test
-    fun `fetchConfig error log redacts only the real debug_token param, leaving a lookalike param name intact`() =
-        runTest {
-            // Review R2 Finding 2 — the unanchored regex `debug_token=[^&]*`
-            // also matches the tail of a DIFFERENT param name that merely
-            // ENDS in `debug_token` (e.g. `not_debug_token=`), corrupting
-            // that param's own value even though it carries no secret. The
-            // fix anchors the match to a `?`/`&` immediately preceding
-            // `debug_token=`.
-            val http = ThrowingHttpClient(java.io.IOException("boom"))
-            val logger = CapturingLogger()
-            val config = convertConfig(
-                sdkKey = "sk-abc",
-                debugToken = "SECRET",
-                environment = "not_debug_token=xyz",
-            )
-            val api = ApiManager(http, logger, config, json)
+    fun `redactDebugToken leaves a lookalike param name intact, redacting only the real debug_token`() {
+        // Review R2 Finding 2 — the unanchored regex `debug_token=[^&]*`
+        // also matches the tail of a DIFFERENT param name that merely
+        // ENDS in `debug_token` (e.g. `not_debug_token=`), corrupting
+        // that param's own value even though it carries no secret. The
+        // fix anchors the match to a `?`/`&` immediately preceding
+        // `debug_token=`.
+        //
+        // FIX B (URL-encoding every dynamic config-fetch query value)
+        // closes the only config-driven vector that could ever construct
+        // this raw collision through `fetchConfig` — a literal `=` inside
+        // `environment`/`exp`/`debugToken` is now always percent-encoded
+        // to `%3D` before it reaches the URL, so this regression guard
+        // exercises the private `redactDebugToken` regex directly via
+        // reflection (same pattern as NetworkObserverTest) instead of
+        // relying on an `environment` override that encoding now sanitizes.
+        val http = FakeHttpClient(statusCode = 200, body = "{}")
+        val logger = CapturingLogger()
+        val config = convertConfig(sdkKey = "sk-abc", debugToken = "SECRET")
+        val api = ApiManager(http, logger, config, json)
 
-            api.fetchConfig()
+        val redactMethod = ApiManager::class.java.getDeclaredMethod("redactDebugToken", String::class.java)
+        redactMethod.isAccessible = true
+        val redacted = redactMethod.invoke(
+            api,
+            "https://cdn-4.convertexperiments.com/api/v1/config/sk-abc?not_debug_token=xyz&debug_token=SECRET",
+        ) as String
 
-            val warnMessages = logger.warnMessages()
-            assertTrue(
-                warnMessages.any { it.contains("not_debug_token=xyz") },
-                "lookalike param 'not_debug_token=xyz' must be left fully intact, got: $warnMessages",
-            )
-            assertTrue(
-                warnMessages.any { it.contains("debug_token=[REDACTED]") },
-                "the real debug_token value must still be redacted, got: $warnMessages",
-            )
-            assertFalse(
-                warnMessages.any { it.contains("SECRET") },
-                "raw debug token must never appear in a WARN log: $warnMessages",
-            )
-        }
+        assertTrue(
+            redacted.contains("not_debug_token=xyz"),
+            "lookalike param 'not_debug_token=xyz' must be left fully intact, got: $redacted",
+        )
+        assertTrue(
+            redacted.contains("debug_token=[REDACTED]"),
+            "the real debug_token value must still be redacted, got: $redacted",
+        )
+        assertFalse(
+            redacted.contains("SECRET"),
+            "raw debug token must never appear after redaction: $redacted",
+        )
+    }
 
     // --- Test helpers -------------------------------------------------------
 

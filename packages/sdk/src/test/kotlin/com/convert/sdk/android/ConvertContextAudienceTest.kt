@@ -324,8 +324,11 @@ internal class ConvertContextAudienceTest {
     }
 
     @Test
-    fun `runExperience returns null when audience id cannot be resolved`() {
-        // Experience references an audience that isn't in the config's audiences list
+    fun `runExperience passes unrestricted when every audience id is dangling (JS parity)`() {
+        // Experience references only an audience id absent from the config's
+        // audiences list. JS SDK (data-manager.ts getItemsByIds) drops
+        // unresolved ids BEFORE combining, so an empty resolved set means
+        // "no restrictions" — same as an empty `experience.audiences` list.
         val config = testConfig(
             audienceIds = listOf("aud-ghost"),
             allAudiences = listOf(planPremiumAudience),
@@ -336,8 +339,46 @@ internal class ConvertContextAudienceTest {
 
         val result = ctx.runExperience("welcome")
 
-        // No matching audience → visitor not eligible
-        assertNull(result)
+        assertNotNull("all-dangling audience ids must not zero the gate", result)
+    }
+
+    @Test
+    fun `runExperience under ALL passes when the matching audience is present but a co-listed id is dangling`() {
+        // FIX A regression guard: one present+matching audience plus one
+        // dangling id must still serve under `ALL` — the dangling id is
+        // dropped before the ALL/ANY combination, not counted as a hard
+        // failure that zeroes the gate.
+        val config = testConfig(
+            audienceIds = listOf("aud-premium", "aud-ghost"),
+            allAudiences = listOf(planPremiumAudience),
+            audienceMatchingOptions = GenericListMatchingOptions.ALL,
+        )
+        val sdk = buildSdk(config)
+        val ctx = sdk.createContext("visitor_all_with_dangling")
+        ctx.setAttributes(mapOf("plan" to "premium"))
+
+        val result = ctx.runExperience("welcome")
+
+        assertNotNull("dangling id dropped, remaining resolved audience matches under ALL", result)
+    }
+
+    @Test
+    fun `runExperience under ALL still fails when the only present audience does not match`() {
+        // Confirms the FIX A rewrite didn't fail-open the ordinary case:
+        // a real, resolved audience that fails its rules still fails the
+        // gate under ALL (no dangling id involved here).
+        val config = testConfig(
+            audienceIds = listOf("aud-premium"),
+            allAudiences = listOf(planPremiumAudience),
+            audienceMatchingOptions = GenericListMatchingOptions.ALL,
+        )
+        val sdk = buildSdk(config)
+        val ctx = sdk.createContext("visitor_all_present_no_match")
+        ctx.setAttributes(mapOf("plan" to "free"))
+
+        val result = ctx.runExperience("welcome")
+
+        assertNull("resolved audience present but non-matching must still fail under ALL", result)
     }
 
     // --- AC-6: Location rules ---------------------------------------------

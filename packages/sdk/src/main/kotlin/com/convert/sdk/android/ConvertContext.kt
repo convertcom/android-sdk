@@ -1417,8 +1417,13 @@ private const val GATE_TAG: String = "ConvertContext"
  * one (OR).
  *
  * Empty / null `experience.audiences` skips the gate (no-constraint
- * semantics). A referenced ID missing from the audiences lookup counts
- * as a failed audience (DEBUG-logged — config is malformed).
+ * semantics). A referenced ID missing from the audiences lookup is
+ * DEBUG-logged (config is malformed/stale) and then DROPPED before
+ * `ALL`/`ANY` combination — JS parity (`data-manager.ts`): ids are
+ * resolved first, unresolved ones discarded, and only the resolved set
+ * is combined. If every id is dangling, the resolved set is empty and
+ * the gate passes (unrestricted), matching JS's empty-audiences
+ * semantics.
  *
  * Lives at file scope so [ConvertContext] stays under detekt's
  * `TooManyFunctions` threshold — same rationale as
@@ -1452,7 +1457,10 @@ private fun passesAudienceGate(
             sdk.dataManager.getStoreData(context.visitorId).bucketing?.containsKey(targetKey) == true
         }
     }
-    val audienceMatches = audienceIds.map { audienceId ->
+    // JS parity — resolve ids FIRST and drop any dangling/unresolved id
+    // before combining, so one stale audience reference can't zero the
+    // whole gate under `ALL`.
+    val resolvedAudiences = audienceIds.mapNotNull { audienceId ->
         val audience = audiencesById[audienceId]
         if (audience == null) {
             sdk.logger.debug(
@@ -1460,16 +1468,21 @@ private fun passesAudienceGate(
                     "experience '$experienceKey' not found in config",
                 tag = GATE_TAG,
             )
-            false
-        } else {
-            sdk.ruleManager.evaluate(audience.rules, context.currentAttributes(), bucketedResolver)
         }
+        audience
+    }
+    val audienceMatches = resolvedAudiences.map { audience ->
+        sdk.ruleManager.evaluate(audience.rules, context.currentAttributes(), bucketedResolver)
     }
     // JS parity (data-manager.ts:419-428) — `matching_options.audiences: ALL`
     // combines the resolved per-audience matches with AND instead of the
     // default OR; null/absent settings keep the pre-existing ANY semantics.
+    // An empty resolved set (all ids dangling) passes unrestricted, matching
+    // JS's empty-audiences semantics.
     val matchingOptions = experience.settings?.matchingOptions?.audiences
-    val matched = if (matchingOptions == GenericListMatchingOptions.ALL) {
+    val matched = if (audienceMatches.isEmpty()) {
+        true
+    } else if (matchingOptions == GenericListMatchingOptions.ALL) {
         audienceMatches.all { it }
     } else {
         audienceMatches.any { it }
