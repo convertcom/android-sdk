@@ -15,6 +15,9 @@ import com.convert.sdk.core.model.generated.ConfigResponseData
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
 import com.convert.sdk.core.port.HttpClient
 import com.convert.sdk.core.port.Logger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -228,13 +231,22 @@ internal class ConvertContextPreviewRaceAndTimingTest {
     // ---------------------------------------------------------------
 
     @Test
-    fun `isPreviewActive stays false during the in-flight exp fetch window and becomes true once resolved`() {
+    fun `isPreviewActive is false during the in-flight fetch and true once resolved`() = runBlocking {
         val gatedHttp = gatedHttpForDraftFetch()
         val sdk = buildSdk(gatedHttp, sdkKey = "sk-timing")
         val ctx = sdk.createContext("visitor_timing_1")
 
-        // Dispatches the async ?exp= fetch — held open by the gate.
-        ctx.setPreview(experienceId = "exp-draft", variationId = "var-x")
+        // setPreview now AWAITS the ?exp= fetch, so launch it on a separate
+        // coroutine to observe the in-flight window: the gated fetch keeps this
+        // job suspended inside setPreview — previewState already written with
+        // experience=null — until openGate().
+        val job = launch(Dispatchers.IO) {
+            ctx.setPreview(experienceId = "exp-draft", variationId = "var-x")
+        }
+        assertTrue(
+            "the ?exp= fetch must have started (setPreview suspended mid-fetch)",
+            gatedHttp.entered.await(RESPOND_TIMEOUT_SECONDS, TimeUnit.SECONDS),
+        )
         assertFalse(
             "isPreviewActive must be false during the in-flight fetch window (Review R3 F1)",
             ctx.isPreviewActive(),
@@ -249,9 +261,9 @@ internal class ConvertContextPreviewRaceAndTimingTest {
             ctx.isPreviewActive(),
         )
 
-        // Let the fetch resolve.
+        // Let the fetch resolve, then await setPreview's completion.
         gatedHttp.openGate()
-        awaitCondition { ctx.isPreviewActive() }
+        job.join()
         assertTrue(
             "isPreviewActive must become true once the fetch genuinely resolves (Review R3 F1)",
             ctx.isPreviewActive(),
@@ -263,7 +275,7 @@ internal class ConvertContextPreviewRaceAndTimingTest {
     // ---------------------------------------------------------------
 
     @Test
-    fun `a concurrent preview B is never clobbered by preview A's delayed exp fetch resolution`() {
+    fun `a concurrent preview B is never clobbered by preview A's delayed exp fetch resolution`() = runBlocking {
         // A's eventual fetch result resolves successfully to a DIFFERENT
         // experience/key than B's — the exact shape that would corrupt
         // B's PreviewState.experience while leaving its experienceId /
@@ -273,36 +285,35 @@ internal class ConvertContextPreviewRaceAndTimingTest {
         val sdk = buildSdk(gatedHttp, sdkKey = "sk-race")
         val ctx = sdk.createContext("visitor_race_1")
 
-        // Preview A — not config-resident, dispatches the gated async fetch.
-        ctx.setPreview(experienceId = "exp-draft", variationId = "var-x")
+        // Preview A — not config-resident; its awaited ?exp= fetch is held by
+        // the gate. Launched on a separate coroutine so it stays suspended
+        // inside setPreview mid-fetch (previewState = A, experience still null).
+        val jobA = launch(Dispatchers.IO) {
+            ctx.setPreview(experienceId = "exp-draft", variationId = "var-x")
+        }
+        assertTrue(
+            "preview A must be suspended mid-fetch before B lands",
+            gatedHttp.entered.await(RESPOND_TIMEOUT_SECONDS, TimeUnit.SECONDS),
+        )
 
-        // Preview B — config-resident, resolves synchronously, lands
-        // WHILE A's fetch is still gated (in flight).
+        // Preview B — config-resident, resolves synchronously, superseding A's
+        // still-in-flight target on this context.
         ctx.setPreview(experienceId = "exp-1", variationId = "var-b")
-        val forcedBeforeRaceResolves = ctx.runExperience("welcome")
         assertEquals(
             "preview B must force its variation before A's fetch resolves",
             "var-b",
-            forcedBeforeRaceResolves?.id,
+            ctx.runExperience("welcome")?.id,
         )
 
-        // Let A's fetch resolve now.
+        // Let A's fetch resolve and await its completion; the read-once write
+        // guard must see B as the active preview and leave it untouched.
         gatedHttp.openGate()
-        assertTrue(
-            "the gated fetch must have been given the chance to respond",
-            gatedHttp.responded.await(RESPOND_TIMEOUT_SECONDS, TimeUnit.SECONDS),
-        )
-        // Brief settle for the few synchronous lines after the HTTP
-        // response returns (JSON decode + the read-once write-guard) to
-        // finish running on the SDK scope.
-        Thread.sleep(EVENT_SETTLE_MS)
-
-        val forcedAfterRaceResolves = ctx.runExperience("welcome")
+        jobA.join()
         assertEquals(
             "preview B must remain untouched after A's unrelated fetch resolves " +
                 "(Review R3 F3 — read-once write guard)",
             "var-b",
-            forcedAfterRaceResolves?.id,
+            ctx.runExperience("welcome")?.id,
         )
     }
 
@@ -316,18 +327,22 @@ internal class ConvertContextPreviewRaceAndTimingTest {
     private class GatedHttpClient(private val body: String) : HttpClient {
         private val gate = CountDownLatch(1)
 
-        /** Counted down once [get] has observed the gate opening. */
-        val responded: CountDownLatch = CountDownLatch(1)
+        /**
+         * Counted down the instant [get] is entered — i.e. the `?exp=` fetch
+         * has begun and [ConvertContext.setPreview] is now suspended inside it
+         * (previewState already written with `experience = null`). Lets a test
+         * await "A is mid-fetch" before landing a second preview.
+         */
+        val entered: CountDownLatch = CountDownLatch(1)
 
         fun openGate() {
             gate.countDown()
         }
 
         override suspend fun get(url: String, headers: Map<String, String>): HttpClient.HttpResponse {
+            entered.countDown()
             gate.await()
-            val response = HttpClient.HttpResponse(statusCode = HTTP_OK, body = body, headers = emptyMap())
-            responded.countDown()
-            return response
+            return HttpClient.HttpResponse(statusCode = HTTP_OK, body = body, headers = emptyMap())
         }
 
         override suspend fun post(
@@ -340,7 +355,6 @@ internal class ConvertContextPreviewRaceAndTimingTest {
     private companion object {
         private const val AWAIT_TIMEOUT_MS = 2_000L
         private const val AWAIT_POLL_MS = 10L
-        private const val EVENT_SETTLE_MS = 300L
         private const val RESPOND_TIMEOUT_SECONDS = 2L
         private const val FIFTY_FIFTY = 50.0
         private const val FULL_ALLOCATION = 100.0

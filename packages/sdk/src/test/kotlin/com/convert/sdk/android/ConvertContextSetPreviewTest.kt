@@ -17,6 +17,7 @@ import com.convert.sdk.core.model.generated.ExperienceStatuses
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
 import com.convert.sdk.core.port.HttpClient
 import com.convert.sdk.core.port.Logger
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -189,8 +190,7 @@ internal class ConvertContextSetPreviewTest {
         sdk.attachTestApiManager(fakeApiManagerReturning(draftPreviewConfig()))
         val ctx = sdk.createContext("visitor_preview_1")
 
-        ctx.setPreview(experienceId = "exp-draft-9", variationId = "var-y")
-        awaitCondition { ctx.runExperience("draft-promo") != null }
+        runBlocking { ctx.setPreview(experienceId = "exp-draft-9", variationId = "var-y") }
 
         val result = ctx.runExperience("draft-promo")
 
@@ -209,7 +209,7 @@ internal class ConvertContextSetPreviewTest {
         val sticky = ctx.runExperience("welcome")
         assertEquals("var-a", sticky?.id)
 
-        ctx.setPreview(experienceId = "exp-1", variationId = "var-b")
+        runBlocking { ctx.setPreview(experienceId = "exp-1", variationId = "var-b") }
         val forced = ctx.runExperience("welcome")
 
         assertEquals("var-b", forced?.id)
@@ -224,10 +224,7 @@ internal class ConvertContextSetPreviewTest {
         sdk.attachTestApiManager(fakeApiManagerReturning(emptyFetchConfig()))
         val ctx = sdk.createContext("visitor_abc")
 
-        ctx.setPreview(experienceId = "exp-does-not-exist", variationId = "var-z")
-        awaitCondition {
-            ShadowLog.getLogs().any { it.type == Log.WARN && it.msg.contains("exp-does-not-exist") }
-        }
+        runBlocking { ctx.setPreview(experienceId = "exp-does-not-exist", variationId = "var-z") }
 
         val result = ctx.runExperience("welcome")
 
@@ -239,7 +236,7 @@ internal class ConvertContextSetPreviewTest {
         val sdk = buildSdk(mainConfig())
         val ctx = sdk.createContext("visitor_abc")
 
-        ctx.setPreview(experienceId = "exp-1", variationId = "var-does-not-exist")
+        runBlocking { ctx.setPreview(experienceId = "exp-1", variationId = "var-does-not-exist") }
         val result = ctx.runExperience("welcome")
 
         assertEquals("var-a", result?.id)
@@ -257,7 +254,7 @@ internal class ConvertContextSetPreviewTest {
         val sdk = buildSdk(mainConfigWithSecondExperience())
         val ctx = sdk.createContext("visitor_abc")
 
-        ctx.setPreview(experienceId = "exp-1", variationId = "var-b")
+        runBlocking { ctx.setPreview(experienceId = "exp-1", variationId = "var-b") }
         val forced = ctx.runExperience("welcome")
         val untouched = ctx.runExperience("promo")
 
@@ -271,7 +268,7 @@ internal class ConvertContextSetPreviewTest {
     fun `a concurrent non-preview context buckets normally`() {
         val sdk = buildSdk(mainConfig())
         val previewCtx = sdk.createContext("visitor_preview_iso")
-        previewCtx.setPreview(experienceId = "exp-1", variationId = "var-b")
+        runBlocking { previewCtx.setPreview(experienceId = "exp-1", variationId = "var-b") }
         val normalCtx = sdk.createContext("visitor_abc")
 
         val previewResult = previewCtx.runExperience("welcome")

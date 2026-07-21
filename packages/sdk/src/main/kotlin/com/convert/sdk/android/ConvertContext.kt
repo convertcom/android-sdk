@@ -137,9 +137,9 @@ public class ConvertContext internal constructor(
      *
      * ### Review R3 F1 — checking `experience != null`, not just non-null state
      *
-     * [setPreview]'s async branch writes [previewState] with
-     * `experience = null` the INSTANT it dispatches the AND-4 `?exp=`
-     * fetch, before the fetch resolves. Gating on `previewState != null`
+     * [setPreview] writes [previewState] with `experience = null` before
+     * it awaits the AND-4 `?exp=` fetch; the resolved [ConfigExperience]
+     * is written only once that fetch lands. Gating on `previewState != null`
      * (the pre-R3 predicate) engaged zero-trace suppression for the
      * entire in-flight window — often ~70s under the Story 5.2 retry
      * backoff — even for what turns out to be a typo'd experience id
@@ -1112,12 +1112,15 @@ public class ConvertContext internal constructor(
      * ([ConvertSDK.dataManager]), the matching [ConfigExperience] is
      * stored immediately — no network round-trip. Otherwise the target
      * experience is fetched via [com.convert.sdk.core.api.ApiManager.fetchConfig]
-     * (the AND-4 `?exp=` fetch, 60s in-memory memo) on [ConvertSDK.scope];
-     * the preview becomes forceable once that fetch lands. The fetch is
-     * fire-and-forget by design — "the fetch rides the deep-link
-     * navigation" (contract §2) — so callers are expected to invoke
-     * [setPreview] before navigating to the screen that will call
-     * [runExperience] for [experienceId].
+     * (the AND-4 `?exp=` fetch, 60s in-memory memo) and AWAITED inline —
+     * this is a `suspend` function, so it does not return until the preview
+     * target is resolved (or cleared on bad input). A deep-link handler can
+     * therefore `await` this call and only THEN render the screen that will
+     * [runExperience] the target, guaranteeing the forced decision is in
+     * place first — exact parity with the JS SDK (`Promise<void>`) and the
+     * iOS SDK (`async`). A CONCURRENT [runExperience] on another coroutine
+     * that overlaps the in-flight fetch still sees "no preview yet" (see
+     * [resolvePreviewOverride]'s null-experience guard) rather than blocking.
      *
      * ### Decision & precedence (contract §2 "Decision", §3 "Precedence")
      *
@@ -1163,7 +1166,7 @@ public class ConvertContext internal constructor(
      * @return this context for fluent chaining (mirrors [setAttributes]).
      */
     @Suppress("ReturnCount")
-    public fun setPreview(experienceId: String, variationId: String): ConvertContext {
+    public suspend fun setPreview(experienceId: String, variationId: String): ConvertContext {
         val sdk = this.sdk ?: return this
         val existing = sdk.dataManager.data?.experiences?.firstOrNull { it.id == experienceId }
         if (existing != null) {
@@ -1188,14 +1191,16 @@ public class ConvertContext internal constructor(
             return this
         }
 
-        // Not in the currently-loaded config — dispatch the AND-4 `?exp=`
-        // fetch. `experience = null` marks the preview as "not yet
-        // forceable"; resolvePreviewOverride treats that as "no preview"
-        // rather than blocking runExperience on the in-flight fetch.
-        // resolvePreviewFetch performs the same eager variation
-        // validation once the fetch lands (Review R2, Finding 1a/1b).
+        // Not in the currently-loaded config — run the AND-4 `?exp=` fetch
+        // and AWAIT it inline (this is a suspend fun) so the caller observes
+        // the resolved preview on return. `experience = null` still marks the
+        // preview "not yet forceable" so a CONCURRENT runExperience on another
+        // coroutine treats it as "no preview" (resolvePreviewOverride) rather
+        // than blocking on the in-flight fetch. resolvePreviewFetch performs
+        // the same eager variation validation once the fetch lands (Review R2,
+        // Finding 1a/1b) and clears previewState on any bad input.
         previewState = PreviewState(experienceId, variationId, experience = null)
-        sdk.scope.launch { resolvePreviewFetch(sdk, experienceId) }
+        resolvePreviewFetch(sdk, experienceId)
         return this
     }
 
@@ -1236,9 +1241,10 @@ public class ConvertContext internal constructor(
      * (B) is now active — leave it completely untouched; never null it
      * and never overwrite it with A's result.
      *
-     * Extracted from [setPreview] so the public method stays a simple,
-     * synchronous dispatch and [runExperience] never has to await a
-     * suspend call.
+     * Kept as a separate `suspend` helper (rather than inlined into
+     * [setPreview]) so the R3 read-once write guards below live in one
+     * place; [setPreview] awaits it directly. [runExperience] still never
+     * awaits anything — it only reads [previewState] synchronously.
      */
     @Suppress("ReturnCount")
     private suspend fun resolvePreviewFetch(sdk: ConvertSDK, experienceId: String) {

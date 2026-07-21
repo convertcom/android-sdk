@@ -251,7 +251,7 @@ internal class ConvertContextPreviewZeroTraceTest {
     fun `preview lifecycle leaves zero trace across bucketing, conversion, and background flush`() {
         val sdk = buildSdk("sk-zero-trace")
         val ctx = sdk.createContext("visitor_preview_zt")
-        ctx.setPreview(experienceId = "exp-1", variationId = "var-b")
+        runBlocking { ctx.setPreview(experienceId = "exp-1", variationId = "var-b") }
 
         // Review R3 (F2, JS parity) — Android is now the only Convert SDK
         // to suppress the in-process SystemEvents bus during preview,
@@ -357,7 +357,7 @@ internal class ConvertContextPreviewZeroTraceTest {
     fun `a concurrent non-preview context tracks and persists normally`() {
         val sdk = buildSdk("sk-isolation")
         val previewCtx = sdk.createContext("visitor_preview_iso")
-        previewCtx.setPreview(experienceId = "exp-1", variationId = "var-b")
+        runBlocking { previewCtx.setPreview(experienceId = "exp-1", variationId = "var-b") }
         previewCtx.runExperience("welcome")
 
         val normalCtx = sdk.createContext("visitor_normal_iso")
@@ -419,7 +419,7 @@ internal class ConvertContextPreviewZeroTraceTest {
         var bucketingFired = false
         sdk.on(SystemEvents.BUCKETING) { bucketingFired = true }
 
-        ctx.setPreview(experienceId = "exp-1", variationId = "var-b")
+        runBlocking { ctx.setPreview(experienceId = "exp-1", variationId = "var-b") }
         // Recall "promo" — now hits resolveSticky, not allocateAndRecord.
         val stickyRecall = ctx.runExperience("promo")
         assertEquals(
@@ -459,10 +459,7 @@ internal class ConvertContextPreviewZeroTraceTest {
         sdk.attachTestApiManager(fakeApiManagerReturningEmptyExpFetch())
         val ctx = sdk.createContext("visitor_bad_exp_zt")
 
-        ctx.setPreview(experienceId = "exp-does-not-exist", variationId = "var-z")
-        awaitCondition {
-            ShadowLog.getLogs().any { it.type == Log.WARN && it.msg.contains("exp-does-not-exist") }
-        }
+        runBlocking { ctx.setPreview(experienceId = "exp-does-not-exist", variationId = "var-z") }
 
         assertBadPreviewInputResumesTrackingAndPersistence(
             sdk = sdk,
@@ -478,7 +475,7 @@ internal class ConvertContextPreviewZeroTraceTest {
         val sdk = buildSdk("sk-bad-var-zt")
         val ctx = sdk.createContext("visitor_bad_var_zt")
 
-        ctx.setPreview(experienceId = "exp-1", variationId = "var-does-not-exist")
+        runBlocking { ctx.setPreview(experienceId = "exp-1", variationId = "var-does-not-exist") }
 
         assertBadPreviewInputResumesTrackingAndPersistence(
             sdk = sdk,
