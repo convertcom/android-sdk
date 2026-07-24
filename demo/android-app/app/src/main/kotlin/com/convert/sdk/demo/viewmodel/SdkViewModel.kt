@@ -14,6 +14,7 @@ import com.convert.sdk.core.model.GoalDataKey
 import com.convert.sdk.core.model.LogLevel
 import com.convert.sdk.core.model.Variation
 import com.convert.sdk.core.port.Logger
+import com.convert.sdk.core.preview.PreviewParam
 import com.convert.sdk.demo.BuildConfig
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.coroutines.Job
@@ -81,6 +82,7 @@ class SdkViewModel(
     private val featureRunner: FeatureRunner = NoOpFeatureRunner,
     private val conversionTracker: ConversionTracker = NoOpConversionTracker,
     private val configSnapshotProvider: ConfigSnapshotProvider = NoOpConfigSnapshotProvider,
+    private val previewController: PreviewController = NoOpPreviewController,
 ) : ViewModel() {
 
     private val _events = MutableStateFlow<List<InspectorEvent>>(emptyList())
@@ -284,6 +286,56 @@ class SdkViewModel(
     /** Story 7.2 AC-2 — updates the active inspector tab. */
     fun selectTab(tab: InspectorTab) {
         _selectedTab.value = tab
+    }
+
+    private val _previewState = MutableStateFlow<PreviewUiState>(PreviewUiState.Inactive)
+
+    /**
+     * qs-08 (experiment-preview) demo testbed — the Experiences screen's
+     * preview banner state. Updated by [applyPreviewParam] and
+     * [clearPreview]; starts [PreviewUiState.Inactive].
+     */
+    val previewState: StateFlow<PreviewUiState> = _previewState.asStateFlow()
+
+    /**
+     * qs-08 — parses [raw] (the `convert_preview` deep-link query-param
+     * VALUE, format `"{experienceId}.{variationId}"`, handed in by
+     * [com.convert.sdk.demo.MainActivity]'s intent handling or the
+     * Experiences screen's manual-input field) via the SDK's pure
+     * [PreviewParam.parse] helper (AC9).
+     *
+     * A successful parse applies the forced decision through
+     * [previewController] and flips [previewState] to
+     * [PreviewUiState.Active]. A malformed value NEVER crashes the demo
+     * (AC9's "inert on bad input" contract, mirrored here at the UI
+     * layer): it logs a WARN via [demoLogger] and flips [previewState]
+     * to [PreviewUiState.Error] so the banner surfaces the problem
+     * instead of silently doing nothing — [previewController] is not
+     * called at all in this branch.
+     */
+    fun applyPreviewParam(raw: String) {
+        val parsed = PreviewParam.parse(raw)
+        if (parsed == null) {
+            demoLogger.warn(
+                message = "Malformed preview param \"$raw\" — expected " +
+                    "\"{experienceId}.{variationId}\" (numeric ids)",
+            )
+            _previewState.value = PreviewUiState.Error("Malformed preview param: \"$raw\"")
+            return
+        }
+        val (experienceId, variationId) = parsed
+        previewController.setPreview(experienceId, variationId)
+        _previewState.value = PreviewUiState.Active(experienceId, variationId)
+    }
+
+    /**
+     * qs-08 — clears the active preview override (if any) via
+     * [previewController] and resets [previewState] to
+     * [PreviewUiState.Inactive].
+     */
+    fun clearPreview() {
+        previewController.clearPreview()
+        _previewState.value = PreviewUiState.Inactive
     }
 
     /**

@@ -5,6 +5,7 @@
  */
 package com.convert.sdk.demo
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -29,7 +30,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
@@ -55,16 +55,73 @@ import com.convert.sdk.demo.viewmodel.SdkViewModel
  */
 class MainActivity : ComponentActivity() {
 
+    /**
+     * qs-08 (experiment-preview) demo testbed — hoisted out of the
+     * Compose tree so [onCreate] / [onNewIntent] can drive
+     * [SdkViewModel.applyPreviewParam] directly from a deep-link
+     * [Intent]. `by viewModels { ... }` resolves against this
+     * Activity's [androidx.lifecycle.ViewModelStore] — the same
+     * instance [DemoAppScaffold] renders against — so there is exactly
+     * one [SdkViewModel] per Activity instance either way.
+     *
+     * `internal` visibility lets a Robolectric test assert on
+     * [SdkViewModel.previewState] after driving a deep-link [Intent]
+     * through [Companion.handlePreviewIntent].
+     */
+    internal val sdkViewModel: SdkViewModel by viewModels {
+        SdkViewModelFactory(application as DemoApplication)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val demoApp = application as DemoApplication
-        val viewModelFactory = SdkViewModelFactory(demoApp)
+        handlePreviewIntent(intent, sdkViewModel)
 
         setContent {
             MaterialTheme {
-                DemoAppScaffold(viewModelFactory = viewModelFactory)
+                DemoAppScaffold(sdkViewModel = sdkViewModel)
             }
+        }
+    }
+
+    /**
+     * qs-08 — a second deep link while the demo is already running (the
+     * default launch mode keeps a single task/Activity instance active
+     * rather than always starting a fresh one) delivers here instead of
+     * a new [onCreate]. [setIntent] keeps [getIntent] in sync for any
+     * later caller.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handlePreviewIntent(intent, sdkViewModel)
+    }
+
+    companion object {
+        /**
+         * qs-08 — the deep-link query-param key
+         * [com.convert.sdk.core.preview.PreviewParam.parse] expects the
+         * VALUE of (see the `AndroidManifest.xml` `convertdemo://preview`
+         * intent-filter and `README.md`'s "Try it: Experiment preview"
+         * section).
+         */
+        private const val PREVIEW_QUERY_PARAM = "convert_preview"
+
+        /**
+         * qs-08 — extracts `convert_preview` from an `ACTION_VIEW`
+         * intent's data URI (e.g.
+         * `convertdemo://preview?convert_preview=123.456`) and hands the
+         * raw value to [SdkViewModel.applyPreviewParam], which owns
+         * parsing/validation. Any other intent (the MAIN/LAUNCHER
+         * intent, or an `ACTION_VIEW` with no `convert_preview` param) is
+         * a no-op — this never throws.
+         *
+         * `internal` so a Robolectric test can drive it directly.
+         */
+        internal fun handlePreviewIntent(intent: Intent?, viewModel: SdkViewModel) {
+            if (intent?.action != Intent.ACTION_VIEW) return
+            val raw = intent.data?.getQueryParameter(PREVIEW_QUERY_PARAM) ?: return
+            viewModel.applyPreviewParam(raw)
         }
     }
 }
@@ -72,15 +129,19 @@ class MainActivity : ComponentActivity() {
 /**
  * Root composable. Split out of [MainActivity.onCreate] so it can be
  * previewed in Android Studio without spinning up an Activity.
+ *
+ * qs-08 — takes the already-hoisted [sdkViewModel] directly (rather
+ * than a [ViewModelProvider.Factory] resolved here via
+ * `viewModel(factory = ...)`) so [MainActivity.onCreate] /
+ * [MainActivity.onNewIntent] and this composable observe the exact same
+ * instance without a second factory lookup.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DemoAppScaffold(viewModelFactory: ViewModelProvider.Factory) {
+private fun DemoAppScaffold(sdkViewModel: SdkViewModel) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
-
-    val sdkViewModel: SdkViewModel = viewModel(factory = viewModelFactory)
 
     val sheetState = rememberBottomSheetScaffoldState()
 
@@ -152,6 +213,7 @@ private class SdkViewModelFactory(private val demoApp: DemoApplication) : ViewMo
             featureRunner = demoApp.featureRunner(),
             conversionTracker = demoApp.conversionTracker(),
             configSnapshotProvider = demoApp.configSnapshotProvider(),
+            previewController = demoApp.previewController(),
         ) as T
     }
 }

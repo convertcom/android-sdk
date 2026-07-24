@@ -6,6 +6,7 @@
 package com.convert.sdk.demo.ui.screen
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,16 +18,22 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.convert.sdk.demo.BuildConfig
 import com.convert.sdk.demo.viewmodel.ExperienceResult
+import com.convert.sdk.demo.viewmodel.PreviewUiState
 import com.convert.sdk.demo.viewmodel.SdkViewModel
 
 /**
@@ -98,21 +105,28 @@ fun ExperiencesScreen(viewModel: SdkViewModel) {
                 Text("Run Experiences")
             }
         }
-        Spacer(Modifier.size(4.dp))
-        if (results.isEmpty()) {
-            Text(
-                text = "Tap a button to run an experience.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(results, key = { it.id }) { result ->
-                    ResultCardForResult(result)
+        PreviewCard(viewModel)
+        // qs-08 — Box(Modifier.weight(1f)) bounds this region to the space
+        // remaining below the (now taller, with PreviewCard) fixed header,
+        // instead of the previous bare fillMaxSize() on the LazyColumn
+        // alone, which sized it against the WHOLE Column's height and let
+        // results overflow past the visible viewport once the header grew.
+        Box(modifier = Modifier.weight(1f)) {
+            if (results.isEmpty()) {
+                Text(
+                    text = "Tap a button to run an experience.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(results, key = { it.id }) { result ->
+                        ResultCardForResult(result)
+                    }
                 }
             }
         }
@@ -138,6 +152,76 @@ private fun ResultCardForResult(result: ExperienceResult) {
             title = "Experience: ${result.experienceKey}",
             items = listOf("Variation" to (result.variationKey ?: "(no key)")),
         )
+    }
+}
+
+/**
+ * qs-08 (experiment-preview) demo testbed — manual preview affordance.
+ *
+ * Lets a tester exercise `convert_preview={experienceId}.{variationId}`
+ * without adb by pasting the same `"{experienceId}.{variationId}"` value
+ * a deep link would carry. "Apply preview" routes through
+ * [SdkViewModel.applyPreviewParam] (parse + force decision); "Clear
+ * preview" routes through [SdkViewModel.clearPreview]. The banner text
+ * reflects [SdkViewModel.previewState] so the tester always sees
+ * whether a preview override is active, in error, or inactive — the
+ * same states a deep link would drive.
+ */
+@Composable
+private fun PreviewCard(viewModel: SdkViewModel) {
+    val previewState by viewModel.previewState.collectAsState()
+    var previewInput by remember { mutableStateOf("") }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            when (val state = previewState) {
+                is PreviewUiState.Active -> Text(
+                    text = "Preview active: exp ${state.experienceId} → var ${state.variationId}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                is PreviewUiState.Error -> Text(
+                    text = state.message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                PreviewUiState.Inactive -> Text(
+                    text = "No preview active. Paste \"experienceId.variationId\" to force a variation.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            OutlinedTextField(
+                value = previewInput,
+                onValueChange = { previewInput = it },
+                label = { Text("experienceId.variationId") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    onClick = { viewModel.applyPreviewParam(previewInput) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Apply preview")
+                }
+                OutlinedButton(
+                    onClick = {
+                        viewModel.clearPreview()
+                        previewInput = ""
+                    },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Clear preview")
+                }
+            }
+        }
     }
 }
 

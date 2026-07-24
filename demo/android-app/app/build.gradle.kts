@@ -60,6 +60,7 @@ plugins {
 //   | convertGoalKey             | "purchase-goal"                      | purchase-goal           |
 //   | convertVisitorAttributes   | "{}"  (empty object)                 | {} (empty object)       |
 //   | convertLocationProperties  | "{}"  (empty object)                 | {} (empty object)       |
+//   | convertDebugToken          | ""  (empty sentinel — disabled)      | (empty)                 |
 //
 // The empty-string sentinel for `convertEnvironment` signals "not
 // configured" to `DemoApplication.onCreate`, which skips the builder
@@ -102,6 +103,7 @@ val convertFeatureKey: String = demoTunable("convertFeatureKey", "test-feature")
 val convertGoalKey: String = demoTunable("convertGoalKey", "purchase-goal")
 val convertVisitorAttributes: String = demoTunable("convertVisitorAttributes", "{}")
 val convertLocationProperties: String = demoTunable("convertLocationProperties", "{}")
+val convertDebugToken: String = demoTunable("convertDebugToken", "")
 
 android {
     namespace = "com.convert.sdk.demo"
@@ -124,6 +126,7 @@ android {
         buildConfigField("String", "convertGoalKey", "\"$convertGoalKey\"")
         buildConfigField("String", "convertVisitorAttributes", "\"${convertVisitorAttributes.replace("\"", "\\\"")}\"")
         buildConfigField("String", "convertLocationProperties", "\"${convertLocationProperties.replace("\"", "\\\"")}\"")
+        buildConfigField("String", "convertDebugToken", "\"$convertDebugToken\"")
 
     }
 

@@ -18,6 +18,7 @@ import com.convert.sdk.demo.viewmodel.ConversionTracker
 import com.convert.sdk.demo.viewmodel.EventSubscriber
 import com.convert.sdk.demo.viewmodel.ExperienceRunner
 import com.convert.sdk.demo.viewmodel.FeatureRunner
+import com.convert.sdk.demo.viewmodel.PreviewController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
@@ -129,13 +130,56 @@ class DemoApplication : Application() {
      */
     internal val contextDeferred: Deferred<ConvertContext> by lazy {
         applicationScope.async(Dispatchers.Default, start = CoroutineStart.LAZY) {
-            val ctx = sdkDeferred.await().createContext()
-            val attrs = parseJsonObjectToMap(BuildConfig.convertVisitorAttributes)
-            if (attrs.isNotEmpty()) ctx.setAttributes(attrs)
-            val locationProps = parseJsonObjectToMap(BuildConfig.convertLocationProperties)
-            if (locationProps.isNotEmpty()) ctx.setLocationProperties(locationProps)
-            ctx
+            buildContext()
         }
+    }
+
+    /**
+     * qs-08 (experiment-preview) demo testbed — the dedicated preview
+     * [ConvertContext] installed by [previewController]'s `setPreview`,
+     * or `null` when no preview is active.
+     *
+     * `@Volatile` because [previewController]'s `setPreview` writes it
+     * from a coroutine on [Dispatchers.Default] while [activeContext]
+     * (and therefore every runner) reads it synchronously — possibly
+     * from a different thread — without any lock.
+     *
+     * A dedicated context (rather than mutating [contextDeferred]'s
+     * base context) is what makes preview isolation (qs-08 AC7) AND a
+     * working Clear possible: [com.convert.sdk.android.ConvertContext.setPreview]
+     * has no SDK-level "unset" — the only way to leave preview mode
+     * cleanly is to stop routing through the previewed context and go
+     * back to the base one.
+     */
+    @Volatile
+    private var previewContextOverride: ConvertContext? = null
+
+    /**
+     * qs-08 demo testbed — the [ConvertContext] every runner factory
+     * below should read from: the active preview override when one is
+     * set, otherwise the pre-warmed base context from [contextDeferred]
+     * (or `null` if that has not landed yet — the existing
+     * "SDK not ready" fallback every runner already implements).
+     */
+    private fun activeContext(): ConvertContext? =
+        previewContextOverride
+            ?: if (contextDeferred.isCompleted) contextDeferred.getCompleted() else null
+
+    /**
+     * Synchronous part of per-visitor [ConvertContext] construction —
+     * creates the context and seeds it with [BuildConfig.convertVisitorAttributes]
+     * / [BuildConfig.convertLocationProperties], exactly as [contextDeferred]
+     * always has. Extracted so [previewController]'s `setPreview` can
+     * build a SEPARATE, identically-seeded context without duplicating
+     * the seeding logic (qs-08 demo testbed).
+     */
+    private suspend fun buildContext(): ConvertContext {
+        val ctx = sdkDeferred.await().createContext()
+        val attrs = parseJsonObjectToMap(BuildConfig.convertVisitorAttributes)
+        if (attrs.isNotEmpty()) ctx.setAttributes(attrs)
+        val locationProps = parseJsonObjectToMap(BuildConfig.convertLocationProperties)
+        if (locationProps.isNotEmpty()) ctx.setLocationProperties(locationProps)
+        return ctx
     }
 
     override fun onCreate() {
@@ -169,6 +213,16 @@ class DemoApplication : Application() {
         if (environment.isNotBlank()) {
             builder = builder.environment(environment)
         }
+        // qs-08 (experiment-preview) — QA config transport. Blank (the
+        // fallback literal) skips the call entirely so the demo's normal
+        // config-fetch/cache behavior is unchanged when no token is
+        // configured; a non-blank `local.properties` override widens
+        // config visibility (draft/paused statuses) for the whole SDK
+        // instance, independent of the per-context `setPreview` surface.
+        val debugToken = BuildConfig.convertDebugToken
+        if (debugToken.isNotBlank()) {
+            builder = builder.debugToken(debugToken)
+        }
         return builder.build()
     }
 
@@ -201,26 +255,23 @@ class DemoApplication : Application() {
      * `runExperience` returns `null` "when the visitor is not
      * bucketed, the experience is unknown, **or the SDK is not
      * ready**" and `runExperiences` returns an empty list "when the
-     * config is not ready". The runner therefore does an O(1)
-     * `isCompleted` check against [contextDeferred] and returns
-     * null/empty when the context has not landed yet — never blocks,
-     * never re-creates the context, never touches the SDK on the main
-     * thread.
+     * config is not ready". The runner therefore reads [activeContext]
+     * (an O(1) check) and returns null/empty when no context has
+     * landed yet — never blocks, never re-creates the context, never
+     * touches the SDK on the main thread.
+     *
+     * qs-08 demo testbed — routes through [activeContext] rather than
+     * [contextDeferred] directly, so a running preview override (see
+     * [previewController]) transparently forces the previewed
+     * experience's variation for the SAME primary/secondary buttons the
+     * Experiences screen already renders.
      */
     fun experienceRunner(): ExperienceRunner = object : ExperienceRunner {
         override fun runExperience(experienceKey: String): Variation? =
-            if (contextDeferred.isCompleted) {
-                contextDeferred.getCompleted().runExperience(experienceKey)
-            } else {
-                null
-            }
+            activeContext()?.runExperience(experienceKey)
 
         override fun runExperiences(): List<Variation> =
-            if (contextDeferred.isCompleted) {
-                contextDeferred.getCompleted().runExperiences()
-            } else {
-                emptyList()
-            }
+            activeContext()?.runExperiences() ?: emptyList()
     }
 
     /**
@@ -228,33 +279,22 @@ class DemoApplication : Application() {
      * pre-warmed per-visitor [ConvertContext] from [contextDeferred].
      *
      * Same off-main-thread + null-on-not-ready discipline as
-     * [experienceRunner]: an O(1) `isCompleted` check against
-     * [contextDeferred] guards the SDK access; when the context has
-     * not landed yet, [runFeature] returns `null` and [runFeatures]
-     * returns an empty list — exactly matching the [FeatureRunner]
-     * contract ("when the feature is unknown or the SDK is not
-     * ready" / "when no features are configured or the config is not
-     * loaded").
+     * [experienceRunner]: reads [activeContext] (an O(1) check); when
+     * no context has landed yet, [runFeature] returns `null` and
+     * [runFeatures] returns an empty list — exactly matching the
+     * [FeatureRunner] contract ("when the feature is unknown or the SDK
+     * is not ready" / "when no features are configured or the config is
+     * not loaded").
      *
-     * Sharing [contextDeferred] across both runners is intentional:
-     * `ConvertSDK.createContext()` reads the auto-persisted visitor id
-     * once per process, so re-creating it would be wasteful. The two
-     * runners observe the same sticky bucketing.
+     * qs-08 demo testbed — [activeContext] also routes a running
+     * preview override here, same as [experienceRunner].
      */
     fun featureRunner(): FeatureRunner = object : FeatureRunner {
         override fun runFeature(featureKey: String): Feature? =
-            if (contextDeferred.isCompleted) {
-                contextDeferred.getCompleted().runFeature(featureKey)
-            } else {
-                null
-            }
+            activeContext()?.runFeature(featureKey)
 
         override fun runFeatures(): List<Feature> =
-            if (contextDeferred.isCompleted) {
-                contextDeferred.getCompleted().runFeatures()
-            } else {
-                emptyList()
-            }
+            activeContext()?.runFeatures() ?: emptyList()
     }
 
     /**
@@ -275,26 +315,32 @@ class DemoApplication : Application() {
      * Per-visitor dedup (Story 4.3 AC-6) lives inside the SDK and is
      * unaffected — both runners and this tracker observe the same
      * sticky [ConvertContext] via [contextDeferred].
+     *
+     * qs-08 demo testbed — [trackConversion] resolves the target context
+     * as [previewContextOverride] (already fully built by the time it is
+     * installed — see [previewController]) when a preview is active, else
+     * awaits [contextDeferred] as before. This is the ONLY runner method
+     * that cannot use the plain [activeContext] O(1) read, because the
+     * non-preview path must still buffer-and-await rather than drop the
+     * call when the base context has not landed yet.
      */
     fun conversionTracker(): ConversionTracker = object : ConversionTracker {
         override fun trackConversion(goalKey: String, goalData: List<GoalData>) {
+            val previewCtx = previewContextOverride
             applicationScope.launch {
-                contextDeferred.await().trackConversion(goalKey = goalKey, goalData = goalData)
+                val ctx = previewCtx ?: contextDeferred.await()
+                ctx.trackConversion(goalKey = goalKey, goalData = goalData)
             }
         }
 
         // Synchronous best-effort, mirroring the experience / feature
-        // runners' O(1) isCompleted guard: when the context has not landed
+        // runners' activeContext() guard: when no context has landed
         // yet the goal cannot be confirmed, so report false (the screen
         // then surfaces the unknown-goal card rather than a false-positive
-        // success). Once the context is ready the call delegates straight
+        // success). Once a context is ready the call delegates straight
         // to ConvertContext.hasGoal with no main-thread block.
         override fun hasGoal(goalKey: String): Boolean =
-            if (contextDeferred.isCompleted) {
-                contextDeferred.getCompleted().hasGoal(goalKey)
-            } else {
-                false
-            }
+            activeContext()?.hasGoal(goalKey) ?: false
     }
 
     /**
@@ -323,15 +369,15 @@ class DemoApplication : Application() {
      * Synchronous-by-contract: the [ConfigSnapshotProvider] docstring
      * says `snapshot()` is called on the SDK's event-dispatch thread
      * and must not block. The implementation therefore reads
-     * [sdkDeferred] and [contextDeferred] only when they are already
-     * complete; missing values fall back to empty lists / `null`,
-     * matching the "cannot produce a meaningful snapshot" path the
-     * contract anticipates for early calls before the first config
-     * fetch lands.
+     * [sdkDeferred] only when already complete and [activeContext] (an
+     * O(1) check, same as every runner above); missing values fall back
+     * to empty lists / `null`, matching the "cannot produce a meaningful
+     * snapshot" path the contract anticipates for early calls before the
+     * first config fetch lands.
      */
     fun configSnapshotProvider(): ConfigSnapshotProvider = ConfigSnapshotProvider {
         val sdk = if (sdkDeferred.isCompleted) sdkDeferred.getCompleted() else null
-        val context = if (contextDeferred.isCompleted) contextDeferred.getCompleted() else null
+        val context = activeContext()
         val experiences = context?.let { runCatching { it.runExperiences() }.getOrDefault(emptyList()) } ?: emptyList()
         val features = context?.let { runCatching { it.runFeatures() }.getOrDefault(emptyList()) } ?: emptyList()
         val tracking = sdk?.let { runCatching { it.isTrackingEnabled() }.getOrNull() }
@@ -342,6 +388,39 @@ class DemoApplication : Application() {
             featureKeys = features.mapNotNull { it.key },
             trackingEnabled = tracking,
         )
+    }
+
+    /**
+     * qs-08 (experiment-preview) demo testbed — builds a [PreviewController]
+     * backed by a DEDICATED preview [ConvertContext], separate from the
+     * pre-warmed base context in [contextDeferred].
+     *
+     * [PreviewController.setPreview] never touches the main thread: it
+     * launches on [applicationScope] (already [Dispatchers.Default] by
+     * construction — see [newApplicationScope]), builds a fresh context
+     * via [buildContext] (identical attribute/location seeding to the
+     * base context), applies [ConvertContext.setPreview], and ONLY THEN
+     * installs it into [previewContextOverride] — so a half-built
+     * context is never visible to [activeContext] or any runner.
+     *
+     * [PreviewController.clearPreview] simply drops the override; every
+     * runner's [activeContext] read falls back to the base context on
+     * its very next call — there is no SDK-level "unset" to await.
+     */
+    fun previewController(): PreviewController = object : PreviewController {
+        override fun setPreview(experienceId: String, variationId: String) {
+            applicationScope.launch {
+                val ctx = buildContext()
+                ctx.setPreview(experienceId, variationId)
+                previewContextOverride = ctx
+            }
+        }
+
+        override fun clearPreview() {
+            previewContextOverride = null
+        }
+
+        override fun isPreviewActive(): Boolean = previewContextOverride != null
     }
 }
 

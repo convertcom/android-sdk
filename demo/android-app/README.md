@@ -271,3 +271,40 @@ The SDK Key row **never** renders the full key. Any key longer than 8 characters
 ### Active vs configured
 
 The panel says "Active" because it reads the **eligible** sets for the current visitor via `ConvertContext.runExperiences()` / `runFeatures()`, not the raw project config. A visitor outside an experience's audience will see that experience omitted. This is the most honest answer the SDK's public API surfaces today; the dashboard's project view is the source of truth for the configured superset.
+
+## Try it: Experiment preview (deep links)
+
+The demo ships a working end-to-end testbed for the SDK's preview surface (qs-08): force a specific variation of any experience — draft, paused, wrong environment, zero-traffic, whatever — onto the Experiences screen with zero bucketing, zero tracking, and zero persistence.
+
+### Prerequisites
+
+1. Set `convertSdkKey=<your-sdk-key>` in `local.properties` to a real Convert project key (see [Setup](#setup)).
+2. Have a numeric **`experienceId`** and **`variationId`** from that project. Preview bypasses audiences, segments, locations, the environment check, experience status, variation status/traffic filters, and stored decisions — so a **draft** or **paused** experience previews exactly like a running one. Find these ids in the Convert dashboard (experience/variation detail pages show the numeric id, distinct from the merchant-defined key).
+
+### Deep-link URI format
+
+```
+convertdemo://preview?convert_preview=<experienceId>.<variationId>
+```
+
+### Trigger it via adb
+
+```bash
+adb shell am start -a android.intent.action.VIEW -d "convertdemo://preview?convert_preview=<experienceId>.<variationId>" com.convert.sdk.demo
+```
+
+### Trigger it manually, in-app
+
+No adb needed: open the **Experiences** tab and use the **Experiment preview** card. Paste `<experienceId>.<variationId>` into the text field and tap **Apply preview**; tap **Clear preview** to return to normal bucketing.
+
+### What to expect
+
+- The previewed experience returns the **forced** variation on the Experiences screen (`Run Experience` / `Run Experiences`), even if it's draft, paused, out of environment, or the visitor already has a different sticky decision — the preview banner reads "Preview active: exp `<experienceId>` → var `<variationId>`".
+- The bottom-sheet **Events** tab shows **zero** `BUCKETING` / `CONVERSION` events for the entire time preview is active — preview is zero-trace by contract (no tracking, no visitor-state writes).
+- Other experiences the visitor is eligible for still resolve normally alongside the preview.
+- An unrecognized or malformed value (e.g. missing the dot, non-numeric ids) never crashes the demo — the card shows an inline error and no preview is applied.
+- Tapping **Clear preview** (or clearing the field and reapplying) drops the override; the Experiences screen goes back to normal bucketing against the base visitor context immediately — no app restart required.
+
+### `convertDebugToken` (QA config transport)
+
+Add `convertDebugToken=<your-debug-token>` to `local.properties` to widen the **entire SDK instance's** config visibility (draft/paused experiences show up in the normal config fetch, not just via preview) and disable the on-disk config cache while set — useful for QA builds validating config changes without waiting on a cache refresh. Every config-fetch URL then carries `debug_token=<value>` plus a forced low-cache hint; the token is never sent to the track endpoint and never appears in logs. Generate a token from the Convert dashboard (Project settings → Debug token) or the `V2/Projects::generateDebugToken` API. This is independent of `setPreview` — a debug token widens what the SDK can see; preview forces one specific decision on one context.

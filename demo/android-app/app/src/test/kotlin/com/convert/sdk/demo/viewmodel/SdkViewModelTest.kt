@@ -240,6 +240,101 @@ class SdkViewModelTest {
         assertEquals(ids.distinct().size, ids.size, "every inspector event must have a unique id")
     }
 
+    // --- qs-08 (experiment-preview) additions -------------------------
+
+    private fun newPreviewVm(controller: FakePreviewController): SdkViewModel =
+        SdkViewModel(
+            eventSubscriber = FakeEventSubscriber(),
+            initialNetworkOnline = true,
+            previewController = controller,
+        )
+
+    @Test
+    fun `previewState starts Inactive`() {
+        val vm = newPreviewVm(FakePreviewController())
+        assertEquals(PreviewUiState.Inactive, vm.previewState.value)
+    }
+
+    @Test
+    fun `applyPreviewParam with a valid value calls setPreview and flips state to Active`() {
+        val controller = FakePreviewController()
+        val vm = newPreviewVm(controller)
+
+        vm.applyPreviewParam("123.456")
+
+        assertEquals(listOf("123" to "456"), controller.setPreviewCalls)
+        assertEquals(PreviewUiState.Active("123", "456"), vm.previewState.value)
+    }
+
+    @Test
+    fun `applyPreviewParam with a malformed value does not call setPreview and flips state to Error`() {
+        val controller = FakePreviewController()
+        val vm = newPreviewVm(controller)
+
+        vm.applyPreviewParam("abc")
+
+        assertTrue(controller.setPreviewCalls.isEmpty(), "malformed input must never call setPreview")
+        assertTrue(vm.previewState.value is PreviewUiState.Error)
+    }
+
+    @Test
+    fun `applyPreviewParam with an empty value does not call setPreview and flips state to Error`() {
+        val controller = FakePreviewController()
+        val vm = newPreviewVm(controller)
+
+        vm.applyPreviewParam("")
+
+        assertTrue(controller.setPreviewCalls.isEmpty(), "empty input must never call setPreview")
+        assertTrue(vm.previewState.value is PreviewUiState.Error)
+    }
+
+    @Test
+    fun `applyPreviewParam with a single trailing dot does not call setPreview and flips state to Error`() {
+        val controller = FakePreviewController()
+        val vm = newPreviewVm(controller)
+
+        vm.applyPreviewParam("1.")
+
+        assertTrue(controller.setPreviewCalls.isEmpty(), "an empty variationId segment must never call setPreview")
+        assertTrue(vm.previewState.value is PreviewUiState.Error)
+    }
+
+    @Test
+    fun `clearPreview calls the controller and resets state to Inactive`() {
+        val controller = FakePreviewController()
+        val vm = newPreviewVm(controller)
+        vm.applyPreviewParam("123.456")
+        assertEquals(PreviewUiState.Active("123", "456"), vm.previewState.value)
+
+        vm.clearPreview()
+
+        assertEquals(1, controller.clearPreviewCallCount)
+        assertEquals(PreviewUiState.Inactive, vm.previewState.value)
+    }
+
+    /**
+     * Minimal in-memory [PreviewController] double that records every
+     * call so tests can assert on both the recorded invocation AND the
+     * resulting [SdkViewModel.previewState] transition.
+     */
+    private class FakePreviewController : PreviewController {
+        val setPreviewCalls: MutableList<Pair<String, String>> = mutableListOf()
+        var clearPreviewCallCount: Int = 0
+        private var active: Boolean = false
+
+        override fun setPreview(experienceId: String, variationId: String) {
+            setPreviewCalls += experienceId to variationId
+            active = true
+        }
+
+        override fun clearPreview() {
+            clearPreviewCallCount++
+            active = false
+        }
+
+        override fun isPreviewActive(): Boolean = active
+    }
+
     /**
      * Minimal in-memory [EventSubscriber] double. Registers callbacks by
      * name; tests invoke `emit(...)` to simulate SDK-side fires.
