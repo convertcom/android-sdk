@@ -73,7 +73,7 @@ jobs:
           java-version: '17'
 
       - name: Set up Gradle (with caching)
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
 
       - name: Ensure gradlew is executable
         # Defensive — actions/checkout@v4 should preserve the exec bit but
