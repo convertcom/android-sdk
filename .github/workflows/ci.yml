@@ -30,7 +30,7 @@ jobs:
       - name: Set up Gradle (with caching)
         # setup-gradle handles ~/.gradle/caches/ and ~/.gradle/wrapper/ on its own —
         # do NOT layer actions/cache on top or cache keys collide.
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
 
       - name: Ensure gradlew is executable
         # Defensive — actions/checkout@v4 should preserve exec bit but some self-hosted runners strip it.
@@ -108,7 +108,7 @@ jobs:
           java-version: '17'
 
       - name: Set up Gradle (with caching)
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
 
       - name: Ensure gradlew is executable
         run: chmod +x ./gradlew
@@ -138,7 +138,7 @@ jobs:
           java-version: '17'
 
       - name: Set up Gradle (with caching)
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
 
       - name: Ensure gradlew is executable
         run: chmod +x ./gradlew
@@ -193,7 +193,7 @@ jobs:
           java-version: '17'
 
       - name: Set up Gradle (with caching)
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
 
       - name: Ensure gradlew is executable
         run: chmod +x ./gradlew
