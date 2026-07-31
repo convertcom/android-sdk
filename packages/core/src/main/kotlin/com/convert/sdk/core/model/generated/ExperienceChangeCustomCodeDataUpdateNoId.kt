@@ -36,7 +36,7 @@ data class ExperienceChangeCustomCodeDataUpdateNoId (
 
 
     @SerialName(value = "data")
-    val `data`: ExperienceChangeCustomCodeDataBaseAllOfData,
+    val `data`: ExperienceChangeCustomCodeDataBaseAllOfData? = null,
 
     /* A server-generated hash that represents the object's state at the time of retrieval. When included in an update request, the operation will only succeed if the object hasn't been modified since this key was obtained. If another update has occurred in the meantime, the request will fail with a conflict error, requiring you to fetch the latest version and retry your update with the new concurrency_key. This implements optimistic concurrency control to prevent lost updates in concurrent scenarios. */
     @SerialName(value = "concurrency_key")
