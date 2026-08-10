@@ -27,6 +27,7 @@ import kotlinx.serialization.Contextual
  * @param enabled If true, Convert Signals™ is enabled for the project, allowing the system to capture sessions exhibiting user frustration or usability issues. 
  * @param obfuscateText True when all text elements (apart from placeholders) should be obfuscated inside a recording. 
  * @param samplingRate The percentage of visitors included in sampling for Convert Signals session recordings and Heatmaps for this project. Higher values collect data from a larger share of traffic and consume allocation faster. 
+ * @param heatmapVisitsLimit Maximum number of visits per variation used when generating a heatmap for this project. Applies to newly created heatmaps when an experience is activated. 
  */
 @Serializable
 
@@ -38,27 +39,29 @@ data class VisitorInsightsBase (
 
     /* True when all text elements (apart from placeholders) should be obfuscated inside a recording.  */
     @SerialName(value = "obfuscate_text")
-    val obfuscateText: kotlin.Boolean? = true,
+    val obfuscateText: kotlin.Boolean? = false,
 
     /* The percentage of visitors included in sampling for Convert Signals session recordings and Heatmaps for this project. Higher values collect data from a larger share of traffic and consume allocation faster.  */
     @SerialName(value = "sampling_rate")
-    val samplingRate: VisitorInsightsBase.SamplingRate? = SamplingRate._5
+    val samplingRate: kotlin.Int? = 5,
+
+    /* Maximum number of visits per variation used when generating a heatmap for this project. Applies to newly created heatmaps when an experience is activated.  */
+    @SerialName(value = "heatmap_visits_limit")
+    val heatmapVisitsLimit: VisitorInsightsBase.HeatmapVisitsLimit? = HeatmapVisitsLimit._2500
 
 ) {
 
     /**
-     * The percentage of visitors included in sampling for Convert Signals session recordings and Heatmaps for this project. Higher values collect data from a larger share of traffic and consume allocation faster. 
+     * Maximum number of visits per variation used when generating a heatmap for this project. Applies to newly created heatmaps when an experience is activated. 
      *
-     * Values: _5,_10,_20,_30,_40,_50
+     * Values: _2500,_5000,_10000,_15000
      */
     @Serializable
-    enum class SamplingRate(val value: kotlin.Int) {
-        @SerialName(value = "5") _5(5),
-        @SerialName(value = "10") _10(10),
-        @SerialName(value = "20") _20(20),
-        @SerialName(value = "30") _30(30),
-        @SerialName(value = "40") _40(40),
-        @SerialName(value = "50") _50(50);
+    enum class HeatmapVisitsLimit(val value: kotlin.Int) {
+        @SerialName(value = "2500") _2500(2500),
+        @SerialName(value = "5000") _5000(5000),
+        @SerialName(value = "10000") _10000(10000),
+        @SerialName(value = "15000") _15000(15000);
     }
 
 }
