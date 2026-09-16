@@ -105,6 +105,7 @@ internal class FeatureManager(
         context: ConvertContext,
         featureKey: String,
         enableTracking: Boolean = true,
+        experienceKeys: List<String>? = null,
     ): Feature? {
         // ReturnCount — the algorithm has four natural exits (config-
         // missing, unknown feature, matched-variation, declared-but-
@@ -141,6 +142,7 @@ internal class FeatureManager(
         // change matching this feature id + a non-null bucketing wins.
         for (experience in experiences) {
             val expKey = experience.key ?: continue
+            if (!(experienceKeys.isNullOrEmpty() || expKey in experienceKeys)) continue
             if (!experienceExposesFeature(experience, featureId)) continue
             val variation = context.runExperience(expKey, enableTracking) ?: continue
             val change = findFeatureChange(experience, variation.id, featureId) ?: continue
@@ -169,10 +171,11 @@ internal class FeatureManager(
     fun evaluateAll(
         context: ConvertContext,
         enableTracking: Boolean = true,
+        experienceKeys: List<String>? = null,
     ): List<Feature> {
         val declared = sdk.dataManager.data?.features ?: return emptyList()
         return declared.mapNotNull { feature ->
-            feature.key?.let { key -> evaluate(context, key, enableTracking) }
+            feature.key?.let { key -> evaluate(context, key, enableTracking, experienceKeys) }
         }
     }
 

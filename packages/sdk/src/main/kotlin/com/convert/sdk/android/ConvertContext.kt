@@ -682,13 +682,18 @@ public class ConvertContext internal constructor(
      *   unknown or the SDK is not yet ready.
      */
     @JvmOverloads
-    public fun runFeature(featureKey: String, enableTracking: Boolean = true): Feature? {
+    public fun runFeature(
+        featureKey: String,
+        enableTracking: Boolean = true,
+        experienceKeys: List<String>? = null,
+    ): Feature? {
         lastFeatureKey = featureKey
         val sdk = this.sdk ?: return null
         return sdk.featureManager.evaluate(
             context = this,
             featureKey = featureKey,
             enableTracking = enableTracking,
+            experienceKeys = experienceKeys,
         )
     }
 
@@ -704,11 +709,15 @@ public class ConvertContext internal constructor(
      *   configured or the config is not loaded.
      */
     @JvmOverloads
-    public fun runFeatures(enableTracking: Boolean = true): List<Feature> {
+    public fun runFeatures(
+        enableTracking: Boolean = true,
+        experienceKeys: List<String>? = null,
+    ): List<Feature> {
         val sdk = this.sdk ?: return emptyList()
         return sdk.featureManager.evaluateAll(
             context = this,
             enableTracking = enableTracking,
+            experienceKeys = experienceKeys,
         )
     }
 
