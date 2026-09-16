@@ -81,4 +81,32 @@ public class JavaInteropSample {
         Runnable onReady = () -> { /* no-op */ };
         assert onReady != null;
     }
+
+    /**
+     * Feature entry points — {@code runFeature} / {@code runFeatures}
+     * {@code @JvmOverloads} arities.
+     *
+     * @param context an Android {@link Context}; supplied by the test
+     *     harness, never called at runtime.
+     */
+    public void runFeatureOverloads(Context context) {
+        ConvertSDK sdk = ConvertSDK.builder(context)
+            .sdkKey("test")
+            .build();
+
+        sdk.onReady(() -> {
+            ConvertContext ctx = sdk.createContext("visitor");
+
+            // runFeature: @JvmOverloads regenerates the one- and
+            // two-arg forms an already-published app calls.
+            ctx.runFeature("feature-key");
+            ctx.runFeature("feature-key", false);
+            ctx.runFeature("feature-key", false, java.util.List.of("checkout-test"));
+
+            // runFeatures: same overload mechanism, zero- and one-arg forms.
+            ctx.runFeatures();
+            ctx.runFeatures(false);
+            ctx.runFeatures(false, java.util.List.of("checkout-test"));
+        });
+    }
 }
