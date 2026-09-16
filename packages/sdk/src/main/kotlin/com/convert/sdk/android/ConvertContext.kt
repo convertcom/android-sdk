@@ -681,13 +681,14 @@ public class ConvertContext internal constructor(
      * @return the evaluated [Feature], or `null` when the feature is
      *   unknown or the SDK is not yet ready.
      */
-    public fun runFeature(featureKey: String): Feature? {
+    @JvmOverloads
+    public fun runFeature(featureKey: String, enableTracking: Boolean = true): Feature? {
         lastFeatureKey = featureKey
         val sdk = this.sdk ?: return null
         return sdk.featureManager.evaluate(
             context = this,
             featureKey = featureKey,
-            enableTracking = true,
+            enableTracking = enableTracking,
         )
     }
 
@@ -702,11 +703,12 @@ public class ConvertContext internal constructor(
      * @return the list of evaluated [Feature]s; empty when none are
      *   configured or the config is not loaded.
      */
-    public fun runFeatures(): List<Feature> {
+    @JvmOverloads
+    public fun runFeatures(enableTracking: Boolean = true): List<Feature> {
         val sdk = this.sdk ?: return emptyList()
         return sdk.featureManager.evaluateAll(
             context = this,
-            enableTracking = true,
+            enableTracking = enableTracking,
         )
     }
 

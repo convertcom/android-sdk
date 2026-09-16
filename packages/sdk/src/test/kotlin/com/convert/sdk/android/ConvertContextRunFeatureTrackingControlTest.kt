@@ -171,7 +171,7 @@ internal class ConvertContextRunFeatureTrackingControlTest {
     // --- CAP-1: runFeature(key, enableTracking = false) --------------------
 
     @Test
-    fun `runFeature enableTracking false suppresses enqueue and fire, still persists sticky, matches tracked Feature`() {
+    fun `runFeature untracked suppresses enqueue and fire, still persists sticky, matches tracked result`() {
         // Positive control — a tracked call on its own sdk/visitor MUST enqueue and fire.
         val trackedSdk = buildSdk(twoExperienceConfigJson())
         val trackedApi = ConvertContextRunExperienceTest.RecordingApiManager()
@@ -224,7 +224,7 @@ internal class ConvertContextRunFeatureTrackingControlTest {
     // --- CAP-1: runFeatures(enableTracking = false) -------------------------
 
     @Test
-    fun `runFeatures enableTracking false suppresses enqueue and fire across every experience, still persists both sticky decisions, matches tracked list`() {
+    fun `runFeatures untracked suppresses enqueue and fire for both, still persists sticky, matches tracked list`() {
         val trackedSdk = buildSdk(twoExperienceConfigJson())
         val trackedApi = ConvertContextRunExperienceTest.RecordingApiManager()
         trackedSdk.attachTestApiManager(trackedApi)
