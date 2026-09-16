@@ -678,6 +678,18 @@ public class ConvertContext internal constructor(
      *    into a variation carrying the feature.
      *
      * @param featureKey merchant-defined key of the feature.
+     * @param enableTracking when `false`, suppresses this call's
+     *   bucketing exposure for every experience it evaluates — both
+     *   the outbound network event and the in-process
+     *   [SystemEvents.BUCKETING] fire. The sticky decision still
+     *   persists either way; only preview state gates persistence.
+     *   Defaults to `true`.
+     * @param experienceKeys limits evaluation to these experience
+     *   keys; `null` or an empty list means every experience. An
+     *   unknown key is skipped, not an error. Narrowing never shrinks
+     *   the result — an excluded feature returns
+     *   [com.convert.sdk.core.model.FeatureStatus.DISABLED] rather
+     *   than `null`.
      * @return the evaluated [Feature], or `null` when the feature is
      *   unknown or the SDK is not yet ready.
      */
@@ -705,6 +717,17 @@ public class ConvertContext internal constructor(
      * the loaded config, preserving declaration order. Returns an empty
      * list when the SDK has no loaded config yet.
      *
+     * @param enableTracking when `false`, suppresses bucketing
+     *   exposure for every experience this call evaluates — both the
+     *   outbound network event and the in-process
+     *   [SystemEvents.BUCKETING] fire. Sticky persistence is
+     *   unaffected; only preview state gates it. Defaults to `true`.
+     * @param experienceKeys limits evaluation to these experience
+     *   keys; `null` or an empty list means every experience. An
+     *   unknown key is skipped, not an error. Narrowing never shrinks
+     *   the result set — an excluded feature is returned as
+     *   [com.convert.sdk.core.model.FeatureStatus.DISABLED] rather
+     *   than omitted.
      * @return the list of evaluated [Feature]s; empty when none are
      *   configured or the config is not loaded.
      */

@@ -92,9 +92,16 @@ internal class FeatureManager(
      *   event fire apply exactly once per experience per visitor).
      * @param featureKey merchant-defined feature key.
      * @param enableTracking when `true`, each triggered `runExperience`
-     *   call enqueues its outbound bucketing event; when `false`, the
-     *   outbound queue is suppressed but sticky + internal events still
-     *   fire. Mirrors `runExperience`'s per-call tracking flag.
+     *   call enqueues its outbound bucketing event and fires the
+     *   in-process [com.convert.sdk.core.event.SystemEvents.BUCKETING]
+     *   event; when `false`, both are suppressed together while the
+     *   sticky decision still persists. Mirrors `runExperience`'s
+     *   per-call tracking flag.
+     * @param experienceKeys limits evaluation to these experience keys;
+     *   `null` or an empty list means every experience. An unknown key
+     *   is skipped, not an error. Narrowing never shrinks the result —
+     *   an excluded feature returns as [FeatureStatus.DISABLED] rather
+     *   than being omitted from the result.
      * @return the resolved [Feature]; `null` when [featureKey] is not
      *   declared in the current config. When declared but the visitor
      *   is not bucketed into any variation exposing the feature, returns
@@ -165,6 +172,8 @@ internal class FeatureManager(
      *
      * @param context the caller's [ConvertContext].
      * @param enableTracking per-call tracking flag; see [evaluate].
+     * @param experienceKeys limits evaluation to these experience keys;
+     *   see [evaluate] for the empty-list and unknown-key semantics.
      * @return list of resolved features; empty when no features are
      *   declared or the config is not yet loaded.
      */
