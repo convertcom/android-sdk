@@ -88,6 +88,18 @@ internal class ConvertContextPublicArityTest {
                 arrayOf<Class<*>>(java.lang.Boolean.TYPE),
                 "CAP-1's new overload — needs @JvmOverloads on the widened runFeatures",
             ),
+            Arguments.of(
+                "runFeature",
+                arrayOf<Class<*>>(String::class.java, java.lang.Boolean.TYPE, java.util.List::class.java),
+                "CAP-2 (SPEC-per-call-bucketing-attributes) — needs @JvmOverloads on the " +
+                    "experienceKeys-widened runFeature",
+            ),
+            Arguments.of(
+                "runFeatures",
+                arrayOf<Class<*>>(java.lang.Boolean.TYPE, java.util.List::class.java),
+                "CAP-2 (SPEC-per-call-bucketing-attributes) — needs @JvmOverloads on the " +
+                    "experienceKeys-widened runFeatures",
+            ),
         )
     }
 }
