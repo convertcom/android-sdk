@@ -121,8 +121,9 @@ internal class FeatureManager(
         // semantic win.
         //
         // LoopWithTooManyJumpStatements — the per-experience loop has
-        // three `continue`s that short-circuit known skip cases (no key,
-        // experience doesn't expose feature, visitor not bucketed). Each
+        // five `continue`s that short-circuit known skip cases (no key,
+        // excluded by experienceKeys, no exposed feature, not bucketed,
+        // or no matching feature change on the bucketed variation). Each
         // is an independent guard; flattening them into a nested `if`
         // chain would add depth without clarifying intent. Suppression
         // mirrors the `@Suppress("ReturnCount", "TooGenericExceptionCaught")`
