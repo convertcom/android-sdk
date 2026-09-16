@@ -154,6 +154,27 @@ internal class ConvertContextRunFeatureTrackingControlTest {
         assertTrue("Timed out waiting for condition", check())
     }
 
+    /**
+     * One arm's fully-wired fixture: a fresh [ConvertSDK] for [configJson],
+     * its own [RecordingApiManager]/[RecordingEventCallback] pair, and a
+     * context for [visitorId] — never shared across arms per CD-3.
+     */
+    private data class Arm(
+        val sdk: ConvertSDK,
+        val api: ConvertContextRunExperienceTest.RecordingApiManager,
+        val sink: MutableList<Map<String, Any?>>,
+        val ctx: ConvertContext,
+    )
+
+    private fun newArm(configJson: String, visitorId: String): Arm {
+        val sdk = buildSdk(configJson)
+        val api = ConvertContextRunExperienceTest.RecordingApiManager()
+        sdk.attachTestApiManager(api)
+        val sink = recordingSink()
+        sdk.on(SystemEvents.BUCKETING, ConvertContextRunExperienceTest.RecordingEventCallback(sink))
+        return Arm(sdk, api, sink, sdk.createContext(visitorId))
+    }
+
     // --- fixture sanity: the exposes-only-its-own-feature invariant --------
 
     @Test
@@ -173,47 +194,31 @@ internal class ConvertContextRunFeatureTrackingControlTest {
     @Test
     fun `runFeature untracked suppresses enqueue and fire, still persists sticky, matches tracked result`() {
         // Positive control — a tracked call on its own sdk/visitor MUST enqueue and fire.
-        val trackedSdk = buildSdk(twoExperienceConfigJson())
-        val trackedApi = ConvertContextRunExperienceTest.RecordingApiManager()
-        trackedSdk.attachTestApiManager(trackedApi)
-        val trackedSink = recordingSink()
-        trackedSdk.on(
-            SystemEvents.BUCKETING,
-            ConvertContextRunExperienceTest.RecordingEventCallback(trackedSink),
-        )
-        val trackedCtx = trackedSdk.createContext("visitor_feature_a_tracked")
+        val tracked = newArm(twoExperienceConfigJson(), "visitor_feature_a_tracked")
 
-        val trackedFeature = trackedCtx.runFeature("feature-a", enableTracking = true)
-        awaitCondition { trackedSink.isNotEmpty() }
-        assertEquals(1, trackedApi.enqueueBucketingCalls.size)
-        assertEquals(1, trackedSink.size)
+        val trackedFeature = tracked.ctx.runFeature("feature-a", enableTracking = true)
+        awaitCondition { tracked.sink.isNotEmpty() }
+        assertEquals(1, tracked.api.enqueueBucketingCalls.size)
+        assertEquals(1, tracked.sink.size)
 
         // Untracked arm — a distinct sdk + visitor from the control above, so
         // neither the recorded counters nor the sticky state are shared.
-        val untrackedSdk = buildSdk(twoExperienceConfigJson())
-        val untrackedApi = ConvertContextRunExperienceTest.RecordingApiManager()
-        untrackedSdk.attachTestApiManager(untrackedApi)
-        val untrackedSink = recordingSink()
-        untrackedSdk.on(
-            SystemEvents.BUCKETING,
-            ConvertContextRunExperienceTest.RecordingEventCallback(untrackedSink),
-        )
-        val untrackedCtx = untrackedSdk.createContext("visitor_feature_a_untracked")
+        val untracked = newArm(twoExperienceConfigJson(), "visitor_feature_a_untracked")
 
-        val untrackedFeature = untrackedCtx.runFeature("feature-a", enableTracking = false)
+        val untrackedFeature = untracked.ctx.runFeature("feature-a", enableTracking = false)
         Thread.sleep(200)
 
         assertTrue(
-            "Expected no enqueueBucketingEvent calls, got ${untrackedApi.enqueueBucketingCalls}",
-            untrackedApi.enqueueBucketingCalls.isEmpty(),
+            "Expected no enqueueBucketingEvent calls, got ${untracked.api.enqueueBucketingCalls}",
+            untracked.api.enqueueBucketingCalls.isEmpty(),
         )
         assertTrue(
-            "Expected no SystemEvents.BUCKETING fires, got $untrackedSink",
-            untrackedSink.isEmpty(),
+            "Expected no SystemEvents.BUCKETING fires, got ${untracked.sink}",
+            untracked.sink.isEmpty(),
         )
         assertEquals(
             "var-a1",
-            untrackedSdk.dataManager.getStoreData("visitor_feature_a_untracked")
+            untracked.sdk.dataManager.getStoreData("visitor_feature_a_untracked")
                 .bucketing?.get("welcome-a"),
         )
         assertNotNull(untrackedFeature)
@@ -225,43 +230,27 @@ internal class ConvertContextRunFeatureTrackingControlTest {
 
     @Test
     fun `runFeatures untracked suppresses enqueue and fire for both, still persists sticky, matches tracked list`() {
-        val trackedSdk = buildSdk(twoExperienceConfigJson())
-        val trackedApi = ConvertContextRunExperienceTest.RecordingApiManager()
-        trackedSdk.attachTestApiManager(trackedApi)
-        val trackedSink = recordingSink()
-        trackedSdk.on(
-            SystemEvents.BUCKETING,
-            ConvertContextRunExperienceTest.RecordingEventCallback(trackedSink),
-        )
-        val trackedCtx = trackedSdk.createContext("visitor_features_tracked")
+        val tracked = newArm(twoExperienceConfigJson(), "visitor_features_tracked")
 
-        val trackedFeatures = trackedCtx.runFeatures(enableTracking = true)
-        awaitCondition { trackedSink.size >= 2 }
-        assertEquals(2, trackedApi.enqueueBucketingCalls.size)
-        assertEquals(2, trackedSink.size)
+        val trackedFeatures = tracked.ctx.runFeatures(enableTracking = true)
+        awaitCondition { tracked.sink.size >= 2 }
+        assertEquals(2, tracked.api.enqueueBucketingCalls.size)
+        assertEquals(2, tracked.sink.size)
 
-        val untrackedSdk = buildSdk(twoExperienceConfigJson())
-        val untrackedApi = ConvertContextRunExperienceTest.RecordingApiManager()
-        untrackedSdk.attachTestApiManager(untrackedApi)
-        val untrackedSink = recordingSink()
-        untrackedSdk.on(
-            SystemEvents.BUCKETING,
-            ConvertContextRunExperienceTest.RecordingEventCallback(untrackedSink),
-        )
-        val untrackedCtx = untrackedSdk.createContext("visitor_features_untracked")
+        val untracked = newArm(twoExperienceConfigJson(), "visitor_features_untracked")
 
-        val untrackedFeatures = untrackedCtx.runFeatures(enableTracking = false)
+        val untrackedFeatures = untracked.ctx.runFeatures(enableTracking = false)
         Thread.sleep(200)
 
         assertTrue(
-            "Expected no enqueueBucketingEvent calls, got ${untrackedApi.enqueueBucketingCalls}",
-            untrackedApi.enqueueBucketingCalls.isEmpty(),
+            "Expected no enqueueBucketingEvent calls, got ${untracked.api.enqueueBucketingCalls}",
+            untracked.api.enqueueBucketingCalls.isEmpty(),
         )
         assertTrue(
-            "Expected no SystemEvents.BUCKETING fires, got $untrackedSink",
-            untrackedSink.isEmpty(),
+            "Expected no SystemEvents.BUCKETING fires, got ${untracked.sink}",
+            untracked.sink.isEmpty(),
         )
-        val storedBucketing = untrackedSdk.dataManager
+        val storedBucketing = untracked.sdk.dataManager
             .getStoreData("visitor_features_untracked").bucketing
         assertEquals("var-a1", storedBucketing?.get("welcome-a"))
         assertEquals("var-b1", storedBucketing?.get("welcome-b"))
@@ -273,30 +262,20 @@ internal class ConvertContextRunFeatureTrackingControlTest {
 
     @Test
     fun `runFeature and runFeatures without the parameter still enqueue and fire exactly as today`() {
-        val sdk = buildSdk(twoExperienceConfigJson())
-        val api = ConvertContextRunExperienceTest.RecordingApiManager()
-        sdk.attachTestApiManager(api)
-        val sink = recordingSink()
-        sdk.on(SystemEvents.BUCKETING, ConvertContextRunExperienceTest.RecordingEventCallback(sink))
-        val ctx = sdk.createContext("visitor_default_arity")
+        val single = newArm(twoExperienceConfigJson(), "visitor_default_arity")
 
-        val singleFeature = ctx.runFeature("feature-a")
-        awaitCondition { sink.isNotEmpty() }
-        assertEquals(1, api.enqueueBucketingCalls.size)
-        assertEquals(1, sink.size)
+        val singleFeature = single.ctx.runFeature("feature-a")
+        awaitCondition { single.sink.isNotEmpty() }
+        assertEquals(1, single.api.enqueueBucketingCalls.size)
+        assertEquals(1, single.sink.size)
         assertNotNull(singleFeature)
 
-        val allSdk = buildSdk(twoExperienceConfigJson())
-        val allApi = ConvertContextRunExperienceTest.RecordingApiManager()
-        allSdk.attachTestApiManager(allApi)
-        val allSink = recordingSink()
-        allSdk.on(SystemEvents.BUCKETING, ConvertContextRunExperienceTest.RecordingEventCallback(allSink))
-        val allCtx = allSdk.createContext("visitor_default_arity_all")
+        val all = newArm(twoExperienceConfigJson(), "visitor_default_arity_all")
 
-        val allFeatures = allCtx.runFeatures()
-        awaitCondition { allSink.size >= 2 }
-        assertEquals(2, allApi.enqueueBucketingCalls.size)
-        assertEquals(2, allSink.size)
+        val allFeatures = all.ctx.runFeatures()
+        awaitCondition { all.sink.size >= 2 }
+        assertEquals(2, all.api.enqueueBucketingCalls.size)
+        assertEquals(2, all.sink.size)
         assertEquals(2, allFeatures.size)
     }
 
@@ -304,23 +283,18 @@ internal class ConvertContextRunFeatureTrackingControlTest {
 
     @Test
     fun `runFeatures on one experience carrying two features enqueues once but fires twice`() {
-        val sdk = buildSdk(dualFeatureConfigJson())
-        val api = ConvertContextRunExperienceTest.RecordingApiManager()
-        sdk.attachTestApiManager(api)
-        val sink = recordingSink()
-        sdk.on(SystemEvents.BUCKETING, ConvertContextRunExperienceTest.RecordingEventCallback(sink))
-        val ctx = sdk.createContext("visitor_dual_feature")
+        val arm = newArm(dualFeatureConfigJson(), "visitor_dual_feature")
 
-        val results = ctx.runFeatures()
-        awaitCondition { sink.size >= 2 }
+        val results = arm.ctx.runFeatures()
+        awaitCondition { arm.sink.size >= 2 }
 
         assertEquals(2, results.size)
         assertEquals(
             "Expected exactly one enqueue — the second declared feature revisits the " +
                 "SAME experience via the sticky path",
             1,
-            api.enqueueBucketingCalls.size,
+            arm.api.enqueueBucketingCalls.size,
         )
-        assertEquals(2, sink.size)
+        assertEquals(2, arm.sink.size)
     }
 }
