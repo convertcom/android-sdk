@@ -16,6 +16,8 @@ import com.convert.sdk.android.worker.EventFlushWorker
 import com.convert.sdk.core.api.ApiManager
 import com.convert.sdk.core.config.ConvertConfig
 import com.convert.sdk.core.event.SystemEvents
+import com.convert.sdk.core.internal.sharedSerializersModule
+import com.convert.sdk.core.model.FeatureStatus
 import com.convert.sdk.core.model.GoalData
 import com.convert.sdk.core.model.GoalDataKey
 import com.convert.sdk.core.model.generated.ClicksElementGoalSettings
@@ -572,6 +574,138 @@ internal class ConvertContextPreviewZeroTraceTest {
         )
     }
 
+    // ---------------------------------------------------------------
+    // CAP-3 (SPEC-per-call-bucketing-attributes) — AC6 zero trace, extended
+    // to runFeature / runFeatures (both route through runExperience).
+    // ---------------------------------------------------------------
+
+    private val json: Json = Json {
+        ignoreUnknownKeys = true
+        explicitNulls = false
+        serializersModule = sharedSerializersModule
+    }
+
+    /**
+     * `exp-feat-1` keyed `welcome-feat` (two 50/50 variations, previewed
+     * as `var-fb`, which alone exposes `feature-welcome` — that
+     * [FeatureManager.evaluate] call never leaves
+     * [ConvertContext.resolvePreviewOverride], zero-trace by
+     * construction) + `exp-feat-2` keyed `promo-feat` (single 100%
+     * variation exposing TWO features — the leg that actually reaches
+     * `allocateAndRecord` under preview, twice, for the same visitor).
+     */
+    private fun featureZeroTraceConfigJson(): String = """
+    {
+      "experiences": [
+        {
+          "id": "exp-feat-1",
+          "key": "welcome-feat",
+          "variations": [
+            {"id": "var-fa", "key": "control", "traffic_allocation": 50.0},
+            {
+              "id": "var-fb",
+              "key": "treatment",
+              "traffic_allocation": 50.0,
+              "changes": [
+                {"id": 1, "type": "fullStackFeature", "data": {"feature_id": 400, "variables_data": {}}}
+              ]
+            }
+          ]
+        },
+        {
+          "id": "exp-feat-2",
+          "key": "promo-feat",
+          "variations": [
+            {
+              "id": "var-fp",
+              "key": "promo-v",
+              "traffic_allocation": 100.0,
+              "changes": [
+                {"id": 2, "type": "fullStackFeature", "data": {"feature_id": 401, "variables_data": {}}},
+                {"id": 3, "type": "fullStackFeature", "data": {"feature_id": 402, "variables_data": {}}}
+              ]
+            }
+          ]
+        }
+      ],
+      "features": [
+        {"id": "400", "key": "feature-welcome", "name": "Feature Welcome", "variables": []},
+        {"id": "401", "key": "feature-promo-1", "name": "Feature Promo 1", "variables": []},
+        {"id": "402", "key": "feature-promo-2", "name": "Feature Promo 2", "variables": []}
+      ]
+    }
+    """.trimIndent()
+
+    private fun buildFeatureSdk(sdkKey: String): ConvertSDK {
+        val config: ConfigResponseData = json.decodeFromString(featureZeroTraceConfigJson())
+        val sdk = ConvertSDK.builder(appContext)
+            .sdkKey(sdkKey)
+            .data(config)
+            .trackEndpoint(server.url("/").toString())
+            .batchSize(LARGE_BATCH_SIZE)
+            .releaseInterval(LONG_RELEASE_INTERVAL_MS)
+            .dataRefreshInterval(LONG_DATA_REFRESH_INTERVAL_MS)
+            .build()
+        awaitCondition { sdk.dataManager.hasData() }
+        return sdk
+    }
+
+    /**
+     * Shared zero-trace assertion for the CAP-3 sweep below — the same
+     * four checks as the AC6 lifecycle test above, extracted so the two
+     * `@Test` methods do not duplicate the assertion block.
+     */
+    private fun assertZeroFeaturePreviewTrace(sdk: ConvertSDK, visitorId: String) {
+        assertEquals(0, sdk.apiManager!!.snapshotQueue().size)
+        assertEquals(0, runBlocking { sdk.fileEventQueue!!.size() })
+        assertEquals(0, server.requestCount)
+        val store = sdk.dataManager.getStoreData(visitorId)
+        assertTrue(store.bucketing.isNullOrEmpty())
+    }
+
+    @Test
+    fun `runFeature with enableTracking true leaves zero trace under preview`() {
+        val sdk = buildFeatureSdk("sk-feature-zt")
+        val ctx = sdk.createContext("visitor_feature_zt")
+        runBlocking { ctx.setPreview(experienceId = "exp-feat-1", variationId = "var-fb") }
+
+        // Preview-forced leg — resolvePreviewOverride short-circuits
+        // before allocateAndRecord is ever reached.
+        val forced = ctx.runFeature("feature-welcome", enableTracking = true)
+        assertNotNull(forced)
+        assertEquals(FeatureStatus.ENABLED, forced?.status)
+
+        // Non-previewed experience — the leg that actually reaches the
+        // allocateAndRecord isPreviewActive() gates under preview.
+        val other = ctx.runFeature("feature-promo-1", enableTracking = true)
+        assertNotNull(other)
+        assertEquals(FeatureStatus.ENABLED, other?.status)
+
+        Thread.sleep(EVENT_SETTLE_MS)
+        assertZeroFeaturePreviewTrace(sdk, "visitor_feature_zt")
+    }
+
+    @Test
+    fun `runFeatures with enableTracking true leaves zero trace for every feature`() {
+        val sdk = buildFeatureSdk("sk-features-zt")
+        val ctx = sdk.createContext("visitor_features_zt")
+        runBlocking { ctx.setPreview(experienceId = "exp-feat-1", variationId = "var-fb") }
+
+        // evaluateAll walks three features: one preview-forced
+        // short-circuit, then two on the SAME non-previewed experience
+        // — the second re-buckets rather than sticky-recalls (no
+        // updateBucketing under preview), but both land at 0/0.
+        val features = ctx.runFeatures(enableTracking = true)
+
+        assertEquals(THREE_FEATURES, features.size)
+        assertEquals(FeatureStatus.ENABLED, features.first { it.key == "feature-welcome" }.status)
+        assertEquals(FeatureStatus.ENABLED, features.first { it.key == "feature-promo-1" }.status)
+        assertEquals(FeatureStatus.ENABLED, features.first { it.key == "feature-promo-2" }.status)
+
+        Thread.sleep(EVENT_SETTLE_MS)
+        assertZeroFeaturePreviewTrace(sdk, "visitor_features_zt")
+    }
+
     private companion object {
         private const val LARGE_BATCH_SIZE = 100
         private const val LONG_RELEASE_INTERVAL_MS = 30_000L
@@ -594,5 +728,6 @@ internal class ConvertContextPreviewZeroTraceTest {
         private const val GOAL_AMOUNT = 9.99
         private const val HTTP_OK = 200
         private const val HTTP_NOT_FOUND = 404
+        private const val THREE_FEATURES = 3
     }
 }
