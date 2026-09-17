@@ -21,6 +21,7 @@ import com.convert.sdk.core.model.generated.ConfigExperienceSettings
 import com.convert.sdk.core.model.generated.ExperienceStatuses
 import com.convert.sdk.core.model.generated.ExperienceTypes
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
+import com.convert.sdk.core.model.generated.MultipageExperiencePage
 import com.convert.sdk.core.model.generated.RuleObject
 
 import kotlinx.serialization.Serializable
@@ -83,7 +84,7 @@ data class ConfigExperience (
 
     /* Only for multipage experience type */
     @SerialName(value = "multipage_pages")
-    val multipagePages: kotlin.collections.List<kotlinx.serialization.json.JsonElement>? = null,
+    val multipagePages: kotlin.collections.List<MultipageExperiencePage>? = null,
 
     @Serializable(with = ExperienceStatusesNullableSerializer::class) @SerialName(value = "status")
     val status: ExperienceStatuses? = null,
