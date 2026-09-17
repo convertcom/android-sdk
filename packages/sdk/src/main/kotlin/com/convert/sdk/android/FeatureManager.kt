@@ -92,9 +92,16 @@ internal class FeatureManager(
      *   event fire apply exactly once per experience per visitor).
      * @param featureKey merchant-defined feature key.
      * @param enableTracking when `true`, each triggered `runExperience`
-     *   call enqueues its outbound bucketing event; when `false`, the
-     *   outbound queue is suppressed but sticky + internal events still
-     *   fire. Mirrors `runExperience`'s per-call tracking flag.
+     *   call enqueues its outbound bucketing event and fires the
+     *   in-process [com.convert.sdk.core.event.SystemEvents.BUCKETING]
+     *   event; when `false`, both are suppressed together while the
+     *   sticky decision still persists. Mirrors `runExperience`'s
+     *   per-call tracking flag.
+     * @param experienceKeys limits evaluation to these experience keys;
+     *   `null` or an empty list means every experience. An unknown key
+     *   is skipped, not an error. Narrowing never shrinks the result —
+     *   an excluded feature returns as [FeatureStatus.DISABLED] rather
+     *   than being omitted from the result.
      * @return the resolved [Feature]; `null` when [featureKey] is not
      *   declared in the current config. When declared but the visitor
      *   is not bucketed into any variation exposing the feature, returns
@@ -105,6 +112,7 @@ internal class FeatureManager(
         context: ConvertContext,
         featureKey: String,
         enableTracking: Boolean = true,
+        experienceKeys: List<String>? = null,
     ): Feature? {
         // ReturnCount — the algorithm has four natural exits (config-
         // missing, unknown feature, matched-variation, declared-but-
@@ -113,8 +121,9 @@ internal class FeatureManager(
         // semantic win.
         //
         // LoopWithTooManyJumpStatements — the per-experience loop has
-        // three `continue`s that short-circuit known skip cases (no key,
-        // experience doesn't expose feature, visitor not bucketed). Each
+        // five `continue`s that short-circuit known skip cases (no key,
+        // excluded by experienceKeys, no exposed feature, not bucketed,
+        // or no matching feature change on the bucketed variation). Each
         // is an independent guard; flattening them into a nested `if`
         // chain would add depth without clarifying intent. Suppression
         // mirrors the `@Suppress("ReturnCount", "TooGenericExceptionCaught")`
@@ -141,6 +150,7 @@ internal class FeatureManager(
         // change matching this feature id + a non-null bucketing wins.
         for (experience in experiences) {
             val expKey = experience.key ?: continue
+            if (!(experienceKeys.isNullOrEmpty() || expKey in experienceKeys)) continue
             if (!experienceExposesFeature(experience, featureId)) continue
             val variation = context.runExperience(expKey, enableTracking) ?: continue
             val change = findFeatureChange(experience, variation.id, featureId) ?: continue
@@ -163,16 +173,19 @@ internal class FeatureManager(
      *
      * @param context the caller's [ConvertContext].
      * @param enableTracking per-call tracking flag; see [evaluate].
+     * @param experienceKeys limits evaluation to these experience keys;
+     *   see [evaluate] for the empty-list and unknown-key semantics.
      * @return list of resolved features; empty when no features are
      *   declared or the config is not yet loaded.
      */
     fun evaluateAll(
         context: ConvertContext,
         enableTracking: Boolean = true,
+        experienceKeys: List<String>? = null,
     ): List<Feature> {
         val declared = sdk.dataManager.data?.features ?: return emptyList()
         return declared.mapNotNull { feature ->
-            feature.key?.let { key -> evaluate(context, key, enableTracking) }
+            feature.key?.let { key -> evaluate(context, key, enableTracking, experienceKeys) }
         }
     }
 
