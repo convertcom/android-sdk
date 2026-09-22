@@ -18,9 +18,11 @@ package com.convert.sdk.core.model.generated
 
 import com.convert.sdk.core.model.generated.ConfigExperienceIntegrationsInner
 import com.convert.sdk.core.model.generated.ConfigExperienceSettings
+import com.convert.sdk.core.model.generated.ConfigExperienceVisitorInsights
 import com.convert.sdk.core.model.generated.ExperienceStatuses
 import com.convert.sdk.core.model.generated.ExperienceTypes
 import com.convert.sdk.core.model.generated.ExperienceVariationConfig
+import com.convert.sdk.core.model.generated.MultipageExperiencePage
 import com.convert.sdk.core.model.generated.RuleObject
 
 import kotlinx.serialization.Serializable
@@ -48,6 +50,7 @@ import kotlinx.serialization.Contextual
  * @param environments List of environments that this experience is supposed to run on. The full list of available environments is defined at  project level. If this list is empty, the experience will run on all environments. 
  * @param environment The environment where this experience will run. It has to be one of the environments defined at the project level
  * @param settings 
+ * @param visitorInsights 
  */
 @Serializable
 
@@ -83,7 +86,7 @@ data class ConfigExperience (
 
     /* Only for multipage experience type */
     @SerialName(value = "multipage_pages")
-    val multipagePages: kotlin.collections.List<kotlinx.serialization.json.JsonElement>? = null,
+    val multipagePages: kotlin.collections.List<MultipageExperiencePage>? = null,
 
     @Serializable(with = ExperienceStatusesNullableSerializer::class) @SerialName(value = "status")
     val status: ExperienceStatuses? = null,
@@ -121,7 +124,10 @@ data class ConfigExperience (
     val environment: kotlin.String? = null,
 
     @SerialName(value = "settings")
-    val settings: ConfigExperienceSettings? = null
+    val settings: ConfigExperienceSettings? = null,
+
+    @SerialName(value = "visitor_insights")
+    val visitorInsights: ConfigExperienceVisitorInsights? = null
 
 ) {
 
