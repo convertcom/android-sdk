@@ -28,6 +28,7 @@ import kotlinx.serialization.Contextual
  * @param devices List of device classes that the visitor device falls into
  * @param source Traffic source
  * @param campaign Campaign string
+ * @param content Content string (ad-creative identifier from utm_content)
  * @param visitorType Type of the visitor
  * @param country Two ISO country code for visitor's country
  * @param customSegments Custom Segments as defined inside Convert app. This will be the list of segments' IDs
@@ -51,6 +52,10 @@ data class VisitorSegments (
     /* Campaign string */
     @SerialName(value = "campaign")
     val campaign: kotlin.String? = null,
+
+    /* Content string (ad-creative identifier from utm_content) */
+    @SerialName(value = "content")
+    val content: kotlin.String? = null,
 
     /* Type of the visitor */
     @SerialName(value = "visitorType")
