@@ -27,6 +27,7 @@ import kotlinx.serialization.Contextual
  * @param enabled If true, Convert Signals™ is enabled for the project, allowing the system to capture sessions exhibiting user frustration or usability issues. 
  * @param obfuscateText True when all text elements (apart from placeholders) should be obfuscated inside a recording. 
  * @param samplingRate The sampling rate for tracking events.
+ * @param heatmapVisitsLimit Maximum number of visits per variation used when generating a heatmap for this project. Applies to newly created heatmaps when an experience is activated. 
  * @param trackingId The tracking ID for Visitor Insights.
  */
 @Serializable
@@ -39,11 +40,15 @@ data class VisitorInsightsData (
 
     /* True when all text elements (apart from placeholders) should be obfuscated inside a recording.  */
     @SerialName(value = "obfuscate_text")
-    val obfuscateText: kotlin.Boolean? = true,
+    val obfuscateText: kotlin.Boolean? = false,
 
     /* The sampling rate for tracking events. */
-    @Contextual @SerialName(value = "sampling_rate")
-    val samplingRate: java.math.BigDecimal? = java.math.BigDecimal("5"),
+    @SerialName(value = "sampling_rate")
+    val samplingRate: kotlin.Int? = 5,
+
+    /* Maximum number of visits per variation used when generating a heatmap for this project. Applies to newly created heatmaps when an experience is activated.  */
+    @SerialName(value = "heatmap_visits_limit")
+    val heatmapVisitsLimit: VisitorInsightsData.HeatmapVisitsLimit? = HeatmapVisitsLimit._2500,
 
     /* The tracking ID for Visitor Insights. */
     @SerialName(value = "tracking_id")
@@ -51,6 +56,18 @@ data class VisitorInsightsData (
 
 ) {
 
+    /**
+     * Maximum number of visits per variation used when generating a heatmap for this project. Applies to newly created heatmaps when an experience is activated. 
+     *
+     * Values: _2500,_5000,_10000,_15000
+     */
+    @Serializable
+    enum class HeatmapVisitsLimit(val value: kotlin.Int) {
+        @SerialName(value = "2500") _2500(2500),
+        @SerialName(value = "5000") _5000(5000),
+        @SerialName(value = "10000") _10000(10000),
+        @SerialName(value = "15000") _15000(15000);
+    }
 
 }
 
