@@ -26,6 +26,7 @@ import kotlinx.serialization.Contextual
  *
  * @param enabled If true, integration with Google Analytics is enabled for this project or experience, allowing experiment data to be sent to GA.
  * @param autoRevenueTracking Attempt to pull revenue data from Google Analytics Revenue Tracking code.
+ * @param trackFirstExposureOnly When enabled, the experience_impression event is sent only the first time a visitor is exposed to an experience, instead of on every subsequent qualifying page view. Opt-in and disabled by default.
  */
 @Serializable
 
@@ -37,7 +38,11 @@ data class ProjectGASettingsBase (
 
     /* Attempt to pull revenue data from Google Analytics Revenue Tracking code. */
     @SerialName(value = "auto_revenue_tracking")
-    val autoRevenueTracking: kotlin.Boolean? = null
+    val autoRevenueTracking: kotlin.Boolean? = null,
+
+    /* When enabled, the experience_impression event is sent only the first time a visitor is exposed to an experience, instead of on every subsequent qualifying page view. Opt-in and disabled by default. */
+    @SerialName(value = "track_first_exposure_only")
+    val trackFirstExposureOnly: kotlin.Boolean? = false
 
 ) {
 
