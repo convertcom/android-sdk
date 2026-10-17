@@ -21,21 +21,15 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
- * The Convert product line this billing plan pertains to. - `experiences`: Relates to A/B testing, MVT, Split URL, and personalization features. - `deploy`: Relates to the \"Deploy\" feature for rolling out changes to specific audiences without A/B testing reports. Knowledge Base: \"Deployments have the potential to contain small segments...and this could be interpreted by Privacy Authorities in Europe as identification of data subjects.\" - `addons`: Relates to add-on products that extend the core platform capabilities. 
+ * 
  *
- * Values: EXPERIENCES,DEPLOY,ADDONS
+ * Values: BUCKETED_INTO_EXPERIENCE_KEY
  */
 @Serializable
-enum class Products(val value: kotlin.String) {
+enum class ExperienceKeyBucketedMatchRulesTypes(val value: kotlin.String) {
 
-    @SerialName(value = "experiences")
-    EXPERIENCES("experiences"),
-
-    @SerialName(value = "deploy")
-    DEPLOY("deploy"),
-
-    @SerialName(value = "addons")
-    ADDONS("addons");
+    @SerialName(value = "bucketed_into_experience_key")
+    BUCKETED_INTO_EXPERIENCE_KEY("bucketed_into_experience_key");
 
     /**
      * Override [toString()] to avoid using the enum variable name as the value, and instead use
@@ -50,12 +44,12 @@ enum class Products(val value: kotlin.String) {
         /**
          * Converts the provided [data] to a [String] on success, null otherwise.
          */
-        fun encode(data: kotlin.Any?): kotlin.String? = if (data is Products) "$data" else null
+        fun encode(data: kotlin.Any?): kotlin.String? = if (data is ExperienceKeyBucketedMatchRulesTypes) "$data" else null
 
         /**
-         * Returns a valid [Products] for [data], null otherwise.
+         * Returns a valid [ExperienceKeyBucketedMatchRulesTypes] for [data], null otherwise.
          */
-        fun decode(data: kotlin.Any?): Products? = data?.let {
+        fun decode(data: kotlin.Any?): ExperienceKeyBucketedMatchRulesTypes? = data?.let {
           val normalizedData = "$it".lowercase()
           values().firstOrNull { value ->
             it == value || normalizedData == "$value".lowercase()
