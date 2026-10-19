@@ -37,6 +37,7 @@ import kotlinx.serialization.Contextual
  * @param id Goal ID
  * @param name Goal Name.
  * @param key Goal Key
+ * @param isGuardrail Present, and `true`, only when this goal is a guardrail goal. Omitted for every other goal, so a config without guardrail goals is unchanged. Treat a missing value as `false`. The tracking script reports every fire of a guardrail goal, including a fire made by a visitor who is in no experience. 
  * @param type 
  * @param rules 
  * @param settings 
@@ -52,6 +53,9 @@ interface ConfigGoal {
     /* Goal Key */
     @SerialName(value = "key")
     val key: kotlin.String?
+    /* Present, and `true`, only when this goal is a guardrail goal. Omitted for every other goal, so a config without guardrail goals is unchanged. Treat a missing value as `false`. The tracking script reports every fire of a guardrail goal, including a fire made by a visitor who is in no experience.  */
+    @SerialName(value = "is_guardrail")
+    val isGuardrail: kotlin.Boolean?
     @SerialName(value = "type")
     val type: kotlin.String?
     @SerialName(value = "rules")
