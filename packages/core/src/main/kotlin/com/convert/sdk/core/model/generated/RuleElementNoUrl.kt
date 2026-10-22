@@ -20,6 +20,7 @@ import com.convert.sdk.core.model.generated.BrowserNameMatchRule
 import com.convert.sdk.core.model.generated.CookieMatchRule
 import com.convert.sdk.core.model.generated.CountryMatchRule
 import com.convert.sdk.core.model.generated.DayOfWeekMatchRule
+import com.convert.sdk.core.model.generated.ExperienceKeyBucketedMatchRule
 import com.convert.sdk.core.model.generated.GenericBoolKeyValueMatchRule
 import com.convert.sdk.core.model.generated.GenericBoolMatchRule
 import com.convert.sdk.core.model.generated.GenericNumericKeyValueMatchRule

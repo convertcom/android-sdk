@@ -27,7 +27,7 @@ import kotlinx.serialization.Contextual
  * 
  *
  * @param segments 
- * @param visitorId Id of the visitor tracked
+ * @param visitorId The ID of the visitor tracked. Only 0-9, a-z, A-Z, ., - and _ are allowed. The tracking server drops a visitor whose ID breaks this rule and still answers 200, so the events never reach reports or Live Logs. Keep the ID to 64 characters or fewer. One longer ID can stop reports from using visitor-level revenue statistics for its whole variation. An ID over 256 characters may not be tracked at all. 
  * @param events List of events fired for the given visitor
  */
 @Serializable
@@ -37,7 +37,7 @@ data class SendTrackingEventsRequestDataVisitorsInner (
     @SerialName(value = "segments")
     val segments: VisitorSegments? = null,
 
-    /* Id of the visitor tracked */
+    /* The ID of the visitor tracked. Only 0-9, a-z, A-Z, ., - and _ are allowed. The tracking server drops a visitor whose ID breaks this rule and still answers 200, so the events never reach reports or Live Logs. Keep the ID to 64 characters or fewer. One longer ID can stop reports from using visitor-level revenue statistics for its whole variation. An ID over 256 characters may not be tracked at all.  */
     @SerialName(value = "visitorId")
     val visitorId: kotlin.String? = null,
 
