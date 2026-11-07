@@ -16,8 +16,7 @@
 
 package com.convert.sdk.core.model.generated
 
-import com.convert.sdk.core.model.generated.NumericOutlierPercentileAllOfMax
-import com.convert.sdk.core.model.generated.NumericOutlierPercentileAllOfMin
+import com.convert.sdk.core.model.generated.Percentiles
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -27,8 +26,8 @@ import kotlinx.serialization.Contextual
  * 
  *
  * @param detectionType 
- * @param min 
- * @param max 
+ * @param min Minimum percentile value for the outlier detection; values outside this percentile are considered outliers
+ * @param max Maximum percentile value for the outlier detection; values outside this percentile are considered outliers
  */
 @kotlinx.serialization.SerialName("percentile")
 @Serializable
@@ -36,11 +35,13 @@ import kotlinx.serialization.Contextual
 data class NumericOutlierPercentile (
 
 
-    @SerialName(value = "min")
-    val min: NumericOutlierPercentileAllOfMin? = null,
+    /* Minimum percentile value for the outlier detection; values outside this percentile are considered outliers */
+    @Serializable(with = PercentilesNullableSerializer::class) @SerialName(value = "min")
+    val min: Percentiles? = null,
 
-    @SerialName(value = "max")
-    val max: NumericOutlierPercentileAllOfMax? = null
+    /* Maximum percentile value for the outlier detection; values outside this percentile are considered outliers */
+    @Serializable(with = PercentilesNullableSerializer::class) @SerialName(value = "max")
+    val max: Percentiles? = null
 
 ) : NumericOutlier {
 

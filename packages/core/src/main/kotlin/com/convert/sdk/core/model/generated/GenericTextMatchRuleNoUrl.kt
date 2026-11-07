@@ -16,7 +16,8 @@
 
 package com.convert.sdk.core.model.generated
 
-import com.convert.sdk.core.model.generated.ExperienceChangeAdd
+import com.convert.sdk.core.model.generated.GenericTextMatchRuleNoUrlAllOfMatching
+import com.convert.sdk.core.model.generated.TextMatchRulesTypesNoUrl
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -25,23 +26,23 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param type 
- * @param `data` 
- * @param id The unique numerical identifier for this specific change.
+ * @param ruleType 
+ * @param `value` The value used to match against 'rule_type' using 'matching'
+ * @param matching 
  */
 @Serializable
 
-class UpdateExperienceChangeRequestData (
+data class GenericTextMatchRuleNoUrl (
 
-    @SerialName(value = "type")
-    val type: kotlin.String,
+    @Contextual @SerialName(value = "rule_type")
+    val ruleType: TextMatchRulesTypesNoUrl,
 
-    @Contextual @SerialName(value = "data")
-    val `data`: kotlin.Any?,
+    /* The value used to match against 'rule_type' using 'matching' */
+    @SerialName(value = "value")
+    val `value`: kotlin.String? = null,
 
-    /* The unique numerical identifier for this specific change. */
-    @SerialName(value = "id")
-    val id: kotlin.Int? = null
+    @SerialName(value = "matching")
+    val matching: GenericTextMatchRuleNoUrlAllOfMatching? = null
 
 ) {
 

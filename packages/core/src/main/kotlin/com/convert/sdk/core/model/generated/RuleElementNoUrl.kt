@@ -20,12 +20,13 @@ import com.convert.sdk.core.model.generated.BrowserNameMatchRule
 import com.convert.sdk.core.model.generated.CookieMatchRule
 import com.convert.sdk.core.model.generated.CountryMatchRule
 import com.convert.sdk.core.model.generated.DayOfWeekMatchRule
+import com.convert.sdk.core.model.generated.ExperienceKeyBucketedMatchRule
 import com.convert.sdk.core.model.generated.GenericBoolKeyValueMatchRule
 import com.convert.sdk.core.model.generated.GenericBoolMatchRule
 import com.convert.sdk.core.model.generated.GenericNumericKeyValueMatchRule
 import com.convert.sdk.core.model.generated.GenericNumericMatchRule
 import com.convert.sdk.core.model.generated.GenericTextKeyValueMatchRule
-import com.convert.sdk.core.model.generated.GenericTextMatchRule
+import com.convert.sdk.core.model.generated.GenericTextMatchRuleNoUrl
 import com.convert.sdk.core.model.generated.GoalTriggeredMatchRule
 import com.convert.sdk.core.model.generated.HourOfDayMatchRule
 import com.convert.sdk.core.model.generated.JsConditionMatchRule
