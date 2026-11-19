@@ -26,6 +26,7 @@ import kotlinx.serialization.Contextual
  *
  * @param enabled If true, integration with Google Analytics is enabled for this project or experience, allowing experiment data to be sent to GA.
  * @param autoRevenueTracking Attempt to pull revenue data from Google Analytics Revenue Tracking code.
+ * @param trackFirstExposureOnly When enabled, the experience_impression event is sent only the first time a visitor is exposed to an experience, instead of on every subsequent qualifying page view. Opt-in and disabled by default.
  * @param type 
  * @param measurementId The GA4 Measurement ID (e.g., \"G-XXXXXXXXXX\") for the data stream where Convert experiment data will be sent.
  * @param noWaitPageview Boolean indicating whether to wait for the page view event to complete before sending other events.
@@ -42,6 +43,10 @@ data class ProjectIntegrationGA4 (
     /* Attempt to pull revenue data from Google Analytics Revenue Tracking code. */
     @SerialName(value = "auto_revenue_tracking")
     val autoRevenueTracking: kotlin.Boolean? = null,
+
+    /* When enabled, the experience_impression event is sent only the first time a visitor is exposed to an experience, instead of on every subsequent qualifying page view. Opt-in and disabled by default. */
+    @SerialName(value = "track_first_exposure_only")
+    val trackFirstExposureOnly: kotlin.Boolean? = false,
 
 
     /* The GA4 Measurement ID (e.g., \"G-XXXXXXXXXX\") for the data stream where Convert experiment data will be sent. */

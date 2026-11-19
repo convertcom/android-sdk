@@ -44,6 +44,8 @@ internal data class ConfigGoalUnknown(
         get() = raw["name"]?.jsonPrimitive?.contentOrNull
     override val key: kotlin.String?
         get() = raw["key"]?.jsonPrimitive?.contentOrNull
+    override val alwaysTracked: kotlin.Boolean?
+        get() = raw["always_tracked"]?.jsonPrimitive?.booleanOrNull
     override val type: kotlin.String?
         get() = raw["type"]?.jsonPrimitive?.contentOrNull
     override val rules: RuleObject? get() = null

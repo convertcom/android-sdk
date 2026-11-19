@@ -37,6 +37,7 @@ import kotlinx.serialization.Contextual
  * @param id Goal ID
  * @param name Goal Name.
  * @param key Goal Key
+ * @param alwaysTracked Present, and `true`, only when an active metric needs every fire of this goal. Omitted for every other goal, so a config without such goals is unchanged. Treat a missing value as `false`. The tracking script reports every fire of this goal, including a fire made by a visitor who is in no experience. 
  * @param type 
  * @param rules 
  * @param settings 
@@ -52,6 +53,9 @@ interface ConfigGoal {
     /* Goal Key */
     @SerialName(value = "key")
     val key: kotlin.String?
+    /* Present, and `true`, only when an active metric needs every fire of this goal. Omitted for every other goal, so a config without such goals is unchanged. Treat a missing value as `false`. The tracking script reports every fire of this goal, including a fire made by a visitor who is in no experience.  */
+    @SerialName(value = "always_tracked")
+    val alwaysTracked: kotlin.Boolean?
     @SerialName(value = "type")
     val type: kotlin.String?
     @SerialName(value = "rules")

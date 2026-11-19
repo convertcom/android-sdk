@@ -19,6 +19,7 @@ package com.convert.sdk.core.model.generated
 import com.convert.sdk.core.model.generated.BucketingEvent
 import com.convert.sdk.core.model.generated.ConversionEvent
 import com.convert.sdk.core.model.generated.ConversionEventGoalDataInner
+import com.convert.sdk.core.model.generated.SeenEvent
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -32,6 +33,9 @@ import kotlinx.serialization.Contextual
  * @param goalId Id of the conversion goal to be fired
  * @param goalData Data connected to this conversion, for non binomial metrics, eg revenue
  * @param bucketingData Bucketing data (experiences that this visitor is currently part of) for the visitor. In case that **enrichData=true** flag is being sent and  this attribute is not provided, the bucketing stored on the backend datastore for the given visitor is gonna be used. If both **enrichData=true** and  **bucketingData**, the **bucketingData** is gonna be merged with the stored data inside the backend data source, the request provided data having the  biggest overwriting bucketing for the same experience which might exist on the backend 
+ * @param timestamp Unix time in seconds at which the client enqueued the event
+ * @param sessionId ID of the visitor's session. Only 0-9, a-z, A-Z, ., - and _ are allowed, up to 64 characters. The endpoint treats a value that starts with `fb-` as absent. 
+ * @param sessionStart Whether this event starts the session. The endpoint reads it only when a `sessionId` is sent. 
  */
 @Serializable
 
@@ -55,7 +59,19 @@ data class VisitorTrackingEventsData (
 
     /* Bucketing data (experiences that this visitor is currently part of) for the visitor. In case that **enrichData=true** flag is being sent and  this attribute is not provided, the bucketing stored on the backend datastore for the given visitor is gonna be used. If both **enrichData=true** and  **bucketingData**, the **bucketingData** is gonna be merged with the stored data inside the backend data source, the request provided data having the  biggest overwriting bucketing for the same experience which might exist on the backend  */
     @SerialName(value = "bucketingData")
-    val bucketingData: kotlin.collections.Map<kotlin.String, kotlin.String>? = null
+    val bucketingData: kotlin.collections.Map<kotlin.String, kotlin.String>? = null,
+
+    /* Unix time in seconds at which the client enqueued the event */
+    @SerialName(value = "timestamp")
+    val timestamp: kotlin.Long? = null,
+
+    /* ID of the visitor's session. Only 0-9, a-z, A-Z, ., - and _ are allowed, up to 64 characters. The endpoint treats a value that starts with `fb-` as absent.  */
+    @SerialName(value = "sessionId")
+    val sessionId: kotlin.String? = null,
+
+    /* Whether this event starts the session. The endpoint reads it only when a `sessionId` is sent.  */
+    @SerialName(value = "sessionStart")
+    val sessionStart: kotlin.Boolean? = null
 
 ) {
 
