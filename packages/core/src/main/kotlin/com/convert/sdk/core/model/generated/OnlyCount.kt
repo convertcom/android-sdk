@@ -24,13 +24,13 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param onlyCount If set to `true` in a list request, the response will only contain the total count of matching items (`extra.pagination.items_count`) and will not include the actual item data. Useful for quickly getting totals without fetching full datasets. 
+ * @param onlyCount If set to `true` in a list request, the response is `{\"data\": <count>}`: `data` is the total number of matching items (an integer), with no item data and no `extra` object. Useful for quickly getting totals without fetching full datasets. 
  */
 @Serializable
 
 data class OnlyCount (
 
-    /* If set to `true` in a list request, the response will only contain the total count of matching items (`extra.pagination.items_count`) and will not include the actual item data. Useful for quickly getting totals without fetching full datasets.  */
+    /* If set to `true` in a list request, the response is `{\"data\": <count>}`: `data` is the total number of matching items (an integer), with no item data and no `extra` object. Useful for quickly getting totals without fetching full datasets.  */
     @SerialName(value = "onlyCount")
     val onlyCount: kotlin.Boolean? = null
 

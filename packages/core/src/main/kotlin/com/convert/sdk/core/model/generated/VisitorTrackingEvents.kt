@@ -25,14 +25,14 @@ import kotlinx.serialization.Contextual
 /**
  * Tracking events related to the same user ID
  *
- * @param eventType Type of the event. It can be a bucketing or a conversion event
+ * @param eventType Type of the event. It can be a bucketing, a conversion or a seen event
  * @param `data` 
  */
 @Serializable
 
 data class VisitorTrackingEvents (
 
-    /* Type of the event. It can be a bucketing or a conversion event */
+    /* Type of the event. It can be a bucketing, a conversion or a seen event */
     @SerialName(value = "eventType")
     val eventType: VisitorTrackingEvents.EventType? = null,
 
@@ -42,14 +42,15 @@ data class VisitorTrackingEvents (
 ) {
 
     /**
-     * Type of the event. It can be a bucketing or a conversion event
+     * Type of the event. It can be a bucketing, a conversion or a seen event
      *
-     * Values: BUCKETING,CONVERSION
+     * Values: BUCKETING,CONVERSION,SEEN
      */
     @Serializable
     enum class EventType(val value: kotlin.String) {
         @SerialName(value = "bucketing") BUCKETING("bucketing"),
-        @SerialName(value = "conversion") CONVERSION("conversion");
+        @SerialName(value = "conversion") CONVERSION("conversion"),
+        @SerialName(value = "seen") SEEN("seen");
     }
 
 }
